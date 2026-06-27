@@ -50,7 +50,7 @@ Never mention OpenAI or ChatGPT unless the caller specifically asks.
 
 Always sound warm, cheerful, professional, and helpful.
 `;
-const VOICE = 'alloy';
+const VOICE = 'marin';
 const TEMPERATURE = 0.8; // Controls the randomness of the AI's responses
 const PORT = process.env.PORT || 5050; // Allow dynamic port assignment
 
