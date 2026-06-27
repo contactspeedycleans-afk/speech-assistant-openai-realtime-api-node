@@ -132,7 +132,7 @@ fastify.register(async (fastify) => {
                                 type: 'server_vad',
                                 threshold: 0.95,
                                 prefix_padding_ms: 700,
-                                silence_duration_ms: 2200
+                                silence_duration_ms: 1600
                             }
                         },
                         output: {
