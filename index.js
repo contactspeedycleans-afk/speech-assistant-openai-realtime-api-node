@@ -18,11 +18,25 @@ fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
 
 const SYSTEM_MESSAGE = `
-You are Emma, the friendly AI receptionist for Speedy Solutions.
+You are Emma, the friendly phone receptionist for Speedy Solutions.
 
-You answer the phone like a professional front desk receptionist for a cleaning company.
+You must speak English only. Never switch languages unless the caller specifically asks you to.
 
-Speak naturally, warmly, and confidently. Keep responses short because this is a live phone call.
+You answer like a calm, patient, professional front desk receptionist for a cleaning company.
+
+Very important conversation rules:
+- Do not interrupt the caller.
+- Be patient with older callers.
+- Allow callers extra time to finish speaking.
+- If the caller pauses, wait before responding.
+- Speak slowly, clearly, warmly, and naturally.
+- Keep answers short, but not rushed.
+- Do not sound robotic.
+- Do not over-explain.
+- Do not mention OpenAI, ChatGPT, Twilio, Railway, APIs, or technology unless directly asked.
+
+Start the conversation by saying:
+"Thank you for calling Speedy Solutions. This is Emma. How can I help you today?"
 
 Speedy Solutions helps with:
 - House cleaning
@@ -50,13 +64,15 @@ Do not promise exact pricing unless pricing is clearly provided.
 Do not promise confirmed availability.
 Say the office will review the request and follow up shortly.
 
-Never mention OpenAI, ChatGPT, Twilio, Railway, or APIs unless the caller directly asks.
+If the caller is upset, be calm and reassuring.
+If the caller asks something you do not know, say:
+"Let me have the office review that and follow up with you shortly."
 
-Be cheerful, calm, professional, and helpful.
+Your goal is to be helpful, patient, and professional.
 `;
 
 const VOICE = 'marin';
-const TEMPERATURE = 0.7;
+const TEMPERATURE = 0.55;
 const PORT = process.env.PORT || 8080;
 
 const LOG_EVENT_TYPES = [
@@ -71,8 +87,6 @@ const LOG_EVENT_TYPES = [
     'session.updated'
 ];
 
-const SHOW_TIMING_MATH = false;
-
 fastify.get('/', async (request, reply) => {
     reply.send({ message: 'Speedy Solutions AI Receptionist is running!' });
 });
@@ -80,8 +94,6 @@ fastify.get('/', async (request, reply) => {
 fastify.all('/incoming-call', async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="Google.en-US-Chirp3-HD-Aoede">Thank you for calling Speedy Solutions. Please hold for one moment while I connect you with our receptionist.</Say>
-    <Pause length="1"/>
     <Connect>
         <Stream url="wss://${request.headers.host}/media-stream" />
     </Connect>
@@ -116,12 +128,12 @@ fastify.register(async (fastify) => {
                     audio: {
                         input: {
                             format: { type: 'audio/pcmu' },
-                          turn_detection: {
-    type: 'server_vad',
-    threshold: 0.8,
-    prefix_padding_ms: 300,
-    silence_duration_ms: 900
-}
+                            turn_detection: {
+                                type: 'server_vad',
+                                threshold: 0.95,
+                                prefix_padding_ms: 700,
+                                silence_duration_ms: 2200
+                            }
                         },
                         output: {
                             format: { type: 'audio/pcmu' },
@@ -134,10 +146,29 @@ fastify.register(async (fastify) => {
 
             console.log('Sending session update:', JSON.stringify(sessionUpdate));
             openAiWs.send(JSON.stringify(sessionUpdate));
+
+            const greeting = {
+                type: 'conversation.item.create',
+                item: {
+                    type: 'message',
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'input_text',
+                            text: 'Start the call now with your exact Speedy Solutions greeting.'
+                        }
+                    ]
+                }
+            };
+
+            openAiWs.send(JSON.stringify(greeting));
+            openAiWs.send(JSON.stringify({ type: 'response.create' }));
         };
 
         const handleSpeechStartedEvent = () => {
-            if (markQueue.length > 0 && responseStartTimestampTwilio != null) {
+            // More patient interruption behavior:
+            // Only clear Emma if the caller truly starts speaking while she is actively talking.
+            if (markQueue.length > 2 && responseStartTimestampTwilio != null) {
                 const elapsedTime = latestMediaTimestamp - responseStartTimestampTwilio;
 
                 if (lastAssistantItem) {
@@ -225,12 +256,10 @@ fastify.register(async (fastify) => {
                         latestMediaTimestamp = data.media.timestamp;
 
                         if (openAiWs.readyState === WebSocket.OPEN) {
-                            const audioAppend = {
+                            openAiWs.send(JSON.stringify({
                                 type: 'input_audio_buffer.append',
                                 audio: data.media.payload
-                            };
-
-                            openAiWs.send(JSON.stringify(audioAppend));
+                            }));
                         }
                         break;
 
@@ -253,7 +282,7 @@ fastify.register(async (fastify) => {
                         break;
                 }
             } catch (error) {
-                console.error('Error parsing message:', error, 'Message:', message);
+                console.error('Error parsing Twilio message:', error, 'Message:', message);
             }
         });
 
