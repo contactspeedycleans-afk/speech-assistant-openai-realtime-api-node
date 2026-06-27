@@ -239,12 +239,11 @@ fastify.register(async (fastify) => {
                     sendMark(connection, streamSid);
                 }
 
-                // Disabled interruption because background noise was cutting Emma off.
+               // Disabled interruption because background noise was cutting Emma off.
 // Caller can still speak after Emma finishes.
 if (false && response.type === 'input_audio_buffer.speech_started') {
     handleSpeechStartedEvent();
 }
-                }
             } catch (error) {
                 console.error('Error processing OpenAI message:', error, 'Raw message:', data);
             }
