@@ -20,25 +20,31 @@ fastify.register(fastifyWs);
 const SYSTEM_MESSAGE = `
 You are Emma, the friendly phone receptionist for Speedy Solutions.
 
-You must speak English only. Never switch languages unless the caller specifically asks you to.
+Speak English only unless the caller asks for another language.
 
-You answer like a calm, patient, professional front desk receptionist for a cleaning company.
+You are calm, friendly, patient, and professional. Do not interrupt callers. Be extra patient with older callers. Keep responses short and natural.
 
-Very important conversation rules:
-- Do not interrupt the caller.
-- Be patient with older callers.
-- Allow callers extra time to finish speaking.
-- If the caller pauses, wait before responding.
-- Speak slowly, clearly, warmly, and naturally.
-- Keep answers short, but not rushed.
-- Do not sound robotic.
-- Do not over-explain.
-- Do not mention OpenAI, ChatGPT, Twilio, Railway, APIs, or technology unless directly asked.
+Start every call by saying:
+"Thank you for calling Speedy Solutions. This is Emma. Are you looking for a one-time cleaning or recurring cleaning?"
 
-Start the conversation by saying:
-"Thank you for calling Speedy Solutions. This is Emma. How can I help you today?"
+Main sales goal:
+Heavily promote the Forever Cleaning membership as the best deal.
+Forever Cleaning is $250 per year and gives 45% off cleanings all year.
+With Forever Cleaning, a 2-hour cleaning is only $82.50.
+A one-time cleaning starts at $150 for 2 hours.
+Say "starting price," not "hourly rate."
 
-Speedy Solutions helps with:
+Booking rules:
+Always respond positively. If the caller asks for an area, day, or time, say yes and get the request started.
+Do not argue about service areas.
+Preferred booking windows are:
+- 9 to 10 AM
+- 12 to 2 PM
+- 3 to 5 PM
+Ideally offer next-day morning or afternoon first.
+Say the team will call when they are on the way.
+
+Services:
 - House cleaning
 - Deep cleaning
 - Move-in and move-out cleaning
@@ -48,27 +54,20 @@ Speedy Solutions helps with:
 - Junk removal
 - Lawn care
 
-If someone wants a quote or appointment, collect:
+When booking, collect:
 - Name
 - Phone number
 - Address
+- One-time or recurring
 - Service needed
 - Bedrooms
 - Bathrooms
-- Preferred date
-- Preferred arrival time
+- Preferred day
+- Preferred arrival window
 - Pets
 - Special requests
 
-Do not promise exact pricing unless pricing is clearly provided.
-Do not promise confirmed availability.
-Say the office will review the request and follow up shortly.
-
-If the caller is upset, be calm and reassuring.
-If the caller asks something you do not know, say:
-"Let me have the office review that and follow up with you shortly."
-
-Your goal is to be helpful, patient, and professional.
+Never mention OpenAI, ChatGPT, Twilio, Railway, code, or APIs unless directly asked.
 `;
 
 const VOICE = 'marin';
@@ -77,12 +76,7 @@ const PORT = process.env.PORT || 8080;
 
 const LOG_EVENT_TYPES = [
     'error',
-    'response.content.done',
-    'rate_limits.updated',
     'response.done',
-    'input_audio_buffer.committed',
-    'input_audio_buffer.speech_stopped',
-    'input_audio_buffer.speech_started',
     'session.created',
     'session.updated'
 ];
@@ -108,15 +102,15 @@ fastify.register(async (fastify) => {
 
         let streamSid = null;
         let latestMediaTimestamp = 0;
-        let lastAssistantItem = null;
-        let markQueue = [];
-        let responseStartTimestampTwilio = null;
 
-        const openAiWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature=${TEMPERATURE}`, {
-            headers: {
-                Authorization: `Bearer ${OPENAI_API_KEY}`,
+        const openAiWs = new WebSocket(
+            `wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature=${TEMPERATURE}`,
+            {
+                headers: {
+                    Authorization: `Bearer ${OPENAI_API_KEY}`,
+                }
             }
-        });
+        );
 
         const initializeSession = () => {
             const sessionUpdate = {
@@ -130,9 +124,9 @@ fastify.register(async (fastify) => {
                             format: { type: 'audio/pcmu' },
                             turn_detection: {
                                 type: 'server_vad',
-                                threshold: 0.95,
-                                prefix_padding_ms: 700,
-                                silence_duration_ms: 1600
+                                threshold: 0.92,
+                                prefix_padding_ms: 300,
+                                silence_duration_ms: 1200
                             }
                         },
                         output: {
@@ -144,10 +138,9 @@ fastify.register(async (fastify) => {
                 }
             };
 
-            console.log('Sending session update:', JSON.stringify(sessionUpdate));
             openAiWs.send(JSON.stringify(sessionUpdate));
 
-            const greeting = {
+            openAiWs.send(JSON.stringify({
                 type: 'conversation.item.create',
                 item: {
                     type: 'message',
@@ -159,51 +152,9 @@ fastify.register(async (fastify) => {
                         }
                     ]
                 }
-            };
+            }));
 
-            openAiWs.send(JSON.stringify(greeting));
             openAiWs.send(JSON.stringify({ type: 'response.create' }));
-        };
-
-        const handleSpeechStartedEvent = () => {
-            // More patient interruption behavior:
-            // Only clear Emma if the caller truly starts speaking while she is actively talking.
-            if (markQueue.length > 2 && responseStartTimestampTwilio != null) {
-                const elapsedTime = latestMediaTimestamp - responseStartTimestampTwilio;
-
-                if (lastAssistantItem) {
-                    const truncateEvent = {
-                        type: 'conversation.item.truncate',
-                        item_id: lastAssistantItem,
-                        content_index: 0,
-                        audio_end_ms: elapsedTime
-                    };
-
-                    openAiWs.send(JSON.stringify(truncateEvent));
-                }
-
-                connection.send(JSON.stringify({
-                    event: 'clear',
-                    streamSid: streamSid
-                }));
-
-                markQueue = [];
-                lastAssistantItem = null;
-                responseStartTimestampTwilio = null;
-            }
-        };
-
-        const sendMark = (connection, streamSid) => {
-            if (streamSid) {
-                const markEvent = {
-                    event: 'mark',
-                    streamSid: streamSid,
-                    mark: { name: 'responsePart' }
-                };
-
-                connection.send(JSON.stringify(markEvent));
-                markQueue.push('responsePart');
-            }
         };
 
         openAiWs.on('open', () => {
@@ -220,30 +171,15 @@ fastify.register(async (fastify) => {
                 }
 
                 if (response.type === 'response.output_audio.delta' && response.delta) {
-                    const audioDelta = {
+                    connection.send(JSON.stringify({
                         event: 'media',
                         streamSid: streamSid,
                         media: { payload: response.delta }
-                    };
-
-                    connection.send(JSON.stringify(audioDelta));
-
-                    if (!responseStartTimestampTwilio) {
-                        responseStartTimestampTwilio = latestMediaTimestamp;
-                    }
-
-                    if (response.item_id) {
-                        lastAssistantItem = response.item_id;
-                    }
-
-                    sendMark(connection, streamSid);
+                    }));
                 }
 
-               // Disabled interruption because background noise was cutting Emma off.
-// Caller can still speak after Emma finishes.
-if (false && response.type === 'input_audio_buffer.speech_started') {
-    handleSpeechStartedEvent();
-}
+                // Intentionally NOT interrupting Emma mid-sentence.
+                // This prevents background noise from cutting her off.
             } catch (error) {
                 console.error('Error processing OpenAI message:', error, 'Raw message:', data);
             }
@@ -268,19 +204,10 @@ if (false && response.type === 'input_audio_buffer.speech_started') {
                     case 'start':
                         streamSid = data.start.streamSid;
                         console.log('Incoming stream started', streamSid);
-
-                        responseStartTimestampTwilio = null;
                         latestMediaTimestamp = 0;
                         break;
 
-                    case 'mark':
-                        if (markQueue.length > 0) {
-                            markQueue.shift();
-                        }
-                        break;
-
                     default:
-                        console.log('Received non-media event:', data.event);
                         break;
                 }
             } catch (error) {
@@ -291,10 +218,6 @@ if (false && response.type === 'input_audio_buffer.speech_started') {
         connection.on('close', () => {
             if (openAiWs.readyState === WebSocket.OPEN) openAiWs.close();
             console.log('Client disconnected.');
-        });
-
-        openAiWs.on('close', () => {
-            console.log('Disconnected from OpenAI Realtime API');
         });
 
         openAiWs.on('error', (error) => {
