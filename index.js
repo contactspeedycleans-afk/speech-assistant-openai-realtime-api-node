@@ -106,6 +106,16 @@ fastify.get('/', async (request, reply) => {
 fastify.all('/incoming-call', async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+    <Start>
+        <Recording
+            recordingStatusCallback="https://YOUR-MAKE-WEBHOOK-URL"
+            recordingStatusCallbackMethod="POST"
+            recordingStatusCallbackEvent="completed"
+            channels="dual"
+            trim="trim-silence"
+        />
+    </Start>
+
     <Connect>
         <Stream url="wss://${request.headers.host}/media-stream" />
     </Connect>
