@@ -108,7 +108,7 @@ fastify.all('/incoming-call', async (request, reply) => {
 <Response>
     <Start>
         <Recording
-            recordingStatusCallback="https://hook.us2.make.com/8dbyrh135wwgsovo7ruxxjw0ognubiir"
+            recordingStatusCallback="https://hook.us2.make.com/1ko34aw96wzf97kf8gs2rwgchu6g1crl"
             recordingStatusCallbackMethod="POST"
             recordingStatusCallbackEvent="completed"
             channels="dual"
