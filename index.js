@@ -103,7 +103,25 @@ or
 
 Do not mention OpenAI, ChatGPT, Twilio, Railway, code, or APIs unless directly asked.
 `;
+async function findCustomerByPhone(phone) {
+    if (!phone) {
+        return null;
+    }
 
+    const normalizedPhone = phone.replace(/\D/g, '').slice(-10);
+
+    const result = await db.query(
+        `
+        SELECT *
+        FROM customers
+        WHERE phone_normalized = $1
+        LIMIT 1
+        `,
+        [normalizedPhone]
+    );
+
+    return result.rows[0] || null;
+}
 const VOICE = 'marin';
 const TEMPERATURE = 0.55;
 const PORT = process.env.PORT || 8080;
