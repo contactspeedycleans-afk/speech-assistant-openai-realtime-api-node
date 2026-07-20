@@ -1,12 +1,21 @@
 import Fastify from 'fastify';
 import WebSocket from 'ws';
 import dotenv from 'dotenv';
+import pg from 'pg';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 
 dotenv.config();
 
 const { OPENAI_API_KEY } = process.env;
+const { Pool } = pg;
+
+const db = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
+    }
+});
 
 if (!OPENAI_API_KEY) {
     console.error('Missing OpenAI API key.');
