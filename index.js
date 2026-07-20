@@ -188,31 +188,85 @@ let sessionStarted = false;
             }
         );
 
-        const initializeSession = () => {
-            const sessionUpdate = {
-                type: 'session.update',
-                session: {
-                    type: 'realtime',
-                    model: 'gpt-realtime',
-                    output_modalities: ['audio'],
-                    audio: {
-                        input: {
-                            format: { type: 'audio/pcmu' },
-                            turn_detection: {
-                                type: 'server_vad',
-                                threshold: 0.92,
-                                prefix_padding_ms: 300,
-                                silence_duration_ms: 1100
-                            }
-                        },
-                        output: {
-                            format: { type: 'audio/pcmu' },
-                            voice: VOICE
-                        }
-                    },
-                    instructions: SYSTEM_MESSAGE
+       const initializeSession = () => {
+    if (!openAiConnected || !streamSid || sessionStarted) {
+        return;
+    }
+
+    sessionStarted = true;
+
+    const customerName =
+        customer?.first_name ||
+        customer?.name ||
+        customer?.customer_name ||
+        customer?.full_name ||
+        '';
+
+    const customerContext = customer
+        ? `
+RETURNING CUSTOMER FOUND
+
+Customer Name: ${customerName}
+Phone: ${callerPhone}
+
+This caller is an existing customer.
+Welcome them back by name.
+Do not ask for their name or phone number again unless they tell you it has changed.
+`
+        : `
+This phone number was not found in the customer database.
+Use your normal greeting.
+Collect the customer's information.
+`;
+
+    const sessionUpdate = {
+        type: 'session.update',
+        session: {
+            type: 'realtime',
+            model: 'gpt-realtime',
+            output_modalities: ['audio'],
+            audio: {
+                input: {
+                    format: { type: 'audio/pcmu' },
+                    turn_detection: {
+                        type: 'server_vad',
+                        threshold: 0.92,
+                        prefix_padding_ms: 300,
+                        silence_duration_ms: 1100
+                    }
+                },
+                output: {
+                    format: { type: 'audio/pcmu' },
+                    voice: VOICE
                 }
-            };
+            },
+            instructions: SYSTEM_MESSAGE + customerContext
+        }
+    };
+
+    openAiWs.send(JSON.stringify(sessionUpdate));
+
+    openAiWs.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+            type: 'message',
+            role: 'user',
+            content: [
+                {
+                    type: 'input_text',
+                    text: customer
+                        ? 'Begin the call using the returning customer greeting.'
+                        : 'Start the call now with your exact Speedy Solutions opening line.'
+                }
+            ]
+        }
+    }));
+
+    openAiWs.send(JSON.stringify({
+        type: 'response.create'
+    }));
+};
+           
 
             openAiWs.send(JSON.stringify(sessionUpdate));
 
