@@ -172,8 +172,12 @@ fastify.register(async (fastify) => {
     fastify.get('/media-stream', { websocket: true }, (connection, req) => {
         console.log('Client connected');
 
-        let streamSid = null;
-        let latestMediaTimestamp = 0;
+let streamSid = null;
+let latestMediaTimestamp = 0;
+let callerPhone = '';
+let customer = null;
+let openAiConnected = false;
+let sessionStarted = false;
 
         const openAiWs = new WebSocket(
             `wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature=${TEMPERATURE}`,
