@@ -116,13 +116,21 @@ const LOG_EVENT_TYPES = [
 ];
 
 fastify.get('/', async (request, reply) => {
-    reply.send({ message: 'Speedy Solutions AI Receptionist is running!' });
+    reply.send({
+        message: 'Speedy Solutions AI Receptionist is running!'
+    });
 });
 
 fastify.all('/incoming-call', async (request, reply) => {
-    const callerPhone = request.body?.From || request.query?.From || '';
+    const callerPhone =
+        request.body?.From ||
+        request.query?.From ||
+        '';
 
-    console.log('Incoming caller phone:', callerPhone || 'unknown');
+    console.log(
+        'Incoming caller phone:',
+        callerPhone || 'unknown'
+    );
 
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -138,10 +146,18 @@ fastify.all('/incoming-call', async (request, reply) => {
 
     <Connect>
         <Stream url="wss://${request.headers.host}/media-stream">
-            <Parameter name="callerPhone" value="${callerPhone}" />
+            <Parameter
+                name="callerPhone"
+                value="${callerPhone}"
+            />
         </Stream>
     </Connect>
 </Response>`;
+
+    reply
+        .type('text/xml')
+        .send(twimlResponse);
+});
 
     reply.type('text/xml').send(twimlResponse);
 });
