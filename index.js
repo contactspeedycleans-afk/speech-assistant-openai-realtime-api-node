@@ -16,9 +16,12 @@ const db = new Pool({
         rejectUnauthorized: false
     }
 });
+
+console.log("DATABASE_URL exists:", !!process.env.DATABASE_URL);
+
 db.query('SELECT NOW()')
-    .then(() => console.log('PostgreSQL connected successfully'))
-    .catch((error) => console.error('PostgreSQL connection error:', error));
+    .then(() => console.log('✅ PostgreSQL connected successfully'))
+    .catch((error) => console.error('❌ PostgreSQL connection error:', error));
 if (!OPENAI_API_KEY) {
     console.error('Missing OpenAI API key.');
     process.exit(1);
