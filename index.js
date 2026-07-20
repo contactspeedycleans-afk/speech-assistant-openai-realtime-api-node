@@ -18,6 +18,8 @@ const db = new Pool({
 });
 
 console.log("DATABASE_URL exists:", !!process.env.DATABASE_URL);
+console.log("Database environment variables:");
+console.log(Object.keys(process.env).filter(key => key.toUpperCase().includes("DATABASE") || key.toUpperCase().includes("PG")));
 
 db.query('SELECT NOW()')
     .then(() => console.log('✅ PostgreSQL connected successfully'))
