@@ -159,25 +159,7 @@ fastify.all('/incoming-call', async (request, reply) => {
         .send(twimlResponse);
 });
 
-    reply.type('text/xml').send(twimlResponse);
-});
-    <Start>
-        <Recording
-            recordingStatusCallback="https://hook.us2.make.com/1ko34aw96wzf97kf8gs2rwgchu6g1crl"
-            recordingStatusCallbackMethod="POST"
-            recordingStatusCallbackEvent="completed"
-            channels="dual"
-            trim="trim-silence"
-        />
-    </Start>
-
-    <Connect>
-        <Stream url="wss://${request.headers.host}/media-stream" />
-    </Connect>
-</Response>`;
-
-    reply.type('text/xml').send(twimlResponse);
-});
+   
 
 fastify.register(async (fastify) => {
     fastify.get('/media-stream', { websocket: true }, (connection, req) => {
