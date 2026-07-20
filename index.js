@@ -148,7 +148,7 @@ fastify.all('/incoming-call', async (request, reply) => {
         <Stream url="wss://${request.headers.host}/media-stream">
             <Parameter
                 name="callerPhone"
-                value="${callerPhone}"
+               value="${escapeXml(callerPhone)}"
             />
         </Stream>
     </Connect>
