@@ -108,7 +108,11 @@ async function findCustomerByPhone(phone) {
         return null;
     }
 
-    const normalizedPhone = phone.replace(/\D/g, '').slice(-10);
+ const digits = phone.replace(/\D/g, '');
+const normalizedPhone =
+    digits.length === 10
+        ? `+1${digits}`
+        : `+${digits}`;
 
     const result = await db.query(
         `
