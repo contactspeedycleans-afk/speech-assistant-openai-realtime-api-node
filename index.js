@@ -268,29 +268,13 @@ Collect the customer's information.
 };
            
 
-            openAiWs.send(JSON.stringify(sessionUpdate));
+         
 
-            openAiWs.send(JSON.stringify({
-                type: 'conversation.item.create',
-                item: {
-                    type: 'message',
-                    role: 'user',
-                    content: [
-                        {
-                            type: 'input_text',
-                            text: 'Start the call now with your exact Speedy Solutions opening line.'
-                        }
-                    ]
-                }
-            }));
-
-            openAiWs.send(JSON.stringify({ type: 'response.create' }));
-        };
-
-        openAiWs.on('open', () => {
-            console.log('Connected to OpenAI Realtime API');
-            setTimeout(initializeSession, 100);
-        });
+       openAiWs.on('open', () => {
+    console.log('Connected to OpenAI Realtime API');
+    openAiConnected = true;
+    initializeSession();
+});
 
         openAiWs.on('message', (data) => {
             try {
@@ -314,7 +298,7 @@ Collect the customer's information.
             }
         });
 
-        connection.on('message', (message) => {
+        connection.on('message', async (message) => {
             try {
                 const data = JSON.parse(message);
 
@@ -330,11 +314,36 @@ Collect the customer's information.
                         }
                         break;
 
-                    case 'start':
-                        streamSid = data.start.streamSid;
-                        console.log('Incoming stream started', streamSid);
-                        latestMediaTimestamp = 0;
-                        break;
+                   case 'start':
+    streamSid = data.start.streamSid;
+
+    callerPhone =
+        data.start.customParameters?.callerPhone ||
+        '';
+
+    console.log('Incoming stream started', streamSid);
+    console.log(
+        'Caller phone from stream:',
+        callerPhone || 'unknown'
+    );
+
+    latestMediaTimestamp = 0;
+
+    try {
+        customer = await findCustomerByPhone(callerPhone);
+
+        if (customer) {
+            console.log('Returning customer found:', customer);
+        } else {
+            console.log('No customer found for:', callerPhone);
+        }
+    } catch (error) {
+        console.error('Customer lookup failed:', error);
+        customer = null;
+    }
+
+    initializeSession();
+    break;
 
                     default:
                         break;
