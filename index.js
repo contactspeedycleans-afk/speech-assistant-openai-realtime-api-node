@@ -210,8 +210,43 @@ let sessionStarted = false;
         ? `
 RETURNING CUSTOMER FOUND
 
-Customer Name: ${customerName}
-Phone: ${callerPhone}
+const customerName = [
+    customer?.first_name,
+    customer?.last_name
+].filter(Boolean).join(' ');
+
+const customerAddress = [
+    customer?.address,
+    customer?.city,
+    customer?.state,
+    customer?.zip
+].filter(Boolean).join(', ');
+
+const customerContext = customer
+    ? `
+RETURNING CUSTOMER FOUND
+
+Customer Name: ${customerName || 'Returning customer'}
+Phone: ${customer.phone || callerPhone}
+Email: ${customer.email || 'Not available'}
+Service Address: ${customerAddress || 'Not available'}
+
+This caller is an existing customer.
+Welcome them back by first name.
+Do not ask for their name or phone number again unless they say it changed.
+
+If a service address is available, naturally confirm it by saying:
+"I have your most recent service address as ${customerAddress}. Is this cleaning for the same location?"
+
+Do not assume the saved address is still correct. Ask the caller to confirm it.
+Do not read the full email address aloud unless necessary. Ask whether they want to use the email already on file.
+`
+    : `
+NEW CALLER
+
+No matching customer was found for this phone number.
+Collect their full name, phone number, email address, and service address.
+`;
 
 This caller is an existing customer.
 Welcome them back by name.
