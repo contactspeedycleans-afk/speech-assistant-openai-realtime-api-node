@@ -10,6 +10,11 @@ dotenv.config();
 const { OPENAI_API_KEY } = process.env;
 const { Pool } = pg;
 
+if (!OPENAI_API_KEY) {
+    console.error('Missing OPENAI_API_KEY.');
+    process.exit(1);
+}
+
 const db = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: {
@@ -17,107 +22,161 @@ const db = new Pool({
     }
 });
 
-console.log("DATABASE_URL exists:", !!process.env.DATABASE_URL);
-console.log("Database environment variables:");
-console.log(Object.keys(process.env).filter(key => key.toUpperCase().includes("DATABASE") || key.toUpperCase().includes("PG")));
+console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
 
 db.query('SELECT NOW()')
-    .then(() => console.log('✅ PostgreSQL connected successfully'))
-    .catch((error) => console.error('❌ PostgreSQL connection error:', error));
-if (!OPENAI_API_KEY) {
-    console.error('Missing OpenAI API key.');
-    process.exit(1);
-}
+    .then(() => {
+        console.log('PostgreSQL connected successfully');
+    })
+    .catch((error) => {
+        console.error('PostgreSQL connection error:', error);
+    });
 
 const fastify = Fastify();
+
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
+
+const VOICE = 'marin';
+const TEMPERATURE = 0.55;
+const PORT = process.env.PORT || 8080;
 
 const SYSTEM_MESSAGE = `
 You are Emma, the friendly phone receptionist for Speedy Solutions.
 
-Speak English only unless the caller asks for another language.
+Speak English only unless the caller requests another language.
 
-You are warm, clear, patient, and professional. Do not interrupt callers. Be patient with older callers. Keep responses short and natural.
+You are warm, clear, patient, and professional.
+Do not interrupt callers.
+Be especially patient with older callers.
+Keep responses short, natural, and conversational.
 
 Opening line:
 "Thank you for calling Speedy Solutions. This is Emma. How can we help you today?"
 
-Do not ask if they want one-time or recurring until they say they are interested in cleaning.
+Do not immediately ask whether the caller wants one-time or recurring service.
+First allow the caller to explain what they need.
 
-Flow:
-1. Start with: "How can we help you today?"
-2. If they say they need cleaning, ask: "Perfect — are you looking for a one-time cleaning or recurring cleaning?"
-3. Lead with pricing before collecting booking details.
-4. After pricing, ask what day and arrival window they prefer.
-5. Then collect booking details.
+CALL FLOW
 
-Pricing:
+1. Begin with:
+"How can we help you today?"
+
+2. If the caller says they need cleaning, ask:
+"Perfect — are you looking for a one-time cleaning or recurring cleaning?"
+
+3. Explain pricing before collecting all booking details.
+
+4. After pricing, ask which day and arrival window they prefer.
+
+5. Then collect any booking information that is not already available.
+
+PRICING
+
 - One-time cleaning starts at $150 for 2 hours.
-- Say "starting price," not "hourly rate."
-- The best deal is Forever Cleaning.
-- Forever Cleaning is $250 per year and gives 45% off cleanings all year.
-- With Forever Cleaning, a 2-hour cleaning is only $82.50.
-- Weekly recurring cleanings get 25% off.
-- Biweekly recurring cleanings get 20% off.
-- Monthly recurring cleanings get 15% off.
+- Always call this the "starting price."
+- Do not describe it as a flat total if additional time may be needed.
+- Forever Cleaning is the best discount option.
+- Forever Cleaning costs $250 per year and gives 45% off cleanings all year.
+- With Forever Cleaning, a 2-hour cleaning is $82.50.
+- Weekly recurring cleaning receives 25% off.
+- Biweekly recurring cleaning receives 20% off.
+- Monthly recurring cleaning receives 15% off.
 - Carpet cleaning adds a $120 fee.
 - Power washing adds a $120 fee.
-- If the customer mentions poop, urine, vomit, bodily fluids, bugs, excessive trash, hoarding, biohazard, or extreme conditions, politely say extra fees may apply.
 
-Booking:
-Always respond positively. If the caller asks for an area, day, or time, say yes and get the request started.
+If the caller mentions poop, urine, vomit, bodily fluids, bugs, excessive trash,
+hoarding, biohazards, or extreme conditions, politely explain that additional
+fees may apply.
+
+BOOKING
+
+Always respond positively.
+
+If the caller requests a particular area, date, or time, say that you can get
+the request started. Do not guarantee final availability unless the scheduling
+system has confirmed it.
 
 Preferred arrival windows:
+
 - 9 to 10 AM
 - 12 to 2 PM
 - 3 to 5 PM
 
 Ideally offer next-day morning or afternoon first.
-Say the team will call when they are on the way.
 
-When ready to book, collect:
-- Name
+Explain that the team will call when they are on the way.
+
+When booking, collect or confirm:
+
+- Full name
 - Phone number
-- Email
-- Address
+- Email address
+- Service address
 - Entry instructions
-- Gate codes if applicable
-- One-time or recurring
-- Service needed
+- Gate code, if applicable
+- One-time or recurring service
+- Service requested
 - Preferred day
 - Preferred arrival window
-- Bedrooms
-- Bathrooms
+- Number of bedrooms
+- Number of bathrooms
 - Pets
 - Special requests
 
-After collecting booking details, say:
+For returning customers, do not ask them to repeat information already provided
+in the returning-customer record. Confirm it naturally instead.
+
+After collecting the booking details, say:
+
 "We’ll text and email you a form so you can see the pricing details and place a card on file."
 
-Silence rule:
-Never sit in silence for more than 8 seconds. If the caller is quiet, gently say:
+SILENCE RULE
+
+Never remain silent for more than 8 seconds.
+
+If the caller is quiet, gently say:
+
 "Are you still there?"
-or
+
+or:
+
 "No rush — I’m here whenever you’re ready."
 
-Do not mention OpenAI, ChatGPT, Twilio, Railway, code, or APIs unless directly asked.
+Do not mention OpenAI, ChatGPT, Twilio, Railway, code, databases, or APIs unless
+the caller directly asks.
 `;
+
+const LOG_EVENT_TYPES = [
+    'error',
+    'response.done',
+    'session.created',
+    'session.updated'
+];
+
 async function findCustomerByPhone(phone) {
     if (!phone) {
         return null;
     }
 
- const digits = phone.replace(/\D/g, '');
-const normalizedPhone =
-    digits.length === 10
-        ? `+1${digits}`
-        : `+${digits}`;
+    const digits = String(phone).replace(/\D/g, '');
+
+    let normalizedPhone = '';
+
+    if (digits.length === 10) {
+        normalizedPhone = `+1${digits}`;
+    } else if (digits.length === 11 && digits.startsWith('1')) {
+        normalizedPhone = `+${digits}`;
+    } else {
+        normalizedPhone = `+${digits}`;
+    }
+
+    console.log('Normalized caller phone:', normalizedPhone);
 
     const result = await db.query(
         `
         SELECT *
-        FROM customers
+        FROM public.customers
         WHERE phone_normalized = $1
         LIMIT 1
         `,
@@ -126,16 +185,6 @@ const normalizedPhone =
 
     return result.rows[0] || null;
 }
-const VOICE = 'marin';
-const TEMPERATURE = 0.55;
-const PORT = process.env.PORT || 8080;
-
-const LOG_EVENT_TYPES = [
-    'error',
-    'response.done',
-    'session.created',
-    'session.updated'
-];
 
 fastify.get('/', async (request, reply) => {
     reply.send({
@@ -157,7 +206,8 @@ fastify.all('/incoming-call', async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-<Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">            <Parameter
+        <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
+            <Parameter
                 name="callerPhone"
                 value="${callerPhone}"
             />
@@ -170,244 +220,405 @@ fastify.all('/incoming-call', async (request, reply) => {
         .send(twimlResponse);
 });
 
-   
+fastify.register(async (websocketServer) => {
+    websocketServer.get(
+        '/media-stream',
+        { websocket: true },
+        (connection, request) => {
+            console.log('Twilio client connected');
 
-fastify.register(async (fastify) => {
-    fastify.get('/media-stream', { websocket: true }, (connection, req) => {
-        console.log('Client connected');
+            let streamSid = null;
+            let latestMediaTimestamp = 0;
+            let callerPhone = '';
+            let customer = null;
+            let openAiConnected = false;
+            let sessionStarted = false;
 
-let streamSid = null;
-let latestMediaTimestamp = 0;
-let callerPhone = '';
-let customer = null;
-let openAiConnected = false;
-let sessionStarted = false;
-
-        const openAiWs = new WebSocket(
-            `wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature=${TEMPERATURE}`,
-            {
-                headers: {
-                    Authorization: `Bearer ${OPENAI_API_KEY}`,
+            const openAiWs = new WebSocket(
+                `wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature=${TEMPERATURE}`,
+                {
+                    headers: {
+                        Authorization: `Bearer ${OPENAI_API_KEY}`
+                    }
                 }
-            }
-        );
+            );
 
-       const initializeSession = () => {
-    if (!openAiConnected || !streamSid || sessionStarted) {
-        return;
-    }
+            const initializeSession = () => {
+                if (
+                    !openAiConnected ||
+                    !streamSid ||
+                    sessionStarted
+                ) {
+                    return;
+                }
 
-    sessionStarted = true;
+                sessionStarted = true;
 
-    const customerName =
-        customer?.first_name ||
-        customer?.name ||
-        customer?.customer_name ||
-        customer?.full_name ||
-        '';
+                const customerName = [
+                    customer?.first_name,
+                    customer?.last_name
+                ]
+                    .filter(Boolean)
+                    .join(' ')
+                    .trim();
 
-    const customerContext = customer
-        ? `
-RETURNING CUSTOMER FOUND
+                const customerAddress = [
+                    customer?.address,
+                    customer?.city,
+                    customer?.state,
+                    customer?.zip
+                ]
+                    .filter(Boolean)
+                    .join(', ')
+                    .trim();
 
-const customerName = [
-    customer?.first_name,
-    customer?.last_name
-].filter(Boolean).join(' ');
-
-const customerAddress = [
-    customer?.address,
-    customer?.city,
-    customer?.state,
-    customer?.zip
-].filter(Boolean).join(', ');
-
-const customerContext = customer
-    ? `
+                const customerContext = customer
+                    ? `
 RETURNING CUSTOMER FOUND
 
 Customer Name: ${customerName || 'Returning customer'}
-Phone: ${customer.phone || callerPhone}
-Email: ${customer.email || 'Not available'}
+First Name: ${customer?.first_name || ''}
+Phone: ${customer?.phone || callerPhone}
+Email: ${customer?.email || 'Not available'}
 Service Address: ${customerAddress || 'Not available'}
+Membership Status: ${customer?.membership_status || 'Not available'}
+Customer Notes: ${customer?.ai_summary || 'Not available'}
 
 This caller is an existing customer.
-Welcome them back by first name.
-Do not ask for their name or phone number again unless they say it changed.
+
+Welcome the caller back using their first name.
+
+Do not ask for their name or phone number again unless they say the information
+has changed.
 
 If a service address is available, naturally confirm it by saying:
+
 "I have your most recent service address as ${customerAddress}. Is this cleaning for the same location?"
 
-Do not assume the saved address is still correct. Ask the caller to confirm it.
-Do not read the full email address aloud unless necessary. Ask whether they want to use the email already on file.
+Do not assume that the saved address is still correct.
+
+If the caller says the service is at a different location, collect the new
+service address.
+
+Do not read the caller's entire email address aloud unless necessary.
+
+Instead, say:
+
+"Would you like us to use the email address already on file?"
+
+Only ask for information that is missing or needs to be updated.
 `
-    : `
+                    : `
 NEW CALLER
 
 No matching customer was found for this phone number.
-Collect their full name, phone number, email address, and service address.
+
+Use the normal Speedy Solutions greeting.
+
+Collect the caller's full name, phone number, email address, service address,
+and other required booking information.
 `;
 
-This caller is an existing customer.
-Welcome them back by name.
-Do not ask for their name or phone number again unless they tell you it has changed.
-`
-        : `
-This phone number was not found in the customer database.
-Use your normal greeting.
-Collect the customer's information.
-`;
-
-    const sessionUpdate = {
-        type: 'session.update',
-        session: {
-            type: 'realtime',
-            model: 'gpt-realtime',
-            output_modalities: ['audio'],
-            audio: {
-                input: {
-                    format: { type: 'audio/pcmu' },
-                    turn_detection: {
-                        type: 'server_vad',
-                        threshold: 0.92,
-                        prefix_padding_ms: 300,
-                        silence_duration_ms: 1100
+                const sessionUpdate = {
+                    type: 'session.update',
+                    session: {
+                        type: 'realtime',
+                        model: 'gpt-realtime',
+                        output_modalities: ['audio'],
+                        audio: {
+                            input: {
+                                format: {
+                                    type: 'audio/pcmu'
+                                },
+                                turn_detection: {
+                                    type: 'server_vad',
+                                    threshold: 0.92,
+                                    prefix_padding_ms: 300,
+                                    silence_duration_ms: 1100
+                                }
+                            },
+                            output: {
+                                format: {
+                                    type: 'audio/pcmu'
+                                },
+                                voice: VOICE
+                            }
+                        },
+                        instructions: `${SYSTEM_MESSAGE}\n${customerContext}`
                     }
-                },
-                output: {
-                    format: { type: 'audio/pcmu' },
-                    voice: VOICE
-                }
-            },
-            instructions: SYSTEM_MESSAGE + customerContext
-        }
-    };
+                };
 
-    openAiWs.send(JSON.stringify(sessionUpdate));
+                console.log(
+                    'Starting OpenAI session for:',
+                    customerName || 'new caller'
+                );
 
-    openAiWs.send(JSON.stringify({
-        type: 'conversation.item.create',
-        item: {
-            type: 'message',
-            role: 'user',
-            content: [
-                {
-                    type: 'input_text',
-                    text: customer
-                        ? 'Begin the call using the returning customer greeting.'
-                        : 'Start the call now with your exact Speedy Solutions opening line.'
-                }
-            ]
-        }
-    }));
+                console.log(
+                    'Customer address provided to Emma:',
+                    customerAddress || 'not available'
+                );
 
-    openAiWs.send(JSON.stringify({
-        type: 'response.create'
-    }));
-};
-           
+                openAiWs.send(
+                    JSON.stringify(sessionUpdate)
+                );
 
-         
-
-       openAiWs.on('open', () => {
-    console.log('Connected to OpenAI Realtime API');
-    openAiConnected = true;
-    initializeSession();
-});
-
-        openAiWs.on('message', (data) => {
-            try {
-                const response = JSON.parse(data);
-
-                if (LOG_EVENT_TYPES.includes(response.type)) {
-                    console.log(`Received event: ${response.type}`, response);
-                }
-
-                if (response.type === 'response.output_audio.delta' && response.delta) {
-                    connection.send(JSON.stringify({
-                        event: 'media',
-                        streamSid: streamSid,
-                        media: { payload: response.delta }
-                    }));
-                }
-
-                // No mid-sentence interruption. This prevents background noise from cutting Emma off.
-            } catch (error) {
-                console.error('Error processing OpenAI message:', error, 'Raw message:', data);
-            }
-        });
-
-        connection.on('message', async (message) => {
-            try {
-                const data = JSON.parse(message);
-
-                switch (data.event) {
-                    case 'media':
-                        latestMediaTimestamp = data.media.timestamp;
-
-                        if (openAiWs.readyState === WebSocket.OPEN) {
-                            openAiWs.send(JSON.stringify({
-                                type: 'input_audio_buffer.append',
-                                audio: data.media.payload
-                            }));
+                openAiWs.send(
+                    JSON.stringify({
+                        type: 'conversation.item.create',
+                        item: {
+                            type: 'message',
+                            role: 'user',
+                            content: [
+                                {
+                                    type: 'input_text',
+                                    text: customer
+                                        ? `Begin the call now. Welcome ${customer?.first_name || 'the customer'} back by first name and naturally confirm the saved service address if one is available.`
+                                        : 'Start the call now using the exact Speedy Solutions opening line.'
+                                }
+                            ]
                         }
-                        break;
+                    })
+                );
 
-                   case 'start':
-    streamSid = data.start.streamSid;
+                openAiWs.send(
+                    JSON.stringify({
+                        type: 'response.create'
+                    })
+                );
+            };
 
-    callerPhone =
-        data.start.customParameters?.callerPhone ||
-        '';
+            openAiWs.on('open', () => {
+                console.log(
+                    'Connected to OpenAI Realtime API'
+                );
 
-    console.log('Incoming stream started', streamSid);
-    console.log(
-        'Caller phone from stream:',
-        callerPhone || 'unknown'
-    );
+                openAiConnected = true;
+                initializeSession();
+            });
 
-    latestMediaTimestamp = 0;
+            openAiWs.on('message', (data) => {
+                try {
+                    const response = JSON.parse(
+                        data.toString()
+                    );
 
-    try {
-        customer = await findCustomerByPhone(callerPhone);
+                    if (
+                        LOG_EVENT_TYPES.includes(
+                            response.type
+                        )
+                    ) {
+                        console.log(
+                            `Received event: ${response.type}`,
+                            response
+                        );
+                    }
 
-        if (customer) {
-            console.log('Returning customer found:', customer);
-        } else {
-            console.log('No customer found for:', callerPhone);
-        }
-    } catch (error) {
-        console.error('Customer lookup failed:', error);
-        customer = null;
-    }
-
-    initializeSession();
-    break;
-
-                    default:
-                        break;
+                    if (
+                        response.type ===
+                            'response.output_audio.delta' &&
+                        response.delta &&
+                        connection.readyState === WebSocket.OPEN
+                    ) {
+                        connection.send(
+                            JSON.stringify({
+                                event: 'media',
+                                streamSid,
+                                media: {
+                                    payload: response.delta
+                                }
+                            })
+                        );
+                    }
+                } catch (error) {
+                    console.error(
+                        'Error processing OpenAI message:',
+                        error
+                    );
                 }
-            } catch (error) {
-                console.error('Error parsing Twilio message:', error, 'Message:', message);
-            }
-        });
+            });
 
-        connection.on('close', () => {
-            if (openAiWs.readyState === WebSocket.OPEN) openAiWs.close();
-            console.log('Client disconnected.');
-        });
+            openAiWs.on('error', (error) => {
+                console.error(
+                    'OpenAI WebSocket error:',
+                    error
+                );
+            });
 
-        openAiWs.on('error', (error) => {
-            console.error('OpenAI WebSocket error:', error);
-        });
-    });
+            openAiWs.on('close', (code, reason) => {
+                console.log(
+                    'OpenAI WebSocket closed.',
+                    'Code:',
+                    code,
+                    'Reason:',
+                    reason?.toString() || 'none'
+                );
+            });
+
+            connection.on('message', async (message) => {
+                try {
+                    const data = JSON.parse(
+                        message.toString()
+                    );
+
+                    switch (data.event) {
+                        case 'start': {
+                            streamSid =
+                                data.start?.streamSid ||
+                                data.streamSid ||
+                                null;
+
+                            callerPhone =
+                                data.start?.customParameters
+                                    ?.callerPhone ||
+                                '';
+
+                            console.log(
+                                'Incoming stream started:',
+                                streamSid
+                            );
+
+                            console.log(
+                                'Caller phone from stream:',
+                                callerPhone || 'unknown'
+                            );
+
+                            latestMediaTimestamp = 0;
+
+                            try {
+                                customer =
+                                    await findCustomerByPhone(
+                                        callerPhone
+                                    );
+
+                                if (customer) {
+                                    console.log(
+                                        'Returning customer found:',
+                                        {
+                                            id: customer.id,
+                                            first_name:
+                                                customer.first_name,
+                                            last_name:
+                                                customer.last_name,
+                                            phone:
+                                                customer.phone,
+                                            email:
+                                                customer.email,
+                                            address:
+                                                customer.address,
+                                            city:
+                                                customer.city,
+                                            state:
+                                                customer.state,
+                                            zip:
+                                                customer.zip
+                                        }
+                                    );
+                                } else {
+                                    console.log(
+                                        'No customer found for:',
+                                        callerPhone
+                                    );
+                                }
+                            } catch (error) {
+                                console.error(
+                                    'Customer lookup failed:',
+                                    error
+                                );
+
+                                customer = null;
+                            }
+
+                            initializeSession();
+                            break;
+                        }
+
+                        case 'media': {
+                            latestMediaTimestamp =
+                                Number(
+                                    data.media?.timestamp || 0
+                                );
+
+                            if (
+                                openAiWs.readyState ===
+                                WebSocket.OPEN
+                            ) {
+                                openAiWs.send(
+                                    JSON.stringify({
+                                        type: 'input_audio_buffer.append',
+                                        audio:
+                                            data.media.payload
+                                    })
+                                );
+                            }
+
+                            break;
+                        }
+
+                        case 'stop': {
+                            console.log(
+                                'Twilio stream stopped.',
+                                'Stream SID:',
+                                data.streamSid ||
+                                    streamSid ||
+                                    'unknown'
+                            );
+
+                            break;
+                        }
+
+                        default:
+                            break;
+                    }
+                } catch (error) {
+                    console.error(
+                        'Error parsing Twilio message:',
+                        error
+                    );
+                }
+            });
+
+            connection.on('error', (error) => {
+                console.error(
+                    'Twilio WebSocket error:',
+                    error
+                );
+            });
+
+            connection.on('close', (code, reason) => {
+                console.log(
+                    'Twilio WebSocket closed.',
+                    'Code:',
+                    code,
+                    'Reason:',
+                    reason?.toString() || 'none'
+                );
+
+                if (
+                    openAiWs.readyState ===
+                        WebSocket.OPEN ||
+                    openAiWs.readyState ===
+                        WebSocket.CONNECTING
+                ) {
+                    openAiWs.close();
+                }
+            });
+        }
+    );
 });
 
-fastify.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
-    if (err) {
-        console.error(err);
-        process.exit(1);
+fastify.listen(
+    {
+        port: PORT,
+        host: '0.0.0.0'
+    },
+    (error) => {
+        if (error) {
+            console.error(error);
+            process.exit(1);
+        }
+
+        console.log(
+            `Server is listening on port ${PORT}`
+        );
     }
-
-    console.log(`Server is listening on port ${PORT}`);
-});
+);
