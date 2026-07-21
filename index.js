@@ -307,6 +307,7 @@ fastify.all('/incoming-call', async (request, reply) => {
         .send(twimlResponse);
 });
 
+
 fastify.register(async (websocketServer) => {
     websocketServer.get(
         '/media-stream',
