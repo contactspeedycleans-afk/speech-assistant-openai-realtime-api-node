@@ -293,12 +293,16 @@ fastify.all('/incoming-call', async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-        <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
-            <Parameter
-                name="callerPhone"
-                value="${callerPhone}"
-            />
-        </Stream>
+      <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
+    <Parameter
+        name="callerPhone"
+        value="${callerPhone}"
+    />
+    <Parameter
+        name="callMode"
+        value="INBOUND_LEAD"
+    />
+</Stream>
     </Connect>
 </Response>`;
 
