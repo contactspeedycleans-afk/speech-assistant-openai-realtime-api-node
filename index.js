@@ -536,7 +536,7 @@ Use the standard opening line:
                             type: 'message',
                             role: 'user',
                             content: [
-                                {
+                                {type: 'input_text',
                                    text:
     callMode === 'OUTBOUND_PRESS_1'
         ? customer
