@@ -637,31 +637,17 @@ Use the standard opening line:
                                    text:
    callMode === 'OUTBOUND_PRESS_1'
     ? customer
-        ? `Begin the outbound new-lead quote call now.
+     ? `Begin the outbound quote call now.
 
-Greet ${customer?.first_name || 'the customer'} warmly by first name.
+The customer has already requested a cleaning quote.
 
-Use the saved customer notes and lead information as private background context.
+Use all available customer information and notes as background context.
 
-If the notes identify the requested service, naturally acknowledge that service without reading the notes word-for-word.
+If you already know the requested cleaning service, acknowledge it naturally without reading the notes aloud.
 
-Never mention or read aloud:
-- the lead ID
-- the match type
-- the lead source
-- internal notes
-- the customer's full email address
-- the customer's full street address
+Do not mention internal information such as Lead ID, Match Type, Lead Source, customer notes, or the full address.
 
-If the notes clearly show that the customer requested a one-time cleaning, say:
-"Hi ${customer?.first_name || ''}! This is Emma with Speedy Solutions. I saw you were looking for help with a one-time house cleaning. Could you tell me a little more about what you would like cleaned?"
-
-If the notes clearly identify another cleaning service, briefly acknowledge that service and ask one relevant follow-up question.
-
-If the service type or frequency is not clear, say:
-"Hi ${customer?.first_name || ''}! This is Emma with Speedy Solutions. Thank you for requesting a house cleaning quote. Is this more of a one-time cleaning, or are you interested in recurring cleaning?"
-
-Ask only one question, then stop and wait for the customer's response.`
+Greet ${customer?.first_name || 'the customer'} warmly by first name, ask the single most appropriate next question, and then wait for the customer's response.`
         : `Begin the outbound new-lead quote call now. Say: "Hi! Thank you for looking for a house cleaning quote with Speedy Solutions. Is this more of a one-time cleaning, or are you interested in recurring cleaning?" After asking, stop and wait for the customer's answer.`
     : customer
         ? `Begin the inbound call now. Welcome ${customer?.first_name || 'the customer'} back warmly by first name. Do not mention or confirm any saved address unless the customer brings it up or it becomes necessary to complete the booking.`
