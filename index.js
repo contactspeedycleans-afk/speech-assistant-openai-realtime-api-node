@@ -447,46 +447,35 @@ and other required booking information.
 const callModeContext =
     callMode === 'OUTBOUND_PRESS_1'
         ? `
-CALL MODE: OUTBOUND PRESS 1 CALLBACK
+CALL MODE: OUTBOUND NEW LEAD QUOTE
 
-This is not a normal inbound call.
+This is an outbound call to a new lead who requested a house cleaning quote.
 
-The customer previously received an automated call or message and pressed 1
-to speak with Speedy Solutions.
+Do not use the standard inbound receptionist greeting.
 
-Do not use the standard inbound greeting.
-
-
-Begin the call by saying:
+Begin the call by saying exactly:
 
 "Hi! Thank you for looking for a house cleaning quote with Speedy Solutions. Is this more of a one-time cleaning, or are you interested in recurring cleaning?"
 
-Ask this question first and then wait for the customer to answer.
+Ask only this question first and then wait for the customer to answer.
 
 Do not provide all pricing immediately.
 
 After the customer answers:
 
 - If they say one-time, explain that one-time cleaning starts at $150 for two hours.
-- If they say recurring, ask how often they would like service: weekly, biweekly, or monthly.
-- If they are unsure, briefly explain the available options and help them choose.
-- After explaining the applicable price, ask about their preferred day and arrival window.
-- Then continue collecting the remaining booking details one question at a time.
+- Clearly explain that $150 is the starting price and additional time may be charged based on the time needed.
+- Then ask what type of cleaning they need.
+- If they say recurring, ask whether they are considering weekly, biweekly, or monthly cleaning.
+- Explain only the pricing that applies to the frequency they choose.
+- If they are unsure, briefly help them compare one-time and recurring cleaning.
+- After discussing pricing, ask which day they prefer.
+- Then ask which arrival window they prefer.
+- Continue collecting the remaining booking details one question at a time.
 
-The customer may be calling about:
-
-- Confirming or changing an appointment
-- Booking a cleaning
-- Asking a question
-- Speaking with the office
-- A recent service
-- Pricing or availability
-
-First determine why the customer pressed 1.
-
-Do not assume they are a brand-new lead.
-Do not immediately begin the full sales script.
-Listen to what they need and respond accordingly.
+Do not read every price or service option at once.
+Do not overwhelm the customer.
+Keep the conversation friendly, natural, and focused on moving the quote forward.
 `
         : `
 CALL MODE: INBOUND LEAD
