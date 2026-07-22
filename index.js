@@ -847,8 +847,8 @@ Greet ${customer?.first_name || 'the customer'} warmly by first name, ask the si
             });
 
 openAiWs.on('message', async (data) => {
-    try {                    const response = JSON.parse(
-                        data.toString()
+try {
+    const response = JSON.parse(                        data.toString()
                     );
 
                     if (
@@ -867,7 +867,9 @@ console.log(
 );
 
 if (
+    typeof response.type === 'string' &&
     response.type.includes('function')
+)
 ) {
     console.log(
         'Function Event:',
