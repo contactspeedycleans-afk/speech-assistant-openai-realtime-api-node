@@ -311,6 +311,39 @@ fastify.all('/incoming-call', async (request, reply) => {
         .send(twimlResponse);
 });
 
+fastify.all('/outbound-press1', async (request, reply) => {
+    const customerPhone =
+        request.body?.To ||
+        request.query?.To ||
+        request.body?.From ||
+        request.query?.From ||
+        '';
+
+    console.log(
+        'Outbound Press 1 customer phone:',
+        customerPhone || 'unknown'
+    );
+
+    const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
+            <Parameter
+                name="callerPhone"
+                value="${customerPhone}"
+            />
+            <Parameter
+                name="callMode"
+                value="OUTBOUND_PRESS_1"
+            />
+        </Stream>
+    </Connect>
+</Response>`;
+
+    reply
+        .type('text/xml')
+        .send(twimlResponse);
+});
 
 fastify.register(async (websocketServer) => {
     websocketServer.get(
