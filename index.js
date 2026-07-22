@@ -861,7 +861,19 @@ openAiWs.on('message', async (data) => {
                             response
                         );
                     }
+console.log(
+    'OpenAI Event:',
+    response.type
+);
 
+if (
+    response.type.includes('function')
+) {
+    console.log(
+        'Function Event:',
+        JSON.stringify(response, null, 2)
+    );
+}
                     if (
                         response.type ===
                             'response.output_audio.delta' &&
