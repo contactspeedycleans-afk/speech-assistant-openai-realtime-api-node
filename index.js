@@ -319,12 +319,13 @@ fastify.register(async (websocketServer) => {
         (connection, request) => {
             console.log('Twilio client connected');
 
-            let streamSid = null;
-            let latestMediaTimestamp = 0;
-            let callerPhone = '';
-            let customer = null;
-            let openAiConnected = false;
-            let sessionStarted = false;
+          let streamSid = null;
+let latestMediaTimestamp = 0;
+let callerPhone = '';
+let callMode = 'INBOUND_LEAD';
+let customer = null;
+let openAiConnected = false;
+let sessionStarted = false;
 
             const openAiWs = new WebSocket(
                 `wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature=${TEMPERATURE}`,
@@ -558,11 +559,32 @@ and other required booking information.
                                 data.start?.streamSid ||
                                 data.streamSid ||
                                 null;
+callerPhone =
+    data.start?.customParameters
+        ?.callerPhone ||
+    '';
 
-                            callerPhone =
-                                data.start?.customParameters
-                                    ?.callerPhone ||
-                                '';
+callMode =
+    data.start?.customParameters
+        ?.callMode ||
+    'INBOUND_LEAD';
+
+console.log(
+    'Emma call mode:',
+    callMode
+);
+
+console.log(
+    'Incoming stream started:',
+    streamSid
+);
+
+console.log(
+    'Caller phone from stream:',
+    callerPhone || 'unknown'
+);
+
+latestMediaTimestamp = 0;
 
                             console.log(
                                 'Incoming stream started:',
