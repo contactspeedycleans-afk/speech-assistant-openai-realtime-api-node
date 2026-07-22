@@ -586,17 +586,6 @@ console.log(
 
 latestMediaTimestamp = 0;
 
-                            console.log(
-                                'Incoming stream started:',
-                                streamSid
-                            );
-
-                            console.log(
-                                'Caller phone from stream:',
-                                callerPhone || 'unknown'
-                            );
-
-                            latestMediaTimestamp = 0;
 
                             try {
                                 customer =
