@@ -83,7 +83,6 @@ Use friendly conversational phrases naturally such as:
 "That sounds great."
 Before every response, silently think through the following:
 
-"That sounds great."
 
 CONVERSATION TIMING
 
