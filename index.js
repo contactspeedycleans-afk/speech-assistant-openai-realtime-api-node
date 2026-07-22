@@ -419,6 +419,32 @@ async function findCustomerByPhone(phone) {
     return result.rows[0] || null;
 }
 
+async function searchCompanyKnowledge(query) {
+    if (!query || !String(query).trim()) {
+        return [];
+    }
+
+    console.log(
+        'Searching company knowledge for:',
+        query
+    );
+
+    const result = await db.query(
+        `
+        SELECT *
+        FROM public.search_knowledge_base($1, 5)
+        `,
+        [String(query).trim()]
+    );
+
+    console.log(
+        'Knowledge results found:',
+        result.rows.length
+    );
+
+    return result.rows;
+}
+
 fastify.get('/', async (request, reply) => {
     reply.send({
         message: 'Speedy Solutions AI Receptionist is running!'
@@ -719,7 +745,42 @@ Use the standard opening line:
                                 voice: VOICE
                             }
                         },
-                   instructions: `${SYSTEM_MESSAGE}\n${callModeContext}\n${customerContext}`
+instructions: `${SYSTEM_MESSAGE}
+
+COMPANY KNOWLEDGE TOOL
+
+Use search_company_knowledge whenever the caller asks about company pricing, memberships, services, policies, scheduling rules, fees, supplies, or procedures and the answer may be stored in the company knowledge base.
+
+Use the database result as the source of truth.
+
+Explain the answer naturally. Do not mention the database or tool to the caller.
+
+If the search returns no relevant information, do not invent a company policy or price. Explain that you need to confirm the information.
+
+${callModeContext}
+${customerContext}`,
+
+tools: [
+    {
+        type: 'function',
+        name: 'search_company_knowledge',
+        description:
+            'Search the Speedy Solutions company knowledge base for current pricing, memberships, services, policies, scheduling rules, fees, supplies, and procedures.',
+        parameters: {
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'string',
+                    description:
+                        'A short search phrase describing the company information needed, such as membership, carpet cleaning, arrival windows, or supplies.'
+                }
+            },
+            required: ['query']
+        }
+    }
+],
+
+tool_choice: 'auto'
                     }
                 };
 
