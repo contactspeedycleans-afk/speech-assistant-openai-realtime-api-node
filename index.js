@@ -324,20 +324,31 @@ async function findCustomerByPhone(phone) {
     let normalizedPhone = '';
 
     if (digits.length === 10) {
-        normalizedPhone = `+1${digits}`;
-    } else if (digits.length === 11 && digits.startsWith('1')) {
-        normalizedPhone = `+${digits}`;
+        normalizedPhone = `1${digits}`;
+    } else if (
+        digits.length === 11 &&
+        digits.startsWith('1')
+    ) {
+        normalizedPhone = digits;
     } else {
-        normalizedPhone = `+${digits}`;
+        normalizedPhone = digits;
     }
 
-    console.log('Normalized caller phone:', normalizedPhone);
+    console.log(
+        'Normalized caller phone:',
+        normalizedPhone
+    );
 
     const result = await db.query(
         `
         SELECT *
         FROM public.customers
-        WHERE phone_normalized = $1
+        WHERE REGEXP_REPLACE(
+            phone_normalized,
+            '[^0-9]',
+            '',
+            'g'
+        ) = $1
         LIMIT 1
         `,
         [normalizedPhone]
