@@ -846,8 +846,8 @@ Greet ${customer?.first_name || 'the customer'} warmly by first name, ask the si
                 initializeSession();
             });
 
-openAiWs.on('message', async (data) => {                try {
-                    const response = JSON.parse(
+openAiWs.on('message', async (data) => {
+    try {                    const response = JSON.parse(
                         data.toString()
                     );
 
