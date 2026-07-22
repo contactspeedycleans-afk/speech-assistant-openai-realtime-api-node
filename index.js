@@ -476,7 +476,7 @@ Use the standard opening line:
                                 voice: VOICE
                             }
                         },
-                        instructions: `${SYSTEM_MESSAGE}\n${customerContext}`
+                   instructions: `${SYSTEM_MESSAGE}\n${callModeContext}\n${customerContext}`
                     }
                 };
 
