@@ -551,62 +551,7 @@ Use the normal Speedy Solutions greeting.
 Collect the caller's full name, phone number, email address, service address,
 and other required booking information.
 `;
-     const customerContext = customer
-    ? isAngiLead
-        ? `
-NEW ANGI LEAD FOUND
-
-Customer Name: ${customerName || 'New lead'}
-First Name: ${customer?.first_name || ''}
-Phone: ${customer?.phone || callerPhone}
-Email: ${customer?.email || 'Not available'}
-Service Address: ${customerAddress || 'Not available'}
-
-Lead Information:
-${customer?.ai_summary || 'Not available'}
-
-This person is a new sales lead, not a returning customer.
-
-Do not say "welcome back."
-
-Use the lead information naturally as private background context.
-
-Do not read the full customer notes aloud.
-
-Do not mention:
-- Lead ID
-- Match type
-- Lead source
-- Internal notes
-- Full email address
-- Full street address
-
-If the requested service or frequency is already known, do not ask for it again.
-
-Only ask for information that is missing or needs to be changed.
-`
-        : `
-
-Collect the caller's full name, phone number, email address, service address,
-and other required booking information.
-`;
-RETURNING CUSTOMER FOUND
-
-Customer Name: ${customerName || 'Returning customer'}
-First Name: ${customer?.first_name || ''}
-Phone: ${customer?.phone || callerPhone}
-Email: ${customer?.email || 'Not available'}
-Service Address: ${customerAddress || 'Not available'}
-Membership Status: ${customer?.membership_status || 'Not available'}
-Customer Notes: ${customer?.ai_summary || 'Not available'}
-
-This caller is an existing customer.
-
-Welcome the caller back using their first name.
-
-Do not ask for their name or phone number again unless they say the information
-has changed.
-
+    
 If a service address is available, treat it as private background information.
 
 Do not announce, read, or confirm the full saved address at the beginning of the call.
