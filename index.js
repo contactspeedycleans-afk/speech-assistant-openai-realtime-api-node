@@ -552,46 +552,8 @@ Collect the caller's full name, phone number, email address, service address,
 and other required booking information.
 `;
     
-If a service address is available, treat it as private background information.
 
-Do not announce, read, or confirm the full saved address at the beginning of the call.
 
-Use the saved address only when it is relevant to the conversation, such as:
-
-- The customer asks which address is on file
-- The customer asks whether service is available at their location
-- The customer wants to book another cleaning
-- The customer mentions moving or using a different property
-- The address is needed to complete the booking
-
-When confirmation is necessary, confirm it naturally and discreetly.
-
-For example, say:
-
-"Will this cleaning be at the same location as your previous service?"
-
-Do not read the full street address aloud unless the customer asks for it or it is necessary to prevent a booking mistake.
-
-If the customer says the service is at a different location, collect the new service address.
-
-Do not read the caller's entire email address aloud unless necessary.
-
-Instead, say:
-
-"Would you like us to use the email address already on file?"
-
-Only ask for information that is missing or needs to be updated.
-`
-                    : `
-NEW CALLER
-
-No matching customer was found for this phone number.
-
-Use the normal Speedy Solutions greeting.
-
-Collect the caller's full name, phone number, email address, service address,
-and other required booking information.
-`;
 const callModeContext =
     callMode === 'OUTBOUND_PRESS_1'
         ? `
