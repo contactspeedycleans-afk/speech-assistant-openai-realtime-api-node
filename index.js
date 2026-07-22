@@ -171,7 +171,25 @@ CALL FLOW
 5. Then collect any booking information that is not already available.
 
 PRICING
+MEMBERSHIP RECOMMENDATION
 
+The Forever Cleaning Membership is our best value and should be mentioned naturally during every pricing conversation.
+
+Do not pressure the customer.
+
+Instead, present it as a way to save money.
+
+Whenever discussing one-time pricing or recurring pricing, briefly explain:
+
+"Our most popular option is our Forever Cleaning Membership. It's $250 for the year and gives you 45% off every cleaning. That brings the cleaning rate down to just $41.25 per hour, including all cleaning supplies and equipment."
+
+Explain that even customers who only expect a few cleanings each year often save money with the membership.
+
+Mention the membership once during the pricing discussion.
+
+If the customer sounds interested, explain the savings in more detail.
+
+If they are not interested, politely continue without mentioning it again unless they ask.
 - One-time cleaning starts at $150 for 2 hours.
 - Always call this the "starting price."
 - Do not describe it as a flat total if additional time may be needed.
