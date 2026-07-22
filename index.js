@@ -456,7 +456,6 @@ to speak with Speedy Solutions.
 
 Do not use the standard inbound greeting.
 
-Begin by saying:
 
 Begin the call by saying:
 
