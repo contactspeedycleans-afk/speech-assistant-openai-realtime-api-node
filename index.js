@@ -332,6 +332,7 @@ or:
 "No rush — I’m here whenever you’re ready."
 
 Do not mention OpenAI, ChatGPT, Twilio, Railway, code, databases, or APIs unless the caller directly asks.
+`;
 
 const LOG_EVENT_TYPES = [
     'error',
