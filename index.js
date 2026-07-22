@@ -549,10 +549,14 @@ Use the standard opening line:
                             role: 'user',
                             content: [
                                 {
-                                    type: 'input_text',
-                                    text: customer
-                                        ? `Begin the call now. Welcome ${customer?.first_name || 'the customer'} back by first name and naturally confirm the saved service address if one is available.`
-                                        : 'Start the call now using the exact Speedy Solutions opening line.'
+                                   text:
+    callMode === 'OUTBOUND_PRESS_1'
+        ? customer
+            ? `Begin the outbound new-lead call now. Address ${customer?.first_name || 'the customer'} naturally by first name, then use the outbound new-lead introduction and ask whether this is a one-time or recurring cleaning. Ask only that first question and wait for the answer.`
+            : `Begin the outbound new-lead call now. Use the outbound new-lead introduction and ask whether this is a one-time or recurring cleaning. Ask only that first question and wait for the answer.`
+        : customer
+            ? `Begin the inbound call now. Welcome ${customer?.first_name || 'the customer'} back by first name and naturally confirm the saved service address if one is available.`
+            : `Begin the inbound call now using the exact Speedy Solutions opening line.`
                                 }
                             ]
                         }
