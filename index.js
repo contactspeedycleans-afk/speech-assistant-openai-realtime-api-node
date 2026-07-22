@@ -551,8 +551,6 @@ Use the normal Speedy Solutions greeting.
 Collect the caller's full name, phone number, email address, service address,
 and other required booking information.
 `;
-    
-
 
 const callModeContext =
     callMode === 'OUTBOUND_PRESS_1'
