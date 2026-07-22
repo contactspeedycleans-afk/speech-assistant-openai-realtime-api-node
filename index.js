@@ -32,7 +32,7 @@ db.query('SELECT NOW()')
         console.error('PostgreSQL connection error:', error);
     });
 
-const fastify = Fastify();
+const  = ();
 
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
@@ -403,10 +403,44 @@ fastify.all('/outbound-press1', async (request, reply) => {
         request.query?.From ||
         '';
 
+    const answeredBy =
+        request.body?.AnsweredBy ||
+        request.query?.AnsweredBy ||
+        'unknown';
+
     console.log(
         'Outbound Press 1 customer phone:',
         customerPhone || 'unknown'
     );
+
+    console.log(
+        'Twilio answered by:',
+        answeredBy
+    );
+
+    const isVoicemail =
+        answeredBy === 'machine_start' ||
+        answeredBy === 'machine_end_beep' ||
+        answeredBy === 'machine_end_silence' ||
+        answeredBy === 'machine_end_other' ||
+        answeredBy === 'fax';
+
+    if (isVoicemail) {
+        const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>
+        Hi, this is Emma calling from Speedy Solutions about the house cleaning quote you requested.
+        We would love to help you get your cleaning scheduled.
+        Please call us back at 517-777-8712, or simply reply to the text message we send you.
+        We look forward to speaking with you. Have a wonderful day.
+    </Say>
+    <Hangup/>
+</Response>`;
+
+        return reply
+            .type('text/xml')
+            .send(voicemailResponse);
+    }
 
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -424,7 +458,7 @@ fastify.all('/outbound-press1', async (request, reply) => {
     </Connect>
 </Response>`;
 
-    reply
+    return reply
         .type('text/xml')
         .send(twimlResponse);
 });
