@@ -32,7 +32,7 @@ db.query('SELECT NOW()')
         console.error('PostgreSQL connection error:', error);
     });
 
-const  = ();
+const fastify = Fastify();
 
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
