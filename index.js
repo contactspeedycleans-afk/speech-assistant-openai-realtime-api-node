@@ -848,8 +848,9 @@ Greet ${customer?.first_name || 'the customer'} warmly by first name, ask the si
 
 openAiWs.on('message', async (data) => {
 try {
-    const response = JSON.parse(                        data.toString()
-                    );
+const response = JSON.parse(
+    data.toString()
+);
 
                     if (
                         LOG_EVENT_TYPES.includes(
@@ -869,8 +870,12 @@ console.log(
 if (
     typeof response.type === 'string' &&
     response.type.includes('function')
-)
 ) {
+    console.log(
+        'Function Event:',
+        JSON.stringify(response, null, 2)
+    );
+}
     console.log(
         'Function Event:',
         JSON.stringify(response, null, 2)
