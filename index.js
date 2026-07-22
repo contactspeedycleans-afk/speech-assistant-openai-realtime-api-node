@@ -878,6 +878,80 @@ openAiWs.on('message', async (data) => {                try {
                             })
                         );
                     }
+if (
+    response.type ===
+        'response.function_call_arguments.done' &&
+    response.name ===
+        'search_company_knowledge'
+) {
+    let toolArguments = {};
+
+    try {
+        toolArguments = JSON.parse(
+            response.arguments || '{}'
+        );
+    } catch (error) {
+        console.error(
+            'Could not parse knowledge tool arguments:',
+            error
+        );
+    }
+
+    let toolOutput;
+
+    try {
+        const knowledgeResults =
+            await searchCompanyKnowledge(
+                toolArguments.query
+            );
+
+        toolOutput = JSON.stringify({
+            query:
+                toolArguments.query || '',
+            results: knowledgeResults
+        });
+    } catch (error) {
+        console.error(
+            'Company knowledge search failed:',
+            error
+        );
+
+        toolOutput = JSON.stringify({
+            query:
+                toolArguments.query || '',
+            results: [],
+            error:
+                'The company knowledge search was temporarily unavailable.'
+        });
+    }
+
+    if (
+        openAiWs.readyState ===
+        WebSocket.OPEN
+    ) {
+        openAiWs.send(
+            JSON.stringify({
+                type:
+                    'conversation.item.create',
+                item: {
+                    type:
+                        'function_call_output',
+                    call_id:
+                        response.call_id,
+                    output:
+                        toolOutput
+                }
+            })
+        );
+
+        openAiWs.send(
+            JSON.stringify({
+                type: 'response.create'
+            })
+        );
+    }
+}
+    
                 } catch (error) {
                     console.error(
                         'Error processing OpenAI message:',
