@@ -481,8 +481,12 @@ let sessionStarted = false;
                     .filter(Boolean)
                     .join(', ')
                     .trim();
-
-                const customerContext = customer
+const isAngiLead =
+    customer?.ai_summary
+        ?.toLowerCase()
+        .includes('lead source: angi') || false;
+               const customerContext = customer
+    ? isAngiLead
                     ? `
 RETURNING CUSTOMER FOUND
 
