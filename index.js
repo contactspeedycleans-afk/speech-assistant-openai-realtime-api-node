@@ -551,13 +551,13 @@ Use the standard opening line:
                             content: [
                                 {type: 'input_text',
                                    text:
-    callMode === 'OUTBOUND_PRESS_1'
-        ? customer
-            ? `Begin the outbound new-lead call now. Address ${customer?.first_name || 'the customer'} naturally by first name, then use the outbound new-lead introduction and ask whether this is a one-time or recurring cleaning. Ask only that first question and wait for the answer.`
-            : `Begin the outbound new-lead call now. Use the outbound new-lead introduction and ask whether this is a one-time or recurring cleaning. Ask only that first question and wait for the answer.`
-        : customer
-            ? `Begin the inbound call now. Welcome ${customer?.first_name || 'the customer'} back by first name and naturally confirm the saved service address if one is available.`
-            : `Begin the inbound call now using the exact Speedy Solutions opening line.`
+   callMode === 'OUTBOUND_PRESS_1'
+    ? customer
+        ? `Begin the outbound new-lead quote call now. Greet ${customer?.first_name || 'the customer'} warmly by first name. Do not mention or confirm any saved address unless the customer asks about it or it becomes necessary to complete the booking. Thank them for looking for a house cleaning quote with Speedy Solutions and ask: "Is this more of a one-time cleaning, or are you interested in recurring cleaning?" After asking, stop and wait for their answer.`
+        : `Begin the outbound new-lead quote call now. Say: "Hi! Thank you for looking for a house cleaning quote with Speedy Solutions. Is this more of a one-time cleaning, or are you interested in recurring cleaning?" After asking, stop and wait for the customer's answer.`
+    : customer
+        ? `Begin the inbound call now. Welcome ${customer?.first_name || 'the customer'} back warmly by first name. Do not mention or confirm any saved address unless the customer brings it up or it becomes necessary to complete the booking.`
+        : `Begin the inbound call now using the standard Speedy Solutions greeting.`
                                 }
                             ]
                         }
