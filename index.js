@@ -876,11 +876,7 @@ if (
         JSON.stringify(response, null, 2)
     );
 }
-    console.log(
-        'Function Event:',
-        JSON.stringify(response, null, 2)
-    );
-}
+    
                     if (
                         response.type ===
                             'response.output_audio.delta' &&
