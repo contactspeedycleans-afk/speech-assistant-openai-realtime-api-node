@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import pg from 'pg';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
+import fastifyWs from '@fastify/websocket';
 
 dotenv.config();
 
