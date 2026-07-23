@@ -912,10 +912,23 @@ if (
         JSON.stringify(response, null, 2)
     );
 }
-    
+    // Instantly stop Twilio audio when the customer interrupts
                     if (
-                        response.type ===
-                            'response.output_audio.delta' &&
+                        response.type === 'input_audio_buffer.speech_started' &&
+                        connection.readyState === WebSocket.OPEN
+                    ) {
+                        connection.send(
+                            JSON.stringify({
+                                event: 'clear',
+                                streamSid: streamSid
+                            })
+                        );
+                        console.log('Customer interrupted - clearing Twilio audio buffer.');
+                    }
+
+                    // Send normal audio back to Twilio
+                    if (
+                        response.type === 'response.output_audio.delta' &&
                         response.delta &&
                         connection.readyState === WebSocket.OPEN
                     ) {
@@ -928,8 +941,7 @@ if (
                                 }
                             })
                         );
-
-
+                    }
                         
                     }
 if (
