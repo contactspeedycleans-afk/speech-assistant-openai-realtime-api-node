@@ -14,7 +14,6 @@ const twilioClient = twilio(
     process.env.TWILIO_ACCT_SID,
     process.env.TWILIO_AUTH_TOKEN
 );
-);
 
 if (!OPENAI_API_KEY) {
     console.error('Missing OPENAI_API_KEY.');
@@ -451,6 +450,43 @@ async function searchCompanyKnowledge(query) {
     return result.rows;
 }
 
+async function startCallRecording(callSid) {
+    if (!callSid) {
+        console.error(
+            'Recording not started: CallSid is missing.'
+        );
+        return;
+    }
+
+    if (!process.env.TWILIO_RECORDING_CALLBACK_URL) {
+        console.error(
+            'Recording not started: callback URL is missing.'
+        );
+        return;
+    }
+
+    try {
+        await twilioClient
+            .calls(callSid)
+            .recordings.create({
+                recordingChannels: 'dual',
+                recordingStatusCallback:
+                    process.env.TWILIO_RECORDING_CALLBACK_URL,
+                recordingStatusCallbackMethod: 'POST'
+            });
+
+        console.log(
+            'Twilio recording started:',
+            callSid
+        );
+    } catch (error) {
+        console.error(
+            'Unable to start Twilio recording:',
+            error
+        );
+    }
+}
+
 fastify.get('/', async (request, reply) => {
     reply.send({
         message: 'Speedy Solutions AI Receptionist is running!'
@@ -462,7 +498,12 @@ fastify.all('/incoming-call', async (request, reply) => {
         request.body?.From ||
         request.query?.From ||
         '';
+    const callSid =
+        request.body?.CallSid ||
+        request.query?.CallSid ||
+        '';
 
+    await startCallRecording(callSid);
     console.log(
         'Incoming caller phone:',
         callerPhone || 'unknown'
