@@ -503,8 +503,7 @@ fastify.all('/incoming-call', async (request, reply) => {
         request.query?.CallSid ||
         '';
 console.log('*** ABOUT TO START RECORDING ***', callSid);
-    await startCallRecording(callSid);
-    console.log(
+       console.log(
         'Incoming caller phone:',
         callerPhone || 'unknown'
     );
