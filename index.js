@@ -695,10 +695,15 @@ fastify.register(async (websocketServer) => {
         (connection, request) => {
             console.log('Twilio client connected');
 
-          let streamSid = null;
+let streamSid = null;
 let latestMediaTimestamp = 0;
 let callerPhone = '';
 let callMode = 'INBOUND_LEAD';
+
+let outboundCustomerName = '';
+let customInstructions = '';
+let sheetRowNumber = '';
+
 let customer = null;
 let openAiConnected = false;
 let sessionStarted = false;
@@ -812,7 +817,29 @@ and other required booking information.
 `;
 
 const callModeContext =
-    callMode === 'OUTBOUND_PRESS_1'
+    callMode === 'OUTBOUND_CUSTOM'
+        ? `
+CALL MODE: CUSTOM OUTBOUND OFFICE CALL
+
+Customer Name:
+${outboundCustomerName}
+
+Instructions:
+${customInstructions}
+
+You are making an outbound office call.
+
+Follow the instructions exactly.
+
+Do NOT use the normal inbound greeting.
+
+Do NOT make up information.
+
+Be friendly, conversational and professional.
+
+If the customer asks unrelated questions, answer naturally and then return to the purpose of the call.
+`
+    : callMode === 'OUTBOUND_PRESS_1'
         ? `
 CALL MODE: OUTBOUND NEW LEAD QUOTE
 
@@ -829,31 +856,13 @@ Instead, greet the customer by first name, briefly acknowledge the service they 
 If the requested service is NOT known, begin by asking whether they are looking for one-time or recurring cleaning.
 
 Ask only this question first and then wait for the customer to answer.
-
-Do not provide all pricing immediately.
-
-After the customer answers:
-
-- If they say one-time, explain that one-time cleaning starts at $150 for two hours.
-- Clearly explain that $150 is the starting price and additional time may be charged based on the time needed.
-- Then ask what type of cleaning they need.
-- If they say recurring, ask whether they are considering weekly, biweekly, or monthly cleaning.
-- Explain only the pricing that applies to the frequency they choose.
-- If they are unsure, briefly help them compare one-time and recurring cleaning.
-- After discussing pricing, ask which day they prefer.
-- Then ask which arrival window they prefer.
-- Continue collecting the remaining booking details one question at a time.
-
-Do not read every price or service option at once.
-Do not overwhelm the customer.
-Keep the conversation friendly, natural, and focused on moving the quote forward.
 `
         : `
 CALL MODE: INBOUND LEAD
 
-This is a normal inbound call to Speedy Solutions.
+This is a normal inbound call.
 
-Use the standard opening line:
+Use the standard greeting:
 
 "Thank you for calling Speedy Solutions. This is Emma. How can we help you today?"
 `;
@@ -943,7 +952,19 @@ tool_choice: 'auto'                  }
                             content: [
                                 {type: 'input_text',
                                    text:
-   callMode === 'OUTBOUND_PRESS_1'
+   callMode === 'OUTBOUND_CUSTOM'
+    ? `Begin the outbound office call now.
+
+Customer name:
+${outboundCustomerName}
+
+Instructions:
+${customInstructions}
+
+Follow these instructions exactly.
+
+Begin speaking naturally.`
+    : callMode === 'OUTBOUND_PRESS_1'
     ? customer
      ? `Begin the outbound quote call now.
 
@@ -1161,16 +1182,38 @@ const callSid = data.start?.callSid || null;
         startCallRecording(callSid);
     }
                             
+const customParameters =
+    data.start?.customParameters || {};
+
 callerPhone =
-    data.start?.customParameters
-        ?.callerPhone ||
-    '';
+    customParameters.callerPhone || '';
 
 callMode =
-    data.start?.customParameters
-        ?.callMode ||
+    customParameters.callMode ||
     'INBOUND_LEAD';
 
+outboundCustomerName =
+    customParameters.customerName || '';
+
+customInstructions =
+    customParameters.customInstructions || '';
+
+sheetRowNumber =
+    customParameters.sheetRowNumber || '';
+console.log(
+    'Outbound customer name:',
+    outboundCustomerName || 'not provided'
+);
+
+console.log(
+    'Custom outbound instructions:',
+    customInstructions || 'not provided'
+);
+
+console.log(
+    'Outbound sheet row:',
+    sheetRowNumber || 'not provided'
+);
 console.log(
     'Emma call mode:',
     callMode
