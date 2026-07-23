@@ -731,11 +731,11 @@ Use the standard opening line:
                                 format: {
                                     type: 'audio/pcmu'
                                 },
-                             turn_detection: {
+                       turn_detection: {
     type: 'semantic_vad',
     eagerness: 'medium',
     create_response: true,
-    interrupt_response: true
+    interrupt_response: false
 }
                             },
                             output: {
