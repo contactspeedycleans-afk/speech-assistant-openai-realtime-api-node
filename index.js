@@ -507,7 +507,7 @@ fastify.all('/incoming-call', async (request, reply) => {
     console.log('Incoming caller phone:', callerPhone || 'unknown');
 
     // ADD THIS LINE RIGHT HERE:
-    await startCallRecording(callSid);
+
 
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
