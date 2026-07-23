@@ -10,6 +10,11 @@ dotenv.config();
 const { OPENAI_API_KEY } = process.env;
 const { Pool } = pg;
 
+const twilioClient = twilio(
+    process.env.TWILIO_ACCOUNT_SID,
+    process.env.TWILIO_AUTH_TOKEN
+);
+
 if (!OPENAI_API_KEY) {
     console.error('Missing OPENAI_API_KEY.');
     process.exit(1);
