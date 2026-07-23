@@ -533,7 +533,6 @@ fastify.all('/incoming-call', async (request, reply) => {
     reply
         .type('text/xml')
         .send(twimlResponse);
-});
 
 fastify.all('/outbound-press1', async (request, reply) => {
     const customerPhone =
