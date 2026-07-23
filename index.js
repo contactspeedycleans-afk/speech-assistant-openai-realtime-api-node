@@ -519,7 +519,107 @@ fastify.all('/incoming-call', async (request, reply) => {
         .type('text/xml')
         .send(twimlResponse);
 });
+function escapeXml(value = '') {
+    return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&apos;');
+}
 
+fastify.post('/outbound-call', async (request, reply) => {
+    const {
+        phone,
+        customer_name = '',
+        instructions = '',
+        sheet_row_number = ''
+    } = request.body || {};
+
+    if (!phone) {
+        return reply.code(400).send({
+            success: false,
+            error: 'Phone number is required.'
+        });
+    }
+
+    if (!instructions) {
+        return reply.code(400).send({
+            success: false,
+            error: 'Instructions are required.'
+        });
+    }
+
+    if (!process.env.TWILIO_PHONE_NUMBER) {
+        return reply.code(500).send({
+            success: false,
+            error: 'TWILIO_PHONE_NUMBER is missing.'
+        });
+    }
+
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
+            <Parameter
+                name="callerPhone"
+                value="${escapeXml(phone)}"
+            />
+            <Parameter
+                name="callMode"
+                value="OUTBOUND_CUSTOM"
+            />
+            <Parameter
+                name="customerName"
+                value="${escapeXml(customer_name)}"
+            />
+            <Parameter
+                name="customInstructions"
+                value="${escapeXml(instructions)}"
+            />
+            <Parameter
+                name="sheetRowNumber"
+                value="${escapeXml(sheet_row_number)}"
+            />
+        </Stream>
+    </Connect>
+</Response>`;
+
+    try {
+        const call = await twilioClient.calls.create({
+            to: phone,
+            from: process.env.TWILIO_PHONE_NUMBER,
+            twiml
+        });
+
+        console.log('Custom outbound call started:', {
+            callSid: call.sid,
+            phone,
+            customerName: customer_name,
+            sheetRowNumber: sheet_row_number
+        });
+
+        return reply.send({
+            success: true,
+            call_sid: call.sid,
+            status: call.status,
+            phone,
+            sheet_row_number
+        });
+    } catch (error) {
+        console.error(
+            'Custom outbound call failed:',
+            error
+        );
+
+        return reply.code(500).send({
+            success: false,
+            error:
+                error?.message ||
+                'Unable to start outbound call.'
+        });
+    }
+});
 fastify.all('/outbound-press1', async (request, reply) => {
     const customerPhone =
         request.body?.To ||
