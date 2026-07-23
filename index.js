@@ -502,7 +502,7 @@ fastify.all('/incoming-call', async (request, reply) => {
         request.body?.CallSid ||
         request.query?.CallSid ||
         '';
-
+console.log('*** ABOUT TO START RECORDING ***', callSid);
     await startCallRecording(callSid);
     console.log(
         'Incoming caller phone:',
