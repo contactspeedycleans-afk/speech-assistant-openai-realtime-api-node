@@ -768,12 +768,12 @@ Use the standard opening line:
                                 format: {
                                     type: 'audio/pcmu'
                                 },
-                       turn_detection: {
-    type: 'semantic_vad',
-    eagerness: 'medium',
-    create_response: true,
-    interrupt_response: false
-}
+                        turn_detection: {
+                                    type: 'server_vad',
+                                    threshold: 0.7,
+                                    silence_duration_ms: 1200,
+                                    create_response: true
+                                }
                             },
                             output: {
                                 format: {
