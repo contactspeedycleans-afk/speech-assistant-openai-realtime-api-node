@@ -498,16 +498,17 @@ fastify.all('/incoming-call', async (request, reply) => {
         request.body?.From ||
         request.query?.From ||
         '';
+fastify.all('/incoming-call', async (request, reply) => {
+    const callerPhone =
+        request.body?.From ||
+        request.query?.From ||
+        '';
     const callSid =
         request.body?.CallSid ||
         request.query?.CallSid ||
         '';
 
-    console.log('*** ABOUT TO START RECORDING ***', callSid);
     console.log('Incoming caller phone:', callerPhone || 'unknown');
-
-    // ADD THIS LINE RIGHT HERE:
-
 
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -530,12 +531,7 @@ fastify.all('/incoming-call', async (request, reply) => {
         .send(twimlResponse);
 });
 
-    reply
-        .type('text/xml')
-        .send(twimlResponse);
-
 fastify.all('/outbound-press1', async (request, reply) => {
-    const customerPhone =
         request.body?.To ||
         request.query?.To ||
         request.body?.From ||
