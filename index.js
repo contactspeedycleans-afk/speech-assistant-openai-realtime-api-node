@@ -893,19 +893,7 @@ if (
                             })
                         );
 
-console.log(
-    'Function DONE payload:',
-    JSON.stringify(response, null, 2)
-);
 
-if (
-    response.type ===
-        'response.function_call_arguments.done' &&
-    response.name ===
-        'search_company_knowledge'
-) {
-    ...
-}
                         
                     }
 if (
