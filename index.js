@@ -502,11 +502,12 @@ fastify.all('/incoming-call', async (request, reply) => {
         request.body?.CallSid ||
         request.query?.CallSid ||
         '';
-console.log('*** ABOUT TO START RECORDING ***', callSid);
-       console.log(
-        'Incoming caller phone:',
-        callerPhone || 'unknown'
-    );
+
+    console.log('*** ABOUT TO START RECORDING ***', callSid);
+    console.log('Incoming caller phone:', callerPhone || 'unknown');
+
+    // ADD THIS LINE RIGHT HERE:
+    await startCallRecording(callSid);
 
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -523,6 +524,11 @@ console.log('*** ABOUT TO START RECORDING ***', callSid);
 </Stream>
     </Connect>
 </Response>`;
+
+    reply
+        .type('text/xml')
+        .send(twimlResponse);
+});
 
     reply
         .type('text/xml')
