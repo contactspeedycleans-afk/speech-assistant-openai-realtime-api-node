@@ -4,8 +4,7 @@ import dotenv from 'dotenv';
 import pg from 'pg';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
-import fastifyWs from '@fastify/websocket';
-
+import twilio from 'twilio';
 dotenv.config();
 
 const { OPENAI_API_KEY } = process.env;
