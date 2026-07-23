@@ -1058,6 +1058,12 @@ if (
                                 data.start?.streamSid ||
                                 data.streamSid ||
                                 null;
+const callSid = data.start?.callSid || null;
+
+    if (callSid) {
+        startCallRecording(callSid);
+    }
+                            
 callerPhone =
     data.start?.customParameters
         ?.callerPhone ||
