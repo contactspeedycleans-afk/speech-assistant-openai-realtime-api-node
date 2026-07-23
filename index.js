@@ -487,17 +487,6 @@ async function startCallRecording(callSid) {
     }
 }
 
-fastify.get('/', async (request, reply) => {
-    reply.send({
-        message: 'Speedy Solutions AI Receptionist is running!'
-    });
-});
-
-fastify.all('/incoming-call', async (request, reply) => {
-    const callerPhone =
-        request.body?.From ||
-        request.query?.From ||
-        '';
 fastify.all('/incoming-call', async (request, reply) => {
     const callerPhone =
         request.body?.From ||
@@ -532,6 +521,7 @@ fastify.all('/incoming-call', async (request, reply) => {
 });
 
 fastify.all('/outbound-press1', async (request, reply) => {
+    const customerPhone =
         request.body?.To ||
         request.query?.To ||
         request.body?.From ||
