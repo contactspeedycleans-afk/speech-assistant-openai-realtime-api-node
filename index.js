@@ -423,7 +423,29 @@ async function findCustomerByPhone(phone) {
 
     return result.rows[0] || null;
 }
+async function findRecentCalls(phone) {
+    if (!phone) return [];
 
+    const digits = String(phone).replace(/\D/g, '');
+
+    const normalizedPhone =
+        digits.length === 10
+            ? `1${digits}`
+            : digits;
+
+    const result = await db.query(
+        `
+        SELECT summary, sentiment, started_at
+        FROM public.call_logs
+        WHERE REGEXP_REPLACE(phone_number,'[^0-9]','','g') = $1
+        ORDER BY started_at DESC
+        LIMIT 3
+        `,
+        [normalizedPhone]
+    );
+
+    return result.rows;
+}
 async function searchCompanyKnowledge(query) {
     if (!query || !String(query).trim()) {
         return [];
@@ -705,6 +727,7 @@ let customInstructions = '';
 let sheetRowNumber = '';
 
 let customer = null;
+let recentCalls = [];
 let openAiConnected = false;
 let sessionStarted = false;
 
