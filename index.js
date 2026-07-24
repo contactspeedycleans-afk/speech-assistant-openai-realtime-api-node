@@ -446,13 +446,29 @@ async function findRecentCalls(phone) {
 
     return result.rows;
 }
-async function findCustomerBookings(customerId) {
+async function findCustomerBookingCount(customerId) {
+    if (!customerId) {
+        return 0;
+    }
+
+    const result = await db.query(
+        `
+        SELECT COUNT(*)::int AS booking_count
+        FROM public.bookings
+        WHERE customer_id = $1
+        `,
+        [customerId]
+    );
+
+    return result.rows[0]?.booking_count || 0;
+}
+       async function findCustomerBookings(customerId) {
     if (!customerId) {
         return [];
     }
 
     const result = await db.query(
-        `
+`
         SELECT
             octopus_booking_id,
             service_type,
@@ -766,6 +782,7 @@ let sheetRowNumber = '';
 let customer = null;
 let recentCalls = [];
 let customerBookings = [];
+let customerBookingCount = 0;
 let openAiConnected = false;
 let sessionStarted = false;
 
@@ -1383,7 +1400,10 @@ if (customer) {
         await findCustomerBookings(
             customer.id
         );
-
+    customerBookingCount =
+        await findCustomerBookingCount(
+            customer.id
+        );
     console.log(
         'Bookings found:',
         customerBookings.length
