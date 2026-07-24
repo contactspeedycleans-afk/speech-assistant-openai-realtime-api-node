@@ -542,6 +542,10 @@ fastify.all('/incoming-call', async (request, reply) => {
         request.body?.From ||
         request.query?.From ||
         '';
+    const twilioNumber =
+    request.body?.To ||
+    request.query?.To ||
+    '';
     const callSid =
         request.body?.CallSid ||
         request.query?.CallSid ||
@@ -553,14 +557,18 @@ fastify.all('/incoming-call', async (request, reply) => {
 <Response>
     <Connect>
       <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
-    <Parameter
-        name="callerPhone"
-        value="${callerPhone}"
-    />
-    <Parameter
-        name="callMode"
-        value="INBOUND_LEAD"
-    />
+   <Parameter
+    name="callerPhone"
+    value="${callerPhone}"
+/>
+<Parameter
+    name="twilioNumber"
+    value="${twilioNumber}"
+/>
+<Parameter
+    name="callMode"
+    value="INBOUND_LEAD"
+/>
 </Stream>
     </Connect>
 </Response>`;
