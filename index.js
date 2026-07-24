@@ -7,6 +7,7 @@ import fastifyWs from '@fastify/websocket';
 import twilio from 'twilio';
 import SYSTEM_MESSAGE from './prompts/systemMessage.js';
 import { createCustomerLookup } from './lib/customerLookup.js';
+import { createBookingLookup } from './lib/bookingLookup.js';
 
 dotenv.config();
 
@@ -33,6 +34,11 @@ const {
     findCustomerByPhone,
     findRecentCalls
 } = createCustomerLookup(db);
+
+const {
+    findCustomerBookingCount,
+    findCustomerBookings
+} = createBookingLookup(db);
 
 console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
 
@@ -63,50 +69,7 @@ const LOG_EVENT_TYPES = [
 ];
 
 
-async function findCustomerBookingCount(customerId) {
-    if (!customerId) {
-        return 0;
-    }
 
-    const result = await db.query(
-        `
-        SELECT COUNT(*)::int AS booking_count
-        FROM public.bookings
-        WHERE customer_id = $1
-        `,
-        [customerId]
-    );
-
-    return result.rows[0]?.booking_count || 0;
-}
-       async function findCustomerBookings(customerId) {
-    if (!customerId) {
-        return [];
-    }
-
-    const result = await db.query(
-`
-        SELECT
-            octopus_booking_id,
-            service_type,
-            booking_date,
-            arrival_window,
-            status,
-            labor_hours,
-            technician_count,
-            estimated_total,
-            final_total,
-            special_requests
-        FROM public.bookings
-        WHERE customer_id = $1
-        ORDER BY booking_date DESC
-        LIMIT 5
-        `,
-        [customerId]
-    );
-
-return result.rows;
-}
 
 async function recordTechnicianStatusUpdate({
     bookingNumber = '',
