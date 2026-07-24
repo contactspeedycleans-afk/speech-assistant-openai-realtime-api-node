@@ -10,6 +10,8 @@ import { createCustomerLookup } from './lib/customerLookup.js';
 import { createBookingLookup } from './lib/bookingLookup.js';
 import { createTechnicianStatus } from './lib/technicianStatus.js';
 import { createKnowledgeSearch } from './lib/knowledgeSearch.js';
+import { createTwilioRecording } from './lib/twilioRecording.js';
+
 
 
 
@@ -47,7 +49,9 @@ const {
 const {
     recordTechnicianStatusUpdate
 } = createTechnicianStatus(db);
-
+const {
+    startCallRecording
+} = createTwilioRecording(twilioClient);
 const {
     searchCompanyKnowledge
 } = createKnowledgeSearch(db);
@@ -80,45 +84,6 @@ const LOG_EVENT_TYPES = [
     'session.updated'
 ];
 
-           
-
-
-async function startCallRecording(callSid) {
-    if (!callSid) {
-        console.error(
-            'Recording not started: CallSid is missing.'
-        );
-        return;
-    }
-
-    if (!process.env.TWILIO_RECORDING_CALLBACK_URL) {
-        console.error(
-            'Recording not started: callback URL is missing.'
-        );
-        return;
-    }
-
-    try {
-        await twilioClient
-            .calls(callSid)
-            .recordings.create({
-                recordingChannels: 'dual',
-                recordingStatusCallback:
-                    process.env.TWILIO_RECORDING_CALLBACK_URL,
-                recordingStatusCallbackMethod: 'POST'
-            });
-
-        console.log(
-            'Twilio recording started:',
-            callSid
-        );
-    } catch (error) {
-        console.error(
-            'Unable to start Twilio recording:',
-            error
-        );
-    }
-}
 
 fastify.all('/incoming-call', async (request, reply) => {
     const callerPhone =
