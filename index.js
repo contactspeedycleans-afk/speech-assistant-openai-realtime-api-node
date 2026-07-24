@@ -11,7 +11,7 @@ import { createBookingLookup } from './lib/bookingLookup.js';
 import { createTechnicianStatus } from './lib/technicianStatus.js';
 import { createKnowledgeSearch } from './lib/knowledgeSearch.js';
 import { createTwilioRecording } from './lib/twilioRecording.js';
-
+import { createOpenAiToolHandlers } from './lib/openAiToolHandlers.js';
 
 
 
@@ -50,11 +50,19 @@ const {
     recordTechnicianStatusUpdate
 } = createTechnicianStatus(db);
 const {
+    searchCompanyKnowledge
+} = createKnowledgeSearch(db);
+const {
     startCallRecording
 } = createTwilioRecording(twilioClient);
 const {
-    searchCompanyKnowledge
-} = createKnowledgeSearch(db);
+    handleKnowledgeTool,
+    handleTechnicianStatusTool
+} = createOpenAiToolHandlers({
+    searchCompanyKnowledge,
+    recordTechnicianStatusUpdate
+});
+
 
 console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
 
@@ -778,79 +786,7 @@ if (
                     }
                         
     
-if (
-    response.type ===
-        'response.function_call_arguments.done' &&
-    response.name ===
-        'search_company_knowledge'
-) {
-    let toolArguments = {};
 
-    try {
-        toolArguments = JSON.parse(
-            response.arguments || '{}'
-        );
-    } catch (error) {
-        console.error(
-            'Could not parse knowledge tool arguments:',
-            error
-        );
-    }
-
-    let toolOutput;
-
-    try {
-        const knowledgeResults =
-            await searchCompanyKnowledge(
-                toolArguments.query
-            );
-
-        toolOutput = JSON.stringify({
-            query:
-                toolArguments.query || '',
-            results: knowledgeResults
-        });
-    } catch (error) {
-        console.error(
-            'Company knowledge search failed:',
-            error
-        );
-
-        toolOutput = JSON.stringify({
-            query:
-                toolArguments.query || '',
-            results: [],
-            error:
-                'The company knowledge search was temporarily unavailable.'
-        });
-    }
-
-    if (
-        openAiWs.readyState ===
-        WebSocket.OPEN
-    ) {
-        openAiWs.send(
-            JSON.stringify({
-                type:
-                    'conversation.item.create',
-                item: {
-                    type:
-                        'function_call_output',
-                    call_id:
-                        response.call_id,
-                    output:
-                        toolOutput
-                }
-            })
-        );
-
-        openAiWs.send(
-            JSON.stringify({
-                type: 'response.create'
-            })
-        );
-    }
-}
     if (
     response.type === 'response.function_call_arguments.done' &&
     response.name === 'record_technician_status_update'
