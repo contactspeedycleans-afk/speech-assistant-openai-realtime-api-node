@@ -1332,8 +1332,7 @@ if (customer) {
         customerBookings.length
     );
 
-    console.log(
-        'Returning customer found:',
+
                                     console.log(
                                         'Returning customer found:',
                                         {
