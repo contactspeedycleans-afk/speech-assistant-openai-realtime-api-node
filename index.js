@@ -894,6 +894,44 @@ Only reference a previous conversation when it naturally helps the customer.
         : `
 NO RECENT CALL HISTORY FOUND
 `;
+const bookingContext =
+    customerBookings.length > 0
+        ? `
+CUSTOMER BOOKING HISTORY
+
+${customerBookings
+    .map((booking, index) => {
+        return `
+Booking ${index + 1}
+Date: ${booking.booking_date || 'Unknown'}
+Service: ${booking.service_type || 'Unknown'}
+Status: ${booking.status || 'Unknown'}
+Arrival Window: ${booking.arrival_window || 'Unknown'}
+Labor Hours: ${booking.labor_hours || 'Unknown'}
+Technician Count: ${booking.technician_count || 'Unknown'}
+Final Total: ${booking.final_total || 'Unknown'}
+Special Requests: ${booking.special_requests || 'None'}
+`;
+    })
+    .join('\n')}
+
+This customer has previous booking history.
+
+Use the booking history only as private background context.
+
+Do not read all booking details aloud.
+
+Do not mention totals, internal booking IDs, or private notes unless the customer asks and it is appropriate.
+
+Use the most recent booking to understand whether the customer previously completed, cancelled, or scheduled a service.
+`
+        : `
+NO PREVIOUS BOOKING HISTORY
+
+This customer has no bookings stored in the booking database.
+
+Treat them as a first-time cleaning customer unless other customer information clearly says otherwise.
+`;
 const callModeContext =
     callMode === 'OUTBOUND_CUSTOM'
         ? `
@@ -982,7 +1020,9 @@ Explain the answer naturally. Do not mention the database or tool to the caller.
 If the search returns no relevant information, do not invent a company policy or price. Explain that you need to confirm the information.
 
 ${callModeContext}
-${customerContext}`,
+${customerContext}
+${recentCallContext}
+${bookingContext}`,
 
 tools: [
     {
