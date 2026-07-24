@@ -8,6 +8,8 @@ import twilio from 'twilio';
 import SYSTEM_MESSAGE from './prompts/systemMessage.js';
 import { createCustomerLookup } from './lib/customerLookup.js';
 import { createBookingLookup } from './lib/bookingLookup.js';
+import { createTechnicianStatus } from './lib/technicianStatus.js';
+
 
 dotenv.config();
 
@@ -39,6 +41,10 @@ const {
     findCustomerBookingCount,
     findCustomerBookings
 } = createBookingLookup(db);
+
+const {
+    recordTechnicianStatusUpdate
+} = createTechnicianStatus(db);
 
 console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
 
