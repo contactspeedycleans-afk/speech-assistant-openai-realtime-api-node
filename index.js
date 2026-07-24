@@ -446,6 +446,34 @@ async function findRecentCalls(phone) {
 
     return result.rows;
 }
+async function findCustomerBookings(customerId) {
+    if (!customerId) {
+        return [];
+    }
+
+    const result = await db.query(
+        `
+        SELECT
+            octopus_booking_id,
+            service_type,
+            booking_date,
+            arrival_window,
+            status,
+            labor_hours,
+            technician_count,
+            estimated_total,
+            final_total,
+            special_requests
+        FROM public.bookings
+        WHERE customer_id = $1
+        ORDER BY booking_date DESC
+        LIMIT 5
+        `,
+        [customerId]
+    );
+
+    return result.rows;
+}
 async function searchCompanyKnowledge(query) {
     if (!query || !String(query).trim()) {
         return [];
@@ -728,6 +756,7 @@ let sheetRowNumber = '';
 
 let customer = null;
 let recentCalls = [];
+let customerBookings = [];
 let openAiConnected = false;
 let sessionStarted = false;
 
