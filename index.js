@@ -805,7 +805,7 @@ if (
         error
     );
 }
-       
+       });
         
             openAiWs.on('error', (error) => {
                 console.error(
