@@ -5,7 +5,7 @@ import pg from 'pg';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import twilio from 'twilio';
-import SYSTEM_MESSAGE from './prompts/systemMessage.js';
+
 
 dotenv.config();
 
