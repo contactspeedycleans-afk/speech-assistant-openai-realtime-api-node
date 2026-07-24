@@ -838,7 +838,33 @@ Use the normal Speedy Solutions greeting.
 Collect the caller's full name, phone number, email address, service address,
 and other required booking information.
 `;
+const recentCallContext =
+    recentCalls.length > 0
+        ? `
+RECENT CUSTOMER CALL HISTORY
 
+${recentCalls
+    .map((call, index) => {
+        return `
+Call ${index + 1}
+Date: ${call.started_at || 'Unknown'}
+Sentiment: ${call.sentiment || 'Unknown'}
+Summary: ${call.summary || 'No summary available'}
+`;
+    })
+    .join('\n')}
+
+Use this history only as private background context.
+
+Do not read the call history aloud.
+
+Do not mention that calls were recorded or stored.
+
+Only reference a previous conversation when it naturally helps the customer.
+`
+        : `
+NO RECENT CALL HISTORY FOUND
+`;
 const callModeContext =
     callMode === 'OUTBOUND_CUSTOM'
         ? `
