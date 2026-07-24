@@ -1256,12 +1256,17 @@ latestMediaTimestamp = 0;
 
 
                             try {
-                                customer =
-                                    await findCustomerByPhone(
-                                        callerPhone
-                                    );
+                           customer =
+    await findCustomerByPhone(
+        callerPhone
+    );
 
-                                if (customer) {
+recentCalls =
+    await findRecentCalls(
+        callerPhone
+    );
+
+if (customer) {
                                     console.log(
                                         'Returning customer found:',
                                         {
