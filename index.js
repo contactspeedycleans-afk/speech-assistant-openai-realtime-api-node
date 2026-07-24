@@ -9,6 +9,8 @@ import SYSTEM_MESSAGE from './prompts/systemMessage.js';
 import { createCustomerLookup } from './lib/customerLookup.js';
 import { createBookingLookup } from './lib/bookingLookup.js';
 import { createTechnicianStatus } from './lib/technicianStatus.js';
+import { createKnowledgeSearch } from './lib/knowledgeSearch.js';
+
 
 
 dotenv.config();
@@ -45,6 +47,10 @@ const {
 const {
     recordTechnicianStatusUpdate
 } = createTechnicianStatus(db);
+
+const {
+    searchCompanyKnowledge
+} = createKnowledgeSearch(db);
 
 console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
 
