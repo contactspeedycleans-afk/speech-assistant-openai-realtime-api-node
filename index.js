@@ -717,8 +717,52 @@ async function findCustomerBookingCount(customerId) {
         [customerId]
     );
 
-    return result.rows;
+return result.rows;
 }
+
+async function recordTechnicianStatusUpdate({
+    bookingNumber = '',
+    technicianName = '',
+    status = '',
+    reportedTime = '',
+    notes = '',
+    callerPhone = ''
+}) {
+if (!status) {
+    throw new Error(
+        'Technician status is required.'
+    );
+}
+
+const result = await db.query(
+        `
+        INSERT INTO public.technician_status_updates (
+            booking_number,
+            technician_name,
+            status,
+            reported_time,
+            notes,
+            caller_phone
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING
+            id,
+            created_at
+        `,
+        [
+            bookingNumber || null,
+            technicianName || null,
+            status,
+            reportedTime || null,
+            notes || null,
+            callerPhone || null
+        ]
+    );
+
+    return result.rows[0];
+}
+           
+
 async function searchCompanyKnowledge(query) {
     if (!query || !String(query).trim()) {
         return [];
@@ -1296,10 +1340,47 @@ tools: [
             },
             required: ['query']
         }
+    },
+    {
+        type: 'function',
+        name: 'record_technician_status_update',
+        description:
+            'Record a technician update such as starting a job, finishing a job, lockout, customer unavailable, break, delay, or other field status.',
+        parameters: {
+            type: 'object',
+            properties: {
+                bookingNumber: {
+                    type: 'string',
+                    description:
+                        'Booking number such as BOK-25983.'
+                },
+                technicianName: {
+                    type: 'string',
+                    description:
+                        'Name of the cleaner or technician.'
+                },
+                status: {
+                    type: 'string',
+                    description:
+                        'The reported status, such as started, finished, lockout, customer_unavailable, break, delayed, or note.'
+                },
+                reportedTime: {
+                    type: 'string',
+                    description:
+                        'The local time reported by the technician, such as 10:17 AM.'
+                },
+                notes: {
+                    type: 'string',
+                    description:
+                        'Any additional details about the technician update.'
+                }
+            },
+            required: ['status']
+        }
     }
 ],
 
-tool_choice: 'auto'                  }
+tool_choice: 'auto'                 }
                 };
 
                 console.log(
@@ -1511,7 +1592,77 @@ if (
         );
     }
 }
-    
+    if (
+    response.type === 'response.function_call_arguments.done' &&
+    response.name === 'record_technician_status_update'
+) {
+    let toolArguments = {};
+
+    try {
+        toolArguments = JSON.parse(response.arguments || '{}');
+    } catch (error) {
+        console.error(
+            'Could not parse technician tool arguments:',
+            error
+        );
+    }
+
+    let toolOutput;
+
+    try {
+        const savedUpdate =
+            await recordTechnicianStatusUpdate({
+                bookingNumber:
+                    toolArguments.bookingNumber || '',
+                technicianName:
+                    toolArguments.technicianName || '',
+                status:
+                    toolArguments.status || '',
+                reportedTime:
+                    toolArguments.reportedTime || '',
+                notes:
+                    toolArguments.notes || '',
+                callerPhone
+            });
+
+        toolOutput = JSON.stringify({
+            success: true,
+            updateId: savedUpdate.id,
+            createdAt: savedUpdate.created_at
+        });
+    } catch (error) {
+        console.error(
+            'Technician update failed:',
+            error
+        );
+
+        toolOutput = JSON.stringify({
+            success: false,
+            error:
+                error.message ||
+                'Unable to save technician update.'
+        });
+    }
+
+    if (openAiWs.readyState === WebSocket.OPEN) {
+        openAiWs.send(
+            JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                    type: 'function_call_output',
+                    call_id: response.call_id,
+                    output: toolOutput
+                }
+            })
+        );
+
+        openAiWs.send(
+            JSON.stringify({
+                type: 'response.create'
+            })
+        );
+    }
+}
                 } catch (error) {
                     console.error(
                         'Error processing OpenAI message:',
