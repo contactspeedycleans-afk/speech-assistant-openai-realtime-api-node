@@ -6,6 +6,7 @@ import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import twilio from 'twilio';
 import SYSTEM_MESSAGE from './prompts/systemMessage.js';
+import { createCustomerLookup } from './lib/customerLookup.js';
 
 dotenv.config();
 
@@ -28,6 +29,10 @@ const db = new Pool({
         rejectUnauthorized: false
     }
 });
+const {
+    findCustomerByPhone,
+    findRecentCalls
+} = createCustomerLookup(db);
 
 console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
 
