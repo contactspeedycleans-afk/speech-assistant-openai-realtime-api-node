@@ -756,6 +756,7 @@ fastify.register(async (websocketServer) => {
 let streamSid = null;
 let latestMediaTimestamp = 0;
 let callerPhone = '';
+let twilioNumber = '';
 let callMode = 'INBOUND_LEAD';
 
 let outboundCustomerName = '';
@@ -1314,9 +1315,17 @@ const customParameters =
 callerPhone =
     customParameters.callerPhone || '';
 
+twilioNumber =
+    customParameters.twilioNumber || '';
+
 callMode =
     customParameters.callMode ||
     'INBOUND_LEAD';
+
+console.log(
+    'Twilio number called:',
+    twilioNumber
+);
 
 outboundCustomerName =
     customParameters.customerName || '';
