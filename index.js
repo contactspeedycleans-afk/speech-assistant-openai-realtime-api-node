@@ -1311,7 +1311,7 @@ latestMediaTimestamp = 0;
 
 
                             try {
-                           customer =
+customer =
     await findCustomerByPhone(
         callerPhone
     );
@@ -1322,6 +1322,18 @@ recentCalls =
     );
 
 if (customer) {
+    customerBookings =
+        await findCustomerBookings(
+            customer.id
+        );
+
+    console.log(
+        'Bookings found:',
+        customerBookings.length
+    );
+
+    console.log(
+        'Returning customer found:',
                                     console.log(
                                         'Returning customer found:',
                                         {
