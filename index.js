@@ -10,6 +10,7 @@ import { createCustomerLookup } from './lib/customerLookup.js';
 import { createBookingLookup } from './lib/bookingLookup.js';
 import { createTechnicianStatus } from './lib/technicianStatus.js';
 import { createKnowledgeSearch } from './lib/knowledgeSearch.js';
+import { createKnowledgeTest } from './lib/knowledgeTest.js';
 import { createTwilioRecording } from './lib/twilioRecording.js';
 import { createOpenAiToolHandlers } from './lib/openAiToolHandlers.js';
 import { buildSessionContext } from './lib/sessionContextBuilder.js';
@@ -57,6 +58,11 @@ const {
 const {
     searchCompanyKnowledge
 } = createKnowledgeSearch(db);
+const {
+    testKnowledge
+} = createKnowledgeTest({
+    searchCompanyKnowledge
+});
 const {
     startCallRecording
 } = createTwilioRecording(twilioClient);
@@ -794,9 +800,10 @@ fastify.get('/dev/test-technicians', async (request, reply) => {
         });
     }
 });
-
+fastify.get('/dev/test-knowledge', testKnowledge);
 fastify.listen(
     {
+    
         port: PORT,
         host: '0.0.0.0'
     },
