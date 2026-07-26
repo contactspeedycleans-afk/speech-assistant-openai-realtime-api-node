@@ -123,8 +123,7 @@ fastify.all('/incoming-call', async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-      <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
-   <Parameter
+<Stream url="wss://emma-development-production.up.railway.app/media-stream">   <Parameter
     name="callerPhone"
     value="${callerPhone}"
 />
@@ -185,8 +184,7 @@ fastify.post('/outbound-call', async (request, reply) => {
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-        <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
-            <Parameter
+<Stream url="wss://emma-development-production.up.railway.app/media-stream">            <Parameter
                 name="callerPhone"
                 value="${escapeXml(phone)}"
             />
@@ -295,8 +293,7 @@ fastify.all('/outbound-press1', async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-        <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
-            <Parameter
+<Stream url="wss://emma-development-production.up.railway.app/media-stream">            <Parameter
                 name="callerPhone"
                 value="${customerPhone}"
             />
