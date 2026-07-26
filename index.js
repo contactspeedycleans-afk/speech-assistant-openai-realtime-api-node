@@ -14,7 +14,7 @@ import { createTwilioRecording } from './lib/twilioRecording.js';
 import { createOpenAiToolHandlers } from './lib/openAiToolHandlers.js';
 import { buildSessionContext } from './lib/sessionContextBuilder.js';
 import { buildOpenAiSession } from './lib/openAiSessionBuilder.js';
-
+import { createTechnicianSearch } from './lib/technicianSearch.js';
 
 
 dotenv.config();
@@ -38,6 +38,9 @@ const db = new Pool({
         rejectUnauthorized: false
     }
 });
+const {
+    searchTechnicians
+} = createTechnicianSearch(db);
 const {
     findCustomerByPhone,
     findRecentCalls
@@ -763,6 +766,33 @@ if (customer) {
             });
         }
     );
+});
+
+fastify.get('/dev/test-technicians', async (request, reply) => {
+    try {
+        const results = await searchTechnicians({
+            city: request.query?.city || '',
+            state: request.query?.state || '',
+            areaCode: request.query?.areaCode || '',
+            hasSupplies: request.query?.hasSupplies || '',
+            willingToTravel: request.query?.willingToTravel || '',
+            weekends: request.query?.weekends || '',
+            limit: request.query?.limit || 10
+        });
+
+        return reply.send({
+            success: true,
+            count: results.length,
+            technicians: results
+        });
+    } catch (error) {
+        console.error('DEV technician search failed:', error);
+
+        return reply.code(500).send({
+            success: false,
+            error: error?.message || 'Technician search failed'
+        });
+    }
 });
 
 fastify.listen(
