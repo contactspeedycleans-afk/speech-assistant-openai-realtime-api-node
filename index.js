@@ -524,18 +524,21 @@ if (
                         );
                     }
                         
+const knowledgeHandled =
     await handleKnowledgeTool({
-    response,
-    openAiWs,
-    WebSocket
-});
+        response,
+        openAiWs,
+        WebSocket
+    });
 
+if (!knowledgeHandled) {
     await handleTechnicianStatusTool({
-    response,
-    openAiWs,
-    WebSocket,
-    callerPhone
-});
+        response,
+        openAiWs,
+        WebSocket,
+        callerPhone
+    });
+}
 
     
 } catch (error) {
