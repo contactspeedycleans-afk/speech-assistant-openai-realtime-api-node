@@ -95,12 +95,9 @@ const TEMPERATURE = 0.55;
 const PORT = process.env.PORT || 8080;
 
 
-
 const LOG_EVENT_TYPES = [
     'error',
-    'response.done',
-    'session.created',
-    'session.updated'
+    'response.done'
 ];
 
 
@@ -460,16 +457,15 @@ const response = JSON.parse(
     data.toString()
 );
 
-                    if (
-                        LOG_EVENT_TYPES.includes(
-                            response.type
-                        )
-                    ) {
-                        console.log(
-                            `Received event: ${response.type}`,
-                            response
-                        );
-                    }
+                  if (
+    LOG_EVENT_TYPES.includes(
+        response.type
+    )
+) {
+    console.log(
+        `Received event: ${response.type}`
+    );
+}
 const noisyEvents = [
     'response.output_audio.delta',
     'response.output_audio_transcript.delta',
