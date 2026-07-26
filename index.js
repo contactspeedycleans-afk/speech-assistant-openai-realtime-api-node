@@ -470,10 +470,19 @@ const response = JSON.parse(
                             response
                         );
                     }
-console.log(
-    'OpenAI Event:',
-    response.type
-);
+const noisyEvents = [
+    'response.output_audio.delta',
+    'response.output_audio_transcript.delta',
+    'input_audio_buffer.speech_started',
+    'input_audio_buffer.speech_stopped'
+];
+
+if (!noisyEvents.includes(response.type)) {
+    console.log(
+        'OpenAI Event:',
+        response.type
+    );
+}
 
 if (
     typeof response.type === 'string' &&
