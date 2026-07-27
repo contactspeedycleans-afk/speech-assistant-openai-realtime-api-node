@@ -572,7 +572,17 @@ If they say no, say:
 "Perfect! Thank you for calling SpeedyCleans. Have a great day!"
 
 Give one friendly closing and do not repeatedly say goodbye.`
+                                }
+                            ]
+                        }
+                    })
+                );
 
+                openAiWs.send(
+                    JSON.stringify({
+                        type: 'response.create'
+                    })
+                );
                 openAiWs.send(
                     JSON.stringify({
                         type: 'response.create'
