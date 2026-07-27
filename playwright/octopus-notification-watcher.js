@@ -152,7 +152,9 @@ async function ensureLoggedIn(page) {
 
 async function readNotifications(page) {
   await ensureLoggedIn(page);
-
+console.log("Current Octopus URL:", page.url());
+console.log("Page title:", await page.title());
+console.log("Page text preview:", (await page.locator("body").innerText()).slice(0, 1000));
   const links = page.locator('a[href^="/booking/view/"]');
 
   try {
