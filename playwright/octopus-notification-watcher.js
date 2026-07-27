@@ -4,13 +4,20 @@ import pg from "pg";
 const { Pool } = pg;
 
 const NOTIFICATIONS_URL = process.env.OCTOPUS_NOTIFICATIONS_URL;
+const OCTOPUS_EMAIL = process.env.OCTOPUS_EMAIL;
+const OCTOPUS_PASSWORD = process.env.OCTOPUS_PASSWORD;
 const DATABASE_URL = process.env.DATABASE_URL;
-const STORAGE_STATE_PATH =
-  process.env.OCTOPUS_STORAGE_STATE_PATH ||
-  "/app/data/octopus-storage-state.json";
 
 if (!NOTIFICATIONS_URL) {
   throw new Error("Missing OCTOPUS_NOTIFICATIONS_URL");
+}
+
+if (!OCTOPUS_EMAIL) {
+  throw new Error("Missing OCTOPUS_EMAIL");
+}
+
+if (!OCTOPUS_PASSWORD) {
+  throw new Error("Missing OCTOPUS_PASSWORD");
 }
 
 if (!DATABASE_URL) {
@@ -19,7 +26,9 @@ if (!DATABASE_URL) {
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 function classifyNotification(text) {
@@ -78,25 +87,83 @@ async function saveNotification(notification) {
   );
 }
 
-async function readNotifications(page) {
-  await page.goto(NOTIFICATIONS_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: 60000
+async function loginToOctopus(page) {
+  console.log("Logging into OctopusPro...");
+
+  const emailInput = page.locator(
+    'input[type="email"], input[name="email"], input[name="username"], #email'
+  ).first();
+
+  const passwordInput = page.locator(
+    'input[type="password"], input[name="password"], #password'
+  ).first();
+
+  await emailInput.waitFor({
+    state: "visible",
+    timeout: 30000
   });
+
+  await emailInput.fill(OCTOPUS_EMAIL);
+  await passwordInput.fill(OCTOPUS_PASSWORD);
+
+  const submitButton = page.locator(
+    'button[type="submit"], input[type="submit"]'
+  ).first();
+
+  await Promise.all([
+    page.waitForLoadState("domcontentloaded"),
+    submitButton.click()
+  ]);
+
+  await page.waitForTimeout(3000);
 
   if (
     page.url().toLowerCase().includes("login") ||
     page.url().toLowerCase().includes("signin")
   ) {
-    throw new Error("OctopusPro login session expired");
+    throw new Error(
+      "OctopusPro login failed. Check the email, password, or whether verification is required."
+    );
   }
+
+  console.log("OctopusPro login successful.");
+}
+
+async function ensureLoggedIn(page) {
+  await page.goto(NOTIFICATIONS_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+
+  const currentUrl = page.url().toLowerCase();
+
+  if (
+    currentUrl.includes("login") ||
+    currentUrl.includes("signin")
+  ) {
+    await loginToOctopus(page);
+
+    await page.goto(NOTIFICATIONS_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    });
+  }
+}
+
+async function readNotifications(page) {
+  await ensureLoggedIn(page);
 
   const links = page.locator('a[href^="/booking/view/"]');
 
-  await links.first().waitFor({
-    state: "visible",
-    timeout: 20000
-  });
+  try {
+    await links.first().waitFor({
+      state: "visible",
+      timeout: 20000
+    });
+  } catch {
+    console.log("No booking notification links were found.");
+    return;
+  }
 
   const count = await links.count();
 
@@ -116,7 +183,6 @@ async function readNotifications(page) {
       eventType: classifyNotification(text),
       fieldworkerName: extractWorkerName(text),
       text,
-      href,
       notificationKey: `${href}|${text}`
     });
   }
@@ -127,22 +193,31 @@ async function readNotifications(page) {
 async function main() {
   const browser = await chromium.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"]
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage"
+    ]
   });
 
-  const context = await browser.newContext({
-    storageState: STORAGE_STATE_PATH
-  });
-
+  const context = await browser.newContext();
   const page = await context.newPage();
 
   await readNotifications(page);
 
+  let checkRunning = false;
+
   setInterval(async () => {
+    if (checkRunning) return;
+
+    checkRunning = true;
+
     try {
       await readNotifications(page);
     } catch (error) {
       console.error("Notification check failed:", error);
+    } finally {
+      checkRunning = false;
     }
   }, 15000);
 }
