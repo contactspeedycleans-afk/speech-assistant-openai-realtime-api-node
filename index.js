@@ -546,7 +546,7 @@ When everything is complete, ask:
 
 If they say no, say:
 
-"Perfect! Thank you for calling SpeedyCleans. Have a great day!"
+"Perfect! Thank you for calling SpeedyCleans. Have a great day!"'
                                 }
                             ]
                         }
