@@ -138,6 +138,22 @@ async function loginToOctopus(page) {
   await page.waitForTimeout(3000);
 
   console.log("URL after login:", page.url());
+  if (page.url().includes("/checkUserInMulticompanies")) {
+  console.log("Company selection page detected.");
+  console.log(
+    "Company page text:",
+    (await page.locator("body").innerText()).slice(0, 2000)
+  );
+
+  const companyLinks = await page.locator("a").evaluateAll((links) =>
+    links.map((link) => ({
+      text: link.innerText.trim(),
+      href: link.getAttribute("href")
+    }))
+  );
+
+  console.log("Company selection links:", JSON.stringify(companyLinks));
+}
 
   if (page.url().toLowerCase().includes("/login")) {
     throw new Error("OctopusPro login failed or returned to the login page.");
