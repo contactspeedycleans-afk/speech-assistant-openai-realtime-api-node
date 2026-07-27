@@ -517,7 +517,7 @@ async function main() {
     } finally {
       checkRunning = false;
     }
-  }, 15000);
+  }, 60000);
 
   const shutdown = async (signal) => {
     console.log(`Received ${signal}. Shutting down watcher.`);
