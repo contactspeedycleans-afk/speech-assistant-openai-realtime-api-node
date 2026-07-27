@@ -481,10 +481,11 @@ If they say no, say:
 "Perfect! Thank you for calling SpeedyCleans. Have a great day!"
 
 Give one friendly closing and do not repeatedly say goodbye.`
-
+                                       
+: customer && customerBookingCount > 0
+                                       
       : `Begin the inbound new-customer call now.
 
-Say:
 
 "Thank you for calling SpeedyCleans. This is Emma. How can I help you today?"
 
