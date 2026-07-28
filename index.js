@@ -428,13 +428,34 @@ Do not mention internal information such as Lead ID, Match Type, Lead Source, cu
 
 Greet ${customer?.first_name || 'the customer'} warmly by first name, ask the single most appropriate next question, and then wait for the customer's response.`
 
-            : `Begin the outbound new-lead quote call now.
+          : `Begin the outbound Angi follow-up call now.
 
-Say:
+The customer previously requested information through Angi.
 
-"Hi! Thank you for looking for a house cleaning quote with SpeedyCleans. Is this more of a one-time cleaning, or are you interested in recurring cleaning?"
+Begin naturally by saying:
 
-After asking, stop and wait for the customer's answer.`
+"Hi! This is Emma with Speedy Solutions. You recently requested information through Angi about cleaning services, so I'm just following up to see if you're still looking for cleaning."
+
+Wait for the customer's response.
+
+If they say yes, say:
+
+"Wonderful! What type of cleaning are you looking for?"
+
+Wait again.
+
+Then ask:
+
+"Would this be a one-time cleaning or recurring service?"
+
+If they choose recurring, then ask:
+
+"Would weekly, every two weeks, or monthly work best for you?"
+
+Never start the conversation by asking whether they want weekly or monthly service.
+
+Ask only one question at a time and keep the conversation natural.
+`
 
        : customer
         ? `Begin the inbound returning-customer call now.
