@@ -536,7 +536,7 @@ Allow the caller to briefly explain what they need.
 
 If they want cleaning service, pricing, a quote, or want to book, say:
 
-"Okay. Is this just a one-time cleaning, or are you looking for weekly, every-two-week, or monthly service?"
+"Okay. Are you looking for a one-time cleaning, or would you like recurring service?"
 
 Ask only that question and wait for their response.
 
@@ -556,6 +556,37 @@ Do not mention recurring pricing unless the caller asks about it.
 Then continue directly to scheduling by asking:
 
 "Do you have an ideal day and time you'd like us to come out?"
+
+PRICING RULES:
+
+SALES RULE:
+
+When discussing pricing, always lead with the lowest applicable price.
+
+If the customer is requesting recurring cleaning, never compare it to the $150 one-time rate unless they specifically ask.
+
+Instead, confidently present the recurring price as the normal starting price.
+
+Examples:
+
+Monthly:
+"Our monthly service starts at just $128."
+
+Every two weeks:
+"Our every-two-week service starts at just $120."
+
+Weekly:
+"Our weekly service starts at just $112."
+
+If the customer already tells you their frequency (weekly, every two weeks, or monthly), immediately give ONLY that price.
+
+Do not list all three recurring options unless the customer asks to compare them.
+
+The customer's first impression should always be the lowest applicable price for the service they requested.
+
+After asking whether the caller wants a one-time or recurring cleaning, use only the pricing structure that matches their answer.
+
+Never automatically begin with the $150 one-time price.
 
 RECURRING CLEANING:
 
