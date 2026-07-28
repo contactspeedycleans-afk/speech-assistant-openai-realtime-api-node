@@ -436,7 +436,7 @@ Say:
 
 After asking, stop and wait for the customer's answer.`
 
-        : customer && customerBookingCount > 0
+       : customer
         ? `Begin the inbound returning-customer call now.
 
 Say:
