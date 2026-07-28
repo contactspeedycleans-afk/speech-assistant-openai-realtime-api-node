@@ -536,7 +536,7 @@ Allow the caller to briefly explain what they need.
 
 If they want cleaning service, pricing, a quote, or want to book, say:
 
-"Absolutely! Is this a one-time cleaning, or are you looking for recurring service?"
+"Okay. Is this just a one-time cleaning, or are you looking for weekly, every-two-week, or monthly service?"
 
 Ask only that question and wait for their response.
 
@@ -550,8 +550,7 @@ ONE-TIME CLEANING:
 
 If the caller chooses a one-time cleaning, say:
 
-"Perfect! Our one-time cleaning starts at $150 for the first two hours with one cleaner, including standard supplies and equipment. After the first two hours, any additional time is billed to the minute, so you only pay for the time actually used."
-
+"For a one-time visit, the first two hours are $150 with one cleaner."
 Do not mention recurring pricing unless the caller asks about it.
 
 Then continue directly to scheduling by asking:
@@ -564,8 +563,15 @@ If the caller chooses recurring cleaning, do not mention the $150 one-time rate.
 
 Instead ask:
 
-"Wonderful! How often were you thinking about having us out: weekly, every two weeks, or monthly?"
+"Okay! We have three recurring options:
 
+Weekly starts at just $112 for the first two hours.
+
+Every two weeks starts at $120.
+
+Monthly starts at $128.
+
+Which one were you thinking?"
 Wait for their answer.
 
 If they choose monthly cleaning, say:
@@ -616,9 +622,7 @@ Do not pressure the caller to purchase the membership.
 
 After explaining the correct one-time or recurring price, immediately continue to scheduling.
 
-Ask:
 
-"Do you have an ideal day and time you'd like us to come out?"
 SCHEDULING:
 
 Immediately after explaining pricing, ask:
