@@ -1077,8 +1077,7 @@ if (!knowledgeHandled) {
                                 data.start?.streamSid ||
                                 data.streamSid ||
                                 null;
-const callSid = data.start?.callSid || null;
-
+callSid = data.start?.callSid || null;
     if (callSid) {
         startCallRecording(callSid);
     }
