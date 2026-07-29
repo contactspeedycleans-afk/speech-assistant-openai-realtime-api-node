@@ -953,13 +953,96 @@ Keep responses short, friendly, and conversational.`                     }
                 openAiConnected = true;
                 initializeSession();
             });
+const scheduleVoicemailHangup = () => {
+    if (
+        voicemailHangupScheduled ||
+        !callSid ||
+        !callMode.startsWith('OUTBOUND')
+    ) {
+        return;
+    }
 
+    voicemailHangupScheduled = true;
+
+    console.log(
+        'Voicemail detected. Scheduling Twilio hangup:',
+        callSid
+    );
+
+    setTimeout(async () => {
+        try {
+            await twilioClient
+                .calls(callSid)
+                .update({
+                    status: 'completed'
+                });
+
+            console.log(
+                'Voicemail call ended successfully:',
+                callSid
+            );
+        } catch (error) {
+            console.error(
+                'Unable to end voicemail call:',
+                error
+            );
+        }
+    }, 12000);
+};
 openAiWs.on('message', async (data) => {
 try {
 const response = JSON.parse(
     data.toString()
 );
+if (
+    response.type ===
+        'response.output_audio_transcript.delta' &&
+    response.delta
+) {
+    lastAssistantTranscript += response.delta;
+}
 
+if (
+    response.type ===
+    'response.output_audio_transcript.done'
+) {
+    const completedTranscript =
+        String(
+            response.transcript ||
+            lastAssistantTranscript ||
+            ''
+        ).toLowerCase();
+
+    console.log(
+        'Completed assistant transcript:',
+        completedTranscript
+    );
+
+    const voicemailPhrases = [
+        'reached your voicemail',
+        'reached a voicemail',
+        'leave you a message',
+        'leave a brief message',
+        'after the beep',
+        'this appears to be voicemail',
+        'this seems to be voicemail'
+    ];
+
+    const detectedVoicemail =
+        voicemailPhrases.some((phrase) =>
+            completedTranscript.includes(phrase)
+        );
+
+    if (
+        detectedVoicemail &&
+        callMode.startsWith('OUTBOUND')
+    ) {
+        scheduleVoicemailHangup();
+    }
+
+    lastAssistantTranscript = '';
+}
+    
                   if (
     LOG_EVENT_TYPES.includes(
         response.type
