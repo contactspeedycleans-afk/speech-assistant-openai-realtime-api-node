@@ -315,10 +315,14 @@ fastify.register(async (websocketServer) => {
             console.log('Twilio client connected');
 
 let streamSid = null;
+let callSid = null;
 let latestMediaTimestamp = 0;
 let callerPhone = '';
 let twilioNumber = '';
 let callMode = 'INBOUND_LEAD';
+
+let voicemailHangupScheduled = false;
+let lastAssistantTranscript = '';
 
 let outboundCustomerName = '';
 let customInstructions = '';
