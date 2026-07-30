@@ -671,7 +671,8 @@ async function readNotifications(page) {
 
   const octopusBookingId = extractOctopusBookingId(href);
 const octopusBookingUrl = buildOctopusBookingUrl(href);
-
+console.log("Booking ID:", octopusBookingId);
+console.log("Booking URL:", octopusBookingUrl);
 const inserted = await saveNotification({
   bookingNumber,
   eventType: classifyNotification(text),
