@@ -286,13 +286,22 @@ async function saveNotification(notification) {
     ]
   );
 
-  if (result.rowCount === 0) {
-    console.log(
-      `Duplicate notification skipped: ${notification.eventType} ${notification.bookingNumber}`
-    );
+if (result.rowCount === 0) {
+  console.log(
+    `Duplicate notification found: ${notification.eventType} ${notification.bookingNumber}`
+  );
 
-    return false;
+  try {
+    await updateBookingTracking(notification);
+  } catch (error) {
+    console.error(
+      `Failed backfilling tracker for ${notification.bookingNumber}:`,
+      error
+    );
   }
+
+  return false;
+}
 
   console.log(
     `Saved ${notification.eventType} event for ${notification.bookingNumber}.`
