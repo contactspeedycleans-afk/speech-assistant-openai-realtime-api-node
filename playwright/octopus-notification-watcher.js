@@ -114,6 +114,111 @@ async function sendToMake(notification) {
     `Make webhook sent: ${eventType} ${notification.bookingNumber}`
   );
 }
+
+async function updateBookingTracking(notification) {
+  const eventType =
+    notification.eventType === "CHECKED_IN"
+      ? "ARRIVED"
+      : notification.eventType;
+
+  const supportedStatuses = [
+    "ON_THE_WAY",
+    "ARRIVED",
+    "STARTED",
+    "FINISHED"
+  ];
+
+  if (!supportedStatuses.includes(eventType)) {
+    console.log(
+      `Skipping tracker update for unsupported event: ${eventType}`
+    );
+
+    return;
+  }
+
+  const trackingToken =
+    `${notification.bookingNumber}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+
+  await pool.query(
+    `
+    INSERT INTO public.booking_tracking (
+      booking_number,
+      tracking_token,
+      status,
+      worker_name,
+      on_the_way_at,
+      arrived_at,
+      started_at,
+      finished_at,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      $3,
+      $4,
+      CASE WHEN $3 = 'ON_THE_WAY' THEN NOW() ELSE NULL END,
+      CASE WHEN $3 = 'ARRIVED' THEN NOW() ELSE NULL END,
+      CASE WHEN $3 = 'STARTED' THEN NOW() ELSE NULL END,
+      CASE WHEN $3 = 'FINISHED' THEN NOW() ELSE NULL END,
+      NOW()
+    )
+    ON CONFLICT (booking_number)
+    DO UPDATE SET
+      status = EXCLUDED.status,
+      worker_name = COALESCE(
+        EXCLUDED.worker_name,
+        public.booking_tracking.worker_name
+      ),
+      on_the_way_at = CASE
+        WHEN EXCLUDED.status = 'ON_THE_WAY'
+        THEN COALESCE(
+          public.booking_tracking.on_the_way_at,
+          NOW()
+        )
+        ELSE public.booking_tracking.on_the_way_at
+      END,
+      arrived_at = CASE
+        WHEN EXCLUDED.status = 'ARRIVED'
+        THEN COALESCE(
+          public.booking_tracking.arrived_at,
+          NOW()
+        )
+        ELSE public.booking_tracking.arrived_at
+      END,
+      started_at = CASE
+        WHEN EXCLUDED.status = 'STARTED'
+        THEN COALESCE(
+          public.booking_tracking.started_at,
+          NOW()
+        )
+        ELSE public.booking_tracking.started_at
+      END,
+      finished_at = CASE
+        WHEN EXCLUDED.status = 'FINISHED'
+        THEN COALESCE(
+          public.booking_tracking.finished_at,
+          NOW()
+        )
+        ELSE public.booking_tracking.finished_at
+      END,
+      updated_at = NOW();
+    `,
+    [
+      notification.bookingNumber,
+      trackingToken,
+      eventType,
+      notification.fieldworkerName
+    ]
+  );
+
+  console.log(
+    `Tracking updated: ${eventType} ${notification.bookingNumber}`
+  );
+}
+
 async function saveNotification(notification) {
   const result = await pool.query(
     `
@@ -143,28 +248,37 @@ async function saveNotification(notification) {
     ]
   );
 
-if (result.rowCount === 0) {
+  if (result.rowCount === 0) {
     console.log(
       `Duplicate notification skipped: ${notification.eventType} ${notification.bookingNumber}`
     );
 
     return false;
-}
+  }
 
-console.log(
+  console.log(
     `Saved ${notification.eventType} event for ${notification.bookingNumber}.`
-);
+  );
 
-try {
-    await sendToMake(notification);
-} catch (error) {
+  try {
+    await updateBookingTracking(notification);
+  } catch (error) {
     console.error(
-        `Failed sending ${notification.eventType} ${notification.bookingNumber} to Make:`,
-        error
+      `Failed updating tracker for ${notification.bookingNumber}:`,
+      error
     );
-}
+  }
 
-return true;
+  try {
+    await sendToMake(notification);
+  } catch (error) {
+    console.error(
+      `Failed sending ${notification.eventType} ${notification.bookingNumber} to Make:`,
+      error
+    );
+  }
+
+  return true;
 }
 async function selectOrganization(page) {
   console.log(
