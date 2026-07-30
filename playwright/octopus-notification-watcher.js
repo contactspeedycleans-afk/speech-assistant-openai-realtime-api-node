@@ -57,7 +57,23 @@ function extractBookingNumber(text) {
   const match = text.match(/BOK-\d+/i);
   return match ? match[0].toUpperCase() : null;
 }
+function extractOctopusBookingId(href) {
+  if (!href) return null;
 
+  const match = href.match(/\/booking\/view\/(\d+)/i);
+
+  return match ? Number(match[1]) : null;
+}
+
+function buildOctopusBookingUrl(href) {
+  if (!href) return null;
+
+  if (href.startsWith("http://") || href.startsWith("https://")) {
+    return href;
+  }
+
+  return `https://admin.octopuspro.com${href}`;
+}
 function extractWorkerName(text) {
   const match = text.match(
     /^(.*?)\s+(?:has finished|has started|has arrived|is on the way|has been automatically checked in)/i
@@ -141,78 +157,100 @@ async function updateBookingTracking(notification) {
       .toString(36)
       .slice(2, 10)}`;
 
-  await pool.query(
-    `
-    INSERT INTO public.booking_tracking (
-      booking_number,
-      tracking_token,
-      status,
-      worker_name,
-      on_the_way_at,
-      arrived_at,
-      started_at,
-      finished_at,
-      updated_at
-    )
-    VALUES (
-      $1,
-      $2,
-      $3,
-      $4,
-      CASE WHEN $3 = 'ON_THE_WAY' THEN NOW() ELSE NULL END,
-      CASE WHEN $3 = 'ARRIVED' THEN NOW() ELSE NULL END,
-      CASE WHEN $3 = 'STARTED' THEN NOW() ELSE NULL END,
-      CASE WHEN $3 = 'FINISHED' THEN NOW() ELSE NULL END,
-      NOW()
-    )
-    ON CONFLICT (booking_number)
-    DO UPDATE SET
-      status = EXCLUDED.status,
-      worker_name = COALESCE(
-        EXCLUDED.worker_name,
-        public.booking_tracking.worker_name
-      ),
-      on_the_way_at = CASE
-        WHEN EXCLUDED.status = 'ON_THE_WAY'
-        THEN COALESCE(
-          public.booking_tracking.on_the_way_at,
-          NOW()
-        )
-        ELSE public.booking_tracking.on_the_way_at
-      END,
-      arrived_at = CASE
-        WHEN EXCLUDED.status = 'ARRIVED'
-        THEN COALESCE(
-          public.booking_tracking.arrived_at,
-          NOW()
-        )
-        ELSE public.booking_tracking.arrived_at
-      END,
-      started_at = CASE
-        WHEN EXCLUDED.status = 'STARTED'
-        THEN COALESCE(
-          public.booking_tracking.started_at,
-          NOW()
-        )
-        ELSE public.booking_tracking.started_at
-      END,
-      finished_at = CASE
-        WHEN EXCLUDED.status = 'FINISHED'
-        THEN COALESCE(
-          public.booking_tracking.finished_at,
-          NOW()
-        )
-        ELSE public.booking_tracking.finished_at
-      END,
-      updated_at = NOW();
-    `,
-    [
-      notification.bookingNumber,
-      trackingToken,
-      eventType,
-      notification.fieldworkerName
-    ]
-  );
+await pool.query(
+  `
+  INSERT INTO public.booking_tracking (
+    booking_number,
+    tracking_token,
+    status,
+    worker_name,
+    octopus_booking_id,
+    octopus_booking_url,
+    on_the_way_at,
+    arrived_at,
+    started_at,
+    finished_at,
+    updated_at
+  )
+  VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    CASE WHEN $3 = 'ON_THE_WAY' THEN NOW() ELSE NULL END,
+    CASE WHEN $3 = 'ARRIVED' THEN NOW() ELSE NULL END,
+    CASE WHEN $3 = 'STARTED' THEN NOW() ELSE NULL END,
+    CASE WHEN $3 = 'FINISHED' THEN NOW() ELSE NULL END,
+    NOW()
+  )
+  ON CONFLICT (booking_number)
+  DO UPDATE SET
+    status = EXCLUDED.status,
+
+    worker_name = COALESCE(
+      EXCLUDED.worker_name,
+      public.booking_tracking.worker_name
+    ),
+
+    octopus_booking_id = COALESCE(
+      EXCLUDED.octopus_booking_id,
+      public.booking_tracking.octopus_booking_id
+    ),
+
+    octopus_booking_url = COALESCE(
+      EXCLUDED.octopus_booking_url,
+      public.booking_tracking.octopus_booking_url
+    ),
+
+    on_the_way_at = CASE
+      WHEN EXCLUDED.status = 'ON_THE_WAY'
+      THEN COALESCE(
+        public.booking_tracking.on_the_way_at,
+        NOW()
+      )
+      ELSE public.booking_tracking.on_the_way_at
+    END,
+
+    arrived_at = CASE
+      WHEN EXCLUDED.status = 'ARRIVED'
+      THEN COALESCE(
+        public.booking_tracking.arrived_at,
+        NOW()
+      )
+      ELSE public.booking_tracking.arrived_at
+    END,
+
+    started_at = CASE
+      WHEN EXCLUDED.status = 'STARTED'
+      THEN COALESCE(
+        public.booking_tracking.started_at,
+        NOW()
+      )
+      ELSE public.booking_tracking.started_at
+    END,
+
+    finished_at = CASE
+      WHEN EXCLUDED.status = 'FINISHED'
+      THEN COALESCE(
+        public.booking_tracking.finished_at,
+        NOW()
+      )
+      ELSE public.booking_tracking.finished_at
+    END,
+
+    updated_at = NOW();
+  `,
+  [
+    notification.bookingNumber,
+    trackingToken,
+    eventType,
+    notification.fieldworkerName,
+    notification.octopusBookingId,
+    notification.octopusBookingUrl
+  ]
+);
 
   console.log(
     `Tracking updated: ${eventType} ${notification.bookingNumber}`
@@ -631,13 +669,18 @@ async function readNotifications(page) {
       continue;
     }
 
-    const inserted = await saveNotification({
-      bookingNumber,
-      eventType: classifyNotification(text),
-      fieldworkerName: extractWorkerName(text),
-      text,
-      notificationKey: `${href}|${text}`
-    });
+  const octopusBookingId = extractOctopusBookingId(href);
+const octopusBookingUrl = buildOctopusBookingUrl(href);
+
+const inserted = await saveNotification({
+  bookingNumber,
+  eventType: classifyNotification(text),
+  fieldworkerName: extractWorkerName(text),
+  octopusBookingId,
+  octopusBookingUrl,
+  text,
+  notificationKey: `${href}|${text}`
+});
 
     if (inserted) {
       newNotifications += 1;
