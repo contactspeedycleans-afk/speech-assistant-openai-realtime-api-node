@@ -8,6 +8,8 @@ const OCTOPUS_EMAIL = process.env.OCTOPUS_EMAIL;
 const OCTOPUS_PASSWORD = process.env.OCTOPUS_PASSWORD;
 const DATABASE_URL = process.env.DATABASE_URL;
 
+const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
+
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME || "SpeedyCleans";
 
@@ -26,7 +28,9 @@ if (!OCTOPUS_PASSWORD) {
 if (!DATABASE_URL) {
   throw new Error("Missing DATABASE_URL");
 }
-
+if (!MAKE_WEBHOOK_URL) {
+  throw new Error("Missing MAKE_WEBHOOK_URL");
+}
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: {
@@ -61,7 +65,55 @@ function extractWorkerName(text) {
 
   return match ? match[1].trim() : null;
 }
+async function sendToMake(notification) {
+  let eventType = notification.eventType;
 
+  if (eventType === "CHECKED_IN") {
+    eventType = "ARRIVED";
+  }
+
+  const supportedStatuses = [
+    "ON_THE_WAY",
+    "ARRIVED",
+    "FINISHED"
+  ];
+
+  if (!supportedStatuses.includes(eventType)) {
+    console.log(
+      `Skipping Make webhook for unsupported event: ${eventType}`
+    );
+
+    return;
+  }
+
+  const payload = {
+    event_type: eventType,
+    booking_number: notification.bookingNumber,
+    fieldworker_name: notification.fieldworkerName || "",
+    notification_text: notification.text || "",
+    detected_at: new Date().toISOString()
+  };
+
+  const response = await fetch(MAKE_WEBHOOK_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `Make webhook failed with status ${response.status}: ${responseText}`
+    );
+  }
+
+  console.log(
+    `Make webhook sent: ${eventType} ${notification.bookingNumber}`
+  );
+}
 async function saveNotification(notification) {
   const result = await pool.query(
     `
@@ -91,17 +143,29 @@ async function saveNotification(notification) {
     ]
   );
 
-  if (result.rowCount > 0) {
+if (result.rowCount === 0) {
     console.log(
-      `Saved ${notification.eventType} event for ${notification.bookingNumber}.`
+      `Duplicate notification skipped: ${notification.eventType} ${notification.bookingNumber}`
     );
 
-    return true;
-  }
-
-  return false;
+    return false;
 }
 
+console.log(
+    `Saved ${notification.eventType} event for ${notification.bookingNumber}.`
+);
+
+try {
+    await sendToMake(notification);
+} catch (error) {
+    console.error(
+        `Failed sending ${notification.eventType} ${notification.bookingNumber} to Make:`,
+        error
+    );
+}
+
+return true;
+}
 async function selectOrganization(page) {
   console.log(
     `Selecting OctopusPro organization: ${ORGANIZATION_NAME}...`
