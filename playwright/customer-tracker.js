@@ -858,7 +858,8 @@ async function startServer() {
   });
 }
 
-console.log(`Received ${signal}. Shutting down tracker.`);
+function shutdown(signal) {
+  console.log(`Received ${signal}. Shutting down tracker.`);
 
   server.close(async () => {
     await pool.end().catch(() => {});
