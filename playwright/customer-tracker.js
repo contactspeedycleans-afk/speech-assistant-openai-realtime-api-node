@@ -853,13 +853,12 @@ async function startServer() {
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(
-      \`Customer tracker is listening on port \${PORT}\`
+      `Customer tracker is listening on port ${PORT}`
     );
   });
 }
 
-async function shutdown(signal) {
-  console.log(\`Received \${signal}. Shutting down tracker.\`);
+console.log(`Received ${signal}. Shutting down tracker.`);
 
   server.close(async () => {
     await pool.end().catch(() => {});
