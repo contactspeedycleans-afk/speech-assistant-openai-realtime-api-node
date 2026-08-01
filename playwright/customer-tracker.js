@@ -66,7 +66,42 @@ function getTrackingToken(pathname, prefix) {
     return null;
   }
 }
+async function recordTrackingOpen(request, trackingToken) {
+  const forwardedFor = request.headers["x-forwarded-for"];
 
+  const visitorIp =
+    typeof forwardedFor === "string" && forwardedFor.trim()
+      ? forwardedFor.split(",")[0].trim()
+      : request.socket.remoteAddress || "";
+
+  const userAgent =
+    typeof request.headers["user-agent"] === "string"
+      ? request.headers["user-agent"].slice(0, 1000)
+      : "";
+
+  await pool.query(
+    `
+    UPDATE public.booking_tracking
+    SET
+      tracking_open_count =
+        COALESCE(tracking_open_count, 0) + 1,
+
+      tracking_first_opened_at =
+        COALESCE(tracking_first_opened_at, NOW()),
+
+      tracking_last_opened_at = NOW(),
+      tracking_last_ip = NULLIF($2, ''),
+      tracking_last_user_agent = NULLIF($3, '')
+
+    WHERE tracking_token = $1;
+    `,
+    [
+      trackingToken,
+      visitorIp,
+      userAgent
+    ]
+  );
+}
 function buildTrackingPage() {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -926,17 +961,86 @@ const server = http.createServer(async (request, response) => {
     }
 
     const pageToken = getTrackingToken(
-      pathname,
-      "/track/"
-    );
+  pathname,
+  "/track/"
+);
 
-    if (request.method === "GET" && pageToken) {
-      return sendHtml(
-        response,
-        200,
-        buildTrackingPage()
-      );
-    }
+if (request.method === "GET" && pageToken) {
+  const result = await pool.query(
+    `
+    SELECT booking_number
+    FROM public.booking_tracking
+    WHERE tracking_token = $1
+    LIMIT 1;
+    `,
+    [pageToken]
+  );
+
+  if (result.rowCount === 0) {
+    return sendHtml(
+      response,
+      404,
+      `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Tracking Link Unavailable</title>
+</head>
+
+<body style="
+  margin:0;
+  min-height:100vh;
+  display:grid;
+  place-items:center;
+  padding:24px;
+  box-sizing:border-box;
+  font-family:Arial,sans-serif;
+  color:#172033;
+  background:#f4f7fb;
+">
+  <main style="
+    max-width:600px;
+    padding:38px;
+    text-align:center;
+    border:1px solid #dfe5ef;
+    border-radius:20px;
+    background:white;
+    box-shadow:0 20px 55px rgba(29,43,75,.12);
+  ">
+    <h1 style="margin-top:0;">
+      Tracking information unavailable
+    </h1>
+
+    <p>
+      This tracking link was not found or is no longer available.
+    </p>
+  </main>
+</body>
+</html>`
+    );
+  }
+
+  await recordTrackingOpen(
+    request,
+    pageToken
+  );
+
+  console.log(
+    `Tracking page opened: ${result.rows[0].booking_number}`
+  );
+
+  return sendHtml(
+    response,
+    200,
+    buildTrackingPage()
+  );
+}
+    
 
     return sendJson(response, 404, {
       success: false,
