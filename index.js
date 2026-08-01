@@ -1048,10 +1048,7 @@ const detectedVoicemail =
         )
     );
 
-    const detectedVoicemail =
-        voicemailPhrases.some((phrase) =>
-            completedTranscript.includes(phrase)
-        );
+
 
     if (
         detectedVoicemail &&
