@@ -987,7 +987,7 @@ const scheduleVoicemailHangup = () => {
                 error
             );
         }
-    }, 3500);
+    }, 7500);
 };
 openAiWs.on('message', async (data) => {
 try {
