@@ -344,13 +344,29 @@ async function extractBookingPricing(page) {
     }
   }
 
-  return {
-    hourlyRate,
-    discountPercent,
-    subtotal,
-    finalTotal,
-    durationMinutes
-  };
+const minimumTotal =
+  hourlyRate !== null
+    ? hourlyRate * 2
+    : null;
+
+if (
+  finalTotal !== null &&
+  minimumTotal !== null &&
+  finalTotal < minimumTotal
+) {
+  finalTotal =
+    subtotal !== null
+      ? subtotal
+      : minimumTotal;
+}
+
+return {
+  hourlyRate,
+  discountPercent,
+  subtotal,
+  finalTotal,
+  durationMinutes
+};
 }
 
 async function loadBookingsToSync() {
