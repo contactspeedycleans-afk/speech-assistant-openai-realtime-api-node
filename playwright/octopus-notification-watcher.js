@@ -102,11 +102,30 @@ async function sendToMake(notification) {
     return;
   }
 
+  const trackingResult = await pool.query(
+    `
+    SELECT tracking_token
+    FROM public.booking_tracking
+    WHERE booking_number = $1
+    LIMIT 1;
+    `,
+    [notification.bookingNumber]
+  );
+
+  const trackingToken =
+    trackingResult.rows[0]?.tracking_token || "";
+
+  const trackingLink =
+    trackingToken
+      ? `https://track.speedycleans.com/track/${trackingToken}`
+      : "";
+
   const payload = {
     event_type: eventType,
     booking_number: notification.bookingNumber,
     fieldworker_name: notification.fieldworkerName || "",
     notification_text: notification.text || "",
+    tracking_link: trackingLink,
     detected_at: new Date().toISOString()
   };
 
@@ -129,6 +148,16 @@ async function sendToMake(notification) {
   console.log(
     `Make webhook sent: ${eventType} ${notification.bookingNumber}`
   );
+
+  if (trackingLink) {
+    console.log(
+      `Tracking link included: ${trackingLink}`
+    );
+  } else {
+    console.log(
+      `No tracking link found for ${notification.bookingNumber}`
+    );
+  }
 }
 
 async function updateBookingTracking(notification) {
