@@ -423,6 +423,25 @@ function buildTrackingPage() {
               <dt>Time on site</dt>
               <dd id="elapsed-time">Not started</dd>
             </div>
+       <div id="hourly-rate-row" class="detail hidden">
+  <dt>Hourly rate</dt>
+  <dd id="hourly-rate">—</dd>
+</div>
+
+<div id="discount-row" class="detail hidden">
+  <dt>Discount</dt>
+  <dd id="discount-percent">—</dd>
+</div>
+
+<div id="service-total-row" class="detail hidden">
+  <dt id="service-total-label">Current service total</dt>
+  <dd id="service-total">—</dd>
+</div>
+
+<div id="minimum-note-row" class="detail hidden">
+  <dt>Billing minimum</dt>
+  <dd>Two-hour minimum applies</dd>
+</div>
           </dl>
 
           <section class="timeline">
@@ -521,7 +540,28 @@ function buildTrackingPage() {
         element.textContent = value;
       }
     }
+function formatCurrency(value) {
+  const number = Number(value);
 
+  if (!Number.isFinite(number)) {
+    return "Not available";
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD"
+  }).format(number);
+}
+
+function showElement(id, shouldShow) {
+  const element = document.getElementById(id);
+
+  if (!element) {
+    return;
+  }
+
+  element.classList.toggle("hidden", !shouldShow);
+}
     function formatTime(value) {
       if (!value) {
         return "Waiting";
@@ -636,7 +676,57 @@ function buildTrackingPage() {
           data.finished_at
         )
       );
+const hourlyRate = Number(data.hourly_rate);
+const discountPercent = Number(data.discount_percent);
+const subtotal = Number(data.subtotal);
+const finalTotal = Number(data.final_total);
 
+const hasHourlyRate = Number.isFinite(hourlyRate);
+const hasDiscount =
+  Number.isFinite(discountPercent) &&
+  discountPercent > 0;
+
+const displayedTotal =
+  data.status === "FINISHED" &&
+  Number.isFinite(finalTotal)
+    ? finalTotal
+    : subtotal;
+
+showElement("hourly-rate-row", hasHourlyRate);
+showElement("discount-row", hasDiscount);
+showElement(
+  "service-total-row",
+  Number.isFinite(displayedTotal)
+);
+showElement("minimum-note-row", hasHourlyRate);
+
+if (hasHourlyRate) {
+  setText(
+    "hourly-rate",
+    formatCurrency(hourlyRate) + " per labor hour"
+  );
+}
+
+if (hasDiscount) {
+  setText(
+    "discount-percent",
+    discountPercent + "%"
+  );
+}
+
+if (Number.isFinite(displayedTotal)) {
+  setText(
+    "service-total-label",
+    data.status === "FINISHED"
+      ? "Final service total"
+      : "Current service total"
+  );
+
+  setText(
+    "service-total",
+    formatCurrency(displayedTotal)
+  );
+}
       setTimelineStep(
         "step-on-way",
         "time-on-way",
@@ -789,14 +879,20 @@ const server = http.createServer(async (request, response) => {
       const result = await pool.query(
         `
         SELECT
-          booking_number,
-          status,
-          worker_name,
-          on_the_way_at,
-          arrived_at,
-          started_at,
-          finished_at,
-          updated_at
+        SELECT
+  booking_number,
+  status,
+  worker_name,
+  on_the_way_at,
+  arrived_at,
+  started_at,
+  finished_at,
+  hourly_rate,
+  discount_percent,
+  subtotal,
+  final_total,
+  duration_minutes,
+  updated_at
         FROM public.booking_tracking
         WHERE tracking_token = $1
         LIMIT 1;
