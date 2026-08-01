@@ -686,11 +686,22 @@ const hasDiscount =
   Number.isFinite(discountPercent) &&
   discountPercent > 0;
 
-const displayedTotal =
+const minimumTotal =
+  Number.isFinite(hourlyRate)
+    ? hourlyRate * 2
+    : null;
+
+const rawDisplayedTotal =
   data.status === "FINISHED" &&
   Number.isFinite(finalTotal)
     ? finalTotal
     : subtotal;
+
+const displayedTotal =
+  Number.isFinite(rawDisplayedTotal) &&
+  Number.isFinite(minimumTotal)
+    ? Math.max(rawDisplayedTotal, minimumTotal)
+    : rawDisplayedTotal;
 
 showElement("hourly-rate-row", hasHourlyRate);
 showElement("discount-row", hasDiscount);
