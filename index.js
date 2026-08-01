@@ -987,7 +987,7 @@ const scheduleVoicemailHangup = () => {
                 error
             );
         }
-    }, 12000);
+    }, 3500);
 };
 openAiWs.on('message', async (data) => {
 try {
@@ -1018,15 +1018,35 @@ if (
         completedTranscript
     );
 
-    const voicemailPhrases = [
-        'reached your voicemail',
-        'reached a voicemail',
-        'leave you a message',
-        'leave a brief message',
-        'after the beep',
-        'this appears to be voicemail',
-        'this seems to be voicemail'
-    ];
+const voicemailPhrases = [
+    'reached your voicemail',
+    'reached a voicemail',
+    'leave you a message',
+    'leave a brief message',
+    'after the beep',
+    'this appears to be voicemail',
+    'this seems to be voicemail'
+];
+
+const voicemailClosingPhrases = [
+    'please call us back',
+    'give us a call back',
+    'reply to the text message',
+    'we look forward to speaking with you',
+    'have a wonderful day',
+    'have a great day'
+];
+
+const detectedVoicemail =
+    voicemailPhrases.some((phrase) =>
+        completedTranscript.includes(phrase)
+    ) ||
+    (
+        callMode.startsWith('OUTBOUND') &&
+        voicemailClosingPhrases.some((phrase) =>
+            completedTranscript.includes(phrase)
+        )
+    );
 
     const detectedVoicemail =
         voicemailPhrases.some((phrase) =>
