@@ -878,7 +878,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "GET" && apiToken) {
       const result = await pool.query(
         `
-        SELECT
+      
         SELECT
   booking_number,
   status,
