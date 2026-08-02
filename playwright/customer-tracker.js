@@ -896,8 +896,7 @@ const server = http.createServer(async (request, response) => {
 
 if (
   !DISPATCH_TEST_SECRET ||
-  providedSecret !== DISPATCH_TEST_SECRET
-) {
+providedSecret !== DISPATCH_TEST_SECRET) {
   return sendJson(response, 401, {
     success: false,
     error: "Unauthorized."
