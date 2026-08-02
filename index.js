@@ -1077,13 +1077,15 @@ if (
     response.type ===
     'response.output_audio_transcript.done'
 ) {
-    const completedTranscript =
-        String(
-            response.transcript ||
-            lastAssistantTranscript ||
-            ''
-        ).toLowerCase();
+const completedTranscript =
+    String(
+        response.transcript ||
+        lastAssistantTranscript ||
+        ''
+    ).trim();
 
+const lowerTranscript =
+    completedTranscript.toLowerCase();
     console.log(
         'Completed assistant transcript:',
         completedTranscript
@@ -1114,13 +1116,11 @@ const voicemailClosingPhrases = [
 
 const detectedVoicemail =
     voicemailPhrases.some((phrase) =>
-        completedTranscript.includes(phrase)
-    ) ||
+lowerTranscript.includes(phrase)    ) ||
     (
         callMode.startsWith('OUTBOUND') &&
         voicemailClosingPhrases.some((phrase) =>
-            completedTranscript.includes(phrase)
-        )
+lowerTranscript.includes(phrase)        )
     );
 
 
