@@ -326,7 +326,8 @@ let callMode = 'INBOUND_LEAD';
 let voicemailHangupScheduled = false;
 let lastAssistantTranscript = '';
 let completedAssistantTranscripts = [];
-let completionWebhookSent = false;
+let completedCustomerTranscripts = [];
+            let completionWebhookSent = false;
 
 
             
@@ -1042,6 +1043,24 @@ try {
 const response = JSON.parse(
     data.toString()
 );
+    if (
+    response.type ===
+    'conversation.item.input_audio_transcription.completed'
+) {
+    const customerTranscript = String(
+        response.transcript || ''
+    ).trim();
+
+    if (customerTranscript) {
+        completedCustomerTranscripts.push(customerTranscript);
+
+        console.log(
+            'Completed customer transcript:',
+            customerTranscript
+        );
+    }
+}
+    
 if (
     response.type ===
         'response.output_audio_transcript.delta' &&
