@@ -8,8 +8,10 @@ const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!DATABASE_URL) {
   throw new Error("Missing DATABASE_URL");
-}
 
+}
+const DISPATCH_TEST_SECRET =
+  process.env.DISPATCH_TEST_SECRET;
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: {
