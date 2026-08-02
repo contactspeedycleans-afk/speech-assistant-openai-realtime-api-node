@@ -1021,15 +1021,16 @@ await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
     headers: {
         'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-        callSid,
-        sheetRowNumber,
-        status,
-        transcript,
-        summary: transcript,
-        outcome: status
-    })
-});
+   body: JSON.stringify({
+    callSid,
+    sheetRowNumber,
+    status,
+    transcript,
+    summary: transcript,
+    outcome: status,
+    customerTranscript: completedCustomerTranscripts.join('\n'),
+    assistantTranscript: completedAssistantTranscripts.join('\n')
+})
 
         console.log(
             'Outbound completion webhook sent:',
