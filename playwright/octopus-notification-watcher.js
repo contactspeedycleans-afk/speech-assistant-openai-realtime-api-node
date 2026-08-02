@@ -10,6 +10,9 @@ const DATABASE_URL = process.env.DATABASE_URL;
 
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 
+const ASSIGNMENT_MAKE_WEBHOOK_URL =
+  process.env.ASSIGNMENT_MAKE_WEBHOOK_URL;
+
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME || "SpeedyCleans";
 
@@ -31,6 +34,10 @@ if (!DATABASE_URL) {
 if (!MAKE_WEBHOOK_URL) {
   throw new Error("Missing MAKE_WEBHOOK_URL");
 }
+if (!ASSIGNMENT_MAKE_WEBHOOK_URL) {
+  throw new Error("Missing ASSIGNMENT_MAKE_WEBHOOK_URL");
+}
+
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: {
