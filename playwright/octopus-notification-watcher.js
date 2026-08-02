@@ -339,6 +339,87 @@ await pool.query(
   );
 }
 
+async function upsertDispatchState(notification) {
+  const eventType = notification.eventType;
+
+  if (
+    eventType !== "ASSIGNED" &&
+    eventType !== "DROPPED"
+  ) {
+    return;
+  }
+
+  const assignmentStatus =
+    eventType === "ASSIGNED"
+      ? "ASSIGNED"
+      : "DROPPED";
+
+  const jobRequestStatus =
+    eventType === "ASSIGNED"
+      ? "ACCEPTED"
+      : "NOT_SENT";
+
+  await pool.query(
+    `
+    INSERT INTO public.booking_dispatch_state (
+      booking_number,
+      assignment_status,
+      current_cleaner,
+      job_request_status,
+      last_event_type,
+      last_notification_text,
+      last_assignment_change_at,
+      octopus_booking_id,
+      octopus_booking_url,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6,
+      NOW(),
+      $7,
+      $8,
+      NOW()
+    )
+    ON CONFLICT (booking_number)
+    DO UPDATE SET
+      assignment_status = EXCLUDED.assignment_status,
+      current_cleaner = EXCLUDED.current_cleaner,
+      job_request_status = EXCLUDED.job_request_status,
+      last_event_type = EXCLUDED.last_event_type,
+      last_notification_text = EXCLUDED.last_notification_text,
+      last_assignment_change_at = NOW(),
+      octopus_booking_id = COALESCE(
+        EXCLUDED.octopus_booking_id,
+        public.booking_dispatch_state.octopus_booking_id
+      ),
+      octopus_booking_url = COALESCE(
+        EXCLUDED.octopus_booking_url,
+        public.booking_dispatch_state.octopus_booking_url
+      ),
+      updated_at = NOW();
+    `,
+    [
+      notification.bookingNumber,
+      assignmentStatus,
+      notification.fieldworkerName || null,
+      jobRequestStatus,
+      eventType,
+      notification.text || "",
+      notification.octopusBookingId || null,
+      notification.octopusBookingUrl || null
+    ]
+  );
+
+  console.log(
+    `Dispatch state updated: ${assignmentStatus} ${notification.bookingNumber}`
+  );
+}
+
 async function saveNotification(notification) {
   const result = await pool.query(
     `
