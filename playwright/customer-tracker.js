@@ -40,7 +40,30 @@ function sendHtml(response, statusCode, html) {
 
   response.end(html);
 }
+async function readJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
 
+    request.on("data", (chunk) => {
+      body += chunk;
+
+      if (body.length > 100000) {
+        reject(new Error("Request body too large."));
+        request.destroy();
+      }
+    });
+
+    request.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Invalid JSON body."));
+      }
+    });
+
+    request.on("error", reject);
+  });
+}
 function getTrackingToken(pathname, prefix) {
   if (!pathname.startsWith(prefix)) {
     return null;
@@ -865,6 +888,120 @@ const server = http.createServer(async (request, response) => {
     const pathname = requestUrl.pathname;
 
     if (request.method === "GET" && pathname === "/health") {
+      if (
+  request.method === "POST" &&
+  pathname === "/internal/test-dispatch"
+) {
+  const providedSecret =
+    request.headers["x-dispatch-test-secret"];
+
+  if (
+    !DISPATCH_TEST_SECRET ||
+    providedSecret !== DISPATCH_TEST_SECRET
+  ) {
+    return sendJson(response, 401, {
+      success: false,
+      error: "Unauthorized."
+    });
+  }
+
+  const body = await readJsonBody(request);
+
+  const bookingNumber =
+    String(body.booking_number || "").trim().toUpperCase();
+
+  const assignmentAction =
+    String(body.assignment_action || "").trim().toUpperCase();
+
+  const cleanerName =
+    String(body.cleaner_name || "").trim();
+
+  const notificationText =
+    String(body.notification_text || "").trim();
+
+  if (!/^BOK-\d+$/.test(bookingNumber)) {
+    return sendJson(response, 400, {
+      success: false,
+      error: "Invalid booking_number."
+    });
+  }
+
+  if (
+    !["ASSIGNED", "DROPPED", "NEEDS_CLEANER"].includes(
+      assignmentAction
+    )
+  ) {
+    return sendJson(response, 400, {
+      success: false,
+      error:
+        "assignment_action must be ASSIGNED, DROPPED, or NEEDS_CLEANER."
+    });
+  }
+
+  const jobRequestStatus =
+    assignmentAction === "ASSIGNED"
+      ? "ACCEPTED"
+      : "NOT_SENT";
+
+  const currentCleaner =
+    assignmentAction === "NEEDS_CLEANER"
+      ? null
+      : cleanerName || null;
+
+  await pool.query(
+    `
+    INSERT INTO public.booking_dispatch_state (
+      booking_number,
+      assignment_status,
+      current_cleaner,
+      job_request_status,
+      last_event_type,
+      last_notification_text,
+      last_assignment_change_at,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6,
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (booking_number)
+    DO UPDATE SET
+      assignment_status = EXCLUDED.assignment_status,
+      current_cleaner = EXCLUDED.current_cleaner,
+      job_request_status = EXCLUDED.job_request_status,
+      last_event_type = EXCLUDED.last_event_type,
+      last_notification_text = EXCLUDED.last_notification_text,
+      last_assignment_change_at = NOW(),
+      updated_at = NOW();
+    `,
+    [
+      bookingNumber,
+      assignmentAction,
+      currentCleaner,
+      jobRequestStatus,
+      assignmentAction,
+      notificationText
+    ]
+  );
+
+  console.log(
+    `Private dispatch test: ${assignmentAction} ${bookingNumber}`
+  );
+
+  return sendJson(response, 200, {
+    success: true,
+    booking_number: bookingNumber,
+    assignment_status: assignmentAction,
+    current_cleaner: currentCleaner,
+    job_request_status: jobRequestStatus
+  });
+}
       await pool.query("SELECT 1");
 
       return sendJson(response, 200, {
