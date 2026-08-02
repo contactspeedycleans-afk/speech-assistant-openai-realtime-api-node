@@ -93,7 +93,9 @@ fastify.register(fastifyWs);
 const VOICE = 'marin';
 const TEMPERATURE = 0.55;
 const PORT = process.env.PORT || 8080;
-
+const AI_CALL_COMPLETED_WEBHOOK_URL =
+    process.env.AI_CALL_COMPLETED_WEBHOOK_URL ||
+    'https://hook.us2.make.com/qthdxcyfrr5shx59z5gfhkuoigblw2i4';
 
 const LOG_EVENT_TYPES = [
     'error',
@@ -323,7 +325,11 @@ let callMode = 'INBOUND_LEAD';
 
 let voicemailHangupScheduled = false;
 let lastAssistantTranscript = '';
+let completedAssistantTranscripts = [];
+let completionWebhookSent = false;
 
+
+            
 let outboundCustomerName = '';
 let customInstructions = '';
 let sheetRowNumber = '';
@@ -989,6 +995,43 @@ const scheduleVoicemailHangup = () => {
         }
     }, 7500);
 };
+
+        const sendOutboundCompletion = async (status = 'completed') => {
+    if (
+        completionWebhookSent ||
+        !callMode.startsWith('OUTBOUND') ||
+        !sheetRowNumber
+    ) {
+        return;
+    }
+
+    completionWebhookSent = true;
+
+    try {
+        await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                callSid,
+                sheetRowNumber,
+                status,
+                transcript: completedAssistantTranscripts.join('\n')
+            })
+        });
+
+        console.log(
+            'Outbound completion webhook sent:',
+            sheetRowNumber
+        );
+    } catch (error) {
+        console.error(
+            'Outbound completion webhook failed:',
+            error
+        );
+    }
+};    
 openAiWs.on('message', async (data) => {
 try {
 const response = JSON.parse(
@@ -1017,7 +1060,11 @@ if (
         'Completed assistant transcript:',
         completedTranscript
     );
-
+if (completedTranscript) {
+    completedAssistantTranscripts.push(
+        completedTranscript
+    );
+}
 const voicemailPhrases = [
     'reached your voicemail',
     'reached a voicemail',
@@ -1329,18 +1376,21 @@ if (customer) {
                             break;
                         }
 
-                        case 'stop': {
-                            console.log(
-                                'Twilio stream stopped.',
-                                'Stream SID:',
-                                data.streamSid ||
-                                    streamSid ||
-                                    'unknown'
-                            );
+                     case 'stop': {
+    console.log(
+        'Twilio stream stopped.',
+        'Stream SID:',
+        data.streamSid ||
+            streamSid ||
+            'unknown'
+    );
 
-                            break;
-                        }
+    await sendOutboundCompletion(
+        'completed'
+    );
 
+    break;
+}
                         default:
                             break;
                     }
@@ -1359,7 +1409,7 @@ if (customer) {
                 );
             });
 
-            connection.on('close', (code, reason) => {
+          connection.on('close', async (code, reason) => {
                 console.log(
                     'Twilio WebSocket closed.',
                     'Code:',
@@ -1367,7 +1417,9 @@ if (customer) {
                     'Reason:',
                     reason?.toString() || 'none'
                 );
-
+ await sendOutboundCompletion(
+        'completed'
+    );
                 if (
                     openAiWs.readyState ===
                         WebSocket.OPEN ||
