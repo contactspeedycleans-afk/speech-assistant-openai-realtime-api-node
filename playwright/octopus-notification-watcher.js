@@ -167,6 +167,46 @@ async function sendToMake(notification) {
   }
 }
 
+async function sendAssignmentToMake({
+  bookingNumber,
+  cleanerName = "",
+  assignmentAction,
+  notificationText = ""
+}) {
+  if (!bookingNumber || !assignmentAction) {
+    return;
+  }
+
+  const payload = {
+    detected_at: new Date().toISOString(),
+    booking_number: bookingNumber,
+    assignment_action: assignmentAction,
+    notification_text: notificationText,
+    cleaner_name: cleanerName
+  };
+
+  const response = await fetch(ASSIGNMENT_MAKE_WEBHOOK_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `Assignment webhook failed: ${response.status} ${responseText}`
+    );
+  }
+
+  console.log(
+    `Assignment webhook sent: ${assignmentAction} ${bookingNumber}`
+  );
+}
+  
+
 async function updateBookingTracking(notification) {
   const eventType =
     notification.eventType === "CHECKED_IN"
