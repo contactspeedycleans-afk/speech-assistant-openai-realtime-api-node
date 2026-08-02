@@ -340,6 +340,11 @@ await pool.query(
 }
 
 async function upsertDispatchState(notification) {
+ 
+  console.log(
+  `Dispatch function called: ${notification.eventType} ${notification.bookingNumber}`
+);
+  
   const eventType = notification.eventType;
 
   if (
