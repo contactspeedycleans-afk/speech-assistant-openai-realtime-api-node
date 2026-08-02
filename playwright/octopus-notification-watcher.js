@@ -463,6 +463,15 @@ if (result.rowCount === 0) {
     );
   }
 
+  try {
+    await upsertDispatchState(notification);
+  } catch (error) {
+    console.error(
+      `Failed backfilling dispatch state for ${notification.bookingNumber}:`,
+      error
+    );
+  }
+
   return false;
 }
 
