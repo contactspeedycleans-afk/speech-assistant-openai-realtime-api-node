@@ -1008,18 +1008,23 @@ const scheduleVoicemailHangup = () => {
     completionWebhookSent = true;
 
     try {
-        await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                callSid,
-                sheetRowNumber,
-                status,
-                transcript: completedAssistantTranscripts.join('\n')
-            })
-        });
+       const transcript =
+    completedAssistantTranscripts.join('\n');
+
+await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+        callSid,
+        sheetRowNumber,
+        status,
+        transcript,
+        summary: transcript,
+        outcome: status
+    })
+});
 
         console.log(
             'Outbound completion webhook sent:',
