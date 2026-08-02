@@ -893,8 +893,7 @@ const server = http.createServer(async (request, response) => {
 ) {
   const providedSecret =
   request.headers["x-dispatch-test-secret"];
-console.log("Provided Secret:", providedSecret);
-console.log("Expected Secret:", DISPATCH_TEST_SECRET);
+
 if (
   !DISPATCH_TEST_SECRET ||
 providedSecret !== DISPATCH_TEST_SECRET) {
