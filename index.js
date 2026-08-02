@@ -1009,8 +1009,12 @@ const scheduleVoicemailHangup = () => {
     completionWebhookSent = true;
 
     try {
-       const transcript =
-    completedAssistantTranscripts.join('\n');
+      const transcript =
+`CUSTOMER:
+${completedCustomerTranscripts.join('\n')}
+
+EMMA:
+${completedAssistantTranscripts.join('\n')}`;
 
 await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
     method: 'POST',
