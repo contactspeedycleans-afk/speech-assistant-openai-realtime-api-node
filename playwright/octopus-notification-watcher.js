@@ -48,6 +48,9 @@ const pool = new Pool({
 function classifyNotification(text) {
   const value = text.toLowerCase();
 
+  if (value.includes("accepted booking request")) return "ASSIGNED";
+  if (value.includes("is no longer attending")) return "DROPPED";
+
   if (value.includes("on the way")) return "ON_THE_WAY";
   if (value.includes("automatically checked in")) return "CHECKED_IN";
   if (value.includes("has arrived")) return "ARRIVED";
@@ -81,13 +84,16 @@ function buildOctopusBookingUrl(href) {
 
   return `https://admin.octopuspro.com${href}`;
 }
+
 function extractWorkerName(text) {
   const match = text.match(
-    /^(.*?)\s+(?:has finished|has started|has arrived|is on the way|has been automatically checked in)/i
+    /^(.*?)\s+(?:has accepted booking request|is no longer attending|has finished|has started|has arrived|is on the way|has been automatically checked in)/i
   );
 
   return match ? match[1].trim() : null;
 }
+
+
 async function sendToMake(notification) {
   let eventType = notification.eventType;
 
