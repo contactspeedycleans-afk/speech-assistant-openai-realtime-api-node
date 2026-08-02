@@ -401,6 +401,25 @@ if (result.rowCount === 0) {
     );
   }
 
+try {
+  if (
+    notification.eventType === "ASSIGNED" ||
+    notification.eventType === "DROPPED"
+  ) {
+    await sendAssignmentToMake({
+      bookingNumber: notification.bookingNumber,
+      cleanerName: notification.fieldworkerName,
+      assignmentAction: notification.eventType,
+      notificationText: notification.text
+    });
+  }
+} catch (error) {
+  console.error(
+    `Failed sending assignment event for ${notification.bookingNumber}:`,
+    error
+  );
+}
+  
   return true;
 }
 async function selectOrganization(page) {
