@@ -425,7 +425,14 @@ try {
     error
   );
 }
-  
+  try {
+  await upsertDispatchState(notification);
+} catch (error) {
+  console.error(
+    `Failed updating dispatch state for ${notification.bookingNumber}:`,
+    error
+  );
+}
   return true;
 }
 async function selectOrganization(page) {
