@@ -980,9 +980,11 @@ async function openJobRequestModal(page, bookingId) {
     "DRY RUN: Final Send button was found, but nothing was sent."
   );
 
-  await page.keyboard.press("Escape").catch(() => {});
+await page.keyboard.press("Escape").catch(() => {});
 
-  await page.goto(NOTIFICATIONS_URL, {
+await page.waitForTimeout(1000);
+
+await page.goto(NOTIFICATIONS_URL, {
     waitUntil: "domcontentloaded",
     timeout: 60000
   });
