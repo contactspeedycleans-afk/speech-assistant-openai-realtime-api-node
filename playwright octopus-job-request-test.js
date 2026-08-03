@@ -77,6 +77,6 @@ await browser.close();
 }
   
 run().catch((error) => {
-  console.error("Dry run failed:", error);
+console.error("Job request test failed:", error);
   process.exit(1);
 });
