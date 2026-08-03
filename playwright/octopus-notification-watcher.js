@@ -981,16 +981,55 @@ async function openJobRequestModal(page, bookingId) {
     timeout: 60000
   });
 
-  console.log(
-    `DRY RUN PASSED: Request window opened for ${bookingId}.`
+ console.log(
+  `LIVE TEST: Request window opened for ${bookingId}.`
+);
+
+console.log(
+  `LIVE TEST: Clicking the final Send button for ${bookingId}...`
+);
+
+const sendClicked = await page.evaluate(() => {
+  const buttons = Array.from(
+    document.querySelectorAll("button")
   );
 
-  console.log(
-    "DRY RUN: Nothing was sent."
+  const sendButton = buttons.find((button) => {
+    const text = button.textContent?.trim();
+    const styles = window.getComputedStyle(button);
+    const rectangle = button.getBoundingClientRect();
+
+    return (
+      text === "Send" &&
+      styles.display !== "none" &&
+      styles.visibility !== "hidden" &&
+      rectangle.width > 0 &&
+      rectangle.height > 0
+    );
+  });
+
+  if (!sendButton) {
+    return false;
+  }
+
+  sendButton.click();
+  return true;
+});
+
+if (!sendClicked) {
+  throw new Error(
+    `Final Send button was not found for ${bookingId}.`
   );
+}
 
-  await page.keyboard.press("Escape").catch(() => {});
+await smsOption.waitFor({
+  state: "hidden",
+  timeout: 60000
+});
 
+console.log(
+  `LIVE TEST PASSED: Job request was sent for ${bookingId}.`
+);
   await page.waitForTimeout(1000);
 
   await page.goto(NOTIFICATIONS_URL, {
