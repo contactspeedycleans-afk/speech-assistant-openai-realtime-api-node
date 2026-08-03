@@ -904,7 +904,89 @@ const inserted = await saveNotification({
     `Checked ${count} OctopusPro notification links. New events saved: ${newNotifications}.`
   );
 }
+async function openJobRequestModal(page, bookingId) {
+  const bookingUrl =
+    `https://admin.octopuspro.com/booking/view/${bookingId}`;
 
+  console.log(
+    `DRY RUN: Opening Octopus booking ${bookingId}...`
+  );
+
+  await page.goto(bookingUrl, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+
+  const availableFieldworkers = page.getByText(
+    "Available Fieldworkers",
+    { exact: true }
+  );
+
+  await availableFieldworkers.waitFor({
+    state: "visible",
+    timeout: 60000
+  });
+
+  await availableFieldworkers.scrollIntoViewIfNeeded();
+
+  console.log(
+    `DRY RUN: Waiting for fieldworker matches for ${bookingId}...`
+  );
+
+  await page
+    .getByText(
+      /(?:showing\s+)?\d+\s+of\s+\d+\s+(?:available|matches)/i
+    )
+    .waitFor({
+      state: "visible",
+      timeout: 60000
+    });
+
+  const sendJobRequestButton = page.getByRole("button", {
+    name: /send job request/i
+  });
+
+  await sendJobRequestButton.waitFor({
+    state: "visible",
+    timeout: 30000
+  });
+
+  await sendJobRequestButton.click();
+
+  await page
+    .getByText("Send Job Request", {
+      exact: true
+    })
+    .last()
+    .waitFor({
+      state: "visible",
+      timeout: 30000
+    });
+
+  const finalSendButton = page.locator(
+    "button.save-btn"
+  );
+
+  await finalSendButton.waitFor({
+    state: "visible",
+    timeout: 30000
+  });
+
+  console.log(
+    `DRY RUN PASSED: Send Job Request modal opened for ${bookingId}.`
+  );
+
+  console.log(
+    "DRY RUN: Final Send button was found, but nothing was sent."
+  );
+
+  await page.keyboard.press("Escape").catch(() => {});
+
+  await page.goto(NOTIFICATIONS_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+}
 async function main() {
   await pool.query("SELECT 1");
   console.log("PostgreSQL connected successfully.");
@@ -930,10 +1012,11 @@ async function main() {
   page.setDefaultTimeout(30000);
   page.setDefaultNavigationTimeout(60000);
 
-  await readNotifications(page);
+await readNotifications(page);
 
-  let checkRunning = false;
+await openJobRequestModal(page, 563418);
 
+let checkRunning = false;
   setInterval(async () => {
     if (checkRunning) {
       console.log(
