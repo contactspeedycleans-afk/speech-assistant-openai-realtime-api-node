@@ -48,13 +48,13 @@ const pool = new Pool({
 function classifyNotification(text) {
   const value = text.toLowerCase();
 
-  if (value.includes("accepted booking request")) return "ASSIGNED";
-  if (value.includes("is no longer attending")) return "DROPPED";
+if (value.includes("accepted booking request")) return "ACCEPTED";
+  if (value.includes("is no longer attending")) return "NEEDS CLEANER";
 
   if (value.includes("on the way")) return "ON_THE_WAY";
-  if (value.includes("automatically checked in")) return "CHECKED_IN";
-  if (value.includes("has arrived")) return "ARRIVED";
-  if (value.includes("has started")) return "STARTED";
+ if (value.includes("automatically checked in")) return "ARRIVED";
+if (value.includes("has arrived")) return "STARTED";
+if (value.includes("has started")) return "STARTED";
   if (value.includes("has finished")) return "FINISHED";
   if (value.includes("new photos added")) return "PHOTOS_ADDED";
   if (value.includes("photos added")) return "PHOTOS_ADDED";
@@ -214,10 +214,7 @@ async function sendAssignmentToMake({
   
 
 async function updateBookingTracking(notification) {
-  const eventType =
-    notification.eventType === "CHECKED_IN"
-      ? "ARRIVED"
-      : notification.eventType;
+ const eventType = notification.eventType;
 
   const supportedStatuses = [
     "ON_THE_WAY",
@@ -347,22 +344,19 @@ async function upsertDispatchState(notification) {
   
   const eventType = notification.eventType;
 
-  if (
-    eventType !== "ASSIGNED" &&
-    eventType !== "DROPPED"
-  ) {
-    return;
-  }
+if (
+  eventType !== "ACCEPTED" &&
+  eventType !== "NEEDS CLEANER"
+) {
+  return;
+}
 
-  const assignmentStatus =
-    eventType === "ASSIGNED"
-      ? "ASSIGNED"
-      : "DROPPED";
+const assignmentStatus = eventType;
 
-  const jobRequestStatus =
-    eventType === "ASSIGNED"
-      ? "ACCEPTED"
-      : "NOT_SENT";
+const jobRequestStatus =
+  eventType === "ACCEPTED"
+    ? "ACCEPTED"
+    : "NOT_SENT";
 
   await pool.query(
     `
@@ -1046,7 +1040,7 @@ async function getNextDispatchBooking() {
       assignment_status,
       job_request_status
     FROM public.booking_dispatch_state
-    WHERE assignment_status = 'NEEDS_CLEANER'
+    WHERE assignment_status = 'NEEDS CLEANER'
       AND octopus_booking_id IS NOT NULL
       AND COALESCE(job_request_status, 'NOT_SENT') = 'NOT_SENT'
     ORDER BY updated_at ASC
