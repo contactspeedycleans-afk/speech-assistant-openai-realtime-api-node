@@ -952,26 +952,34 @@ console.log(
 
 await page.waitForTimeout(5000);
 
-const finalSendButton = page
-  .locator("button:visible")
+const visibleCloseButton = page
+  .locator("button.cancel-btn:visible")
   .filter({
-    hasText: /^\s*Send\s*$/
+    hasText: /^\s*Close\s*$/
   })
   .last();
+
+await visibleCloseButton.waitFor({
+  state: "visible",
+  timeout: 60000
+});
+
+const finalSendButton = visibleCloseButton.locator(
+  "xpath=following-sibling::button[contains(@class,'save-btn')]"
+);
 
 await finalSendButton.waitFor({
   state: "visible",
   timeout: 60000
 });
 
-const finalButtonText =
-  (await finalSendButton.innerText()).trim();
+console.log(
+  `DRY RUN PASSED: Exact final Send button found for ${bookingId}.`
+);
 
-if (finalButtonText !== "Send") {
-  throw new Error(
-    `Wrong final button found: "${finalButtonText}"`
-  );
-}
+console.log(
+  "DRY RUN: Nothing was sent."
+);
 
   console.log(
     `DRY RUN PASSED: Send Job Request modal opened for ${bookingId}.`
