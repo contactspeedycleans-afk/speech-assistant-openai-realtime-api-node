@@ -74,6 +74,7 @@ console.log("Job request sent successfully.");
 await page.waitForTimeout(3000);
 
 await browser.close();
+}
   
 run().catch((error) => {
   console.error("Dry run failed:", error);
