@@ -56,16 +56,25 @@ async function run() {
       state: "visible",
       timeout: 30000
     });
+console.log("Send Job Request window opened.");
 
-  console.log(
-    "Dry run successful. The Send Job Request window opened."
-  );
+const sendButton = page.locator("button.save-btn");
 
-  console.log(
-    "No invitations were sent. Close the browser manually when finished."
-  );
-}
+await sendButton.waitFor({
+  state: "visible",
+  timeout: 30000,
+});
 
+console.log("Clicking Send...");
+
+await sendButton.click();
+
+console.log("Job request sent successfully.");
+
+await page.waitForTimeout(3000);
+
+await browser.close();
+  
 run().catch((error) => {
   console.error("Dry run failed:", error);
   process.exit(1);
