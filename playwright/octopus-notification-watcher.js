@@ -950,10 +950,15 @@ console.log(
   `DRY RUN: Send Job Request button opened for ${bookingId}.`
 );
 
- 
-const finalSendButton = page.locator(
-  "#send-email-button-modal"
+ const visibleModal = page.locator(
+  '.modal.show:visible'
+).last();
+
+const finalSendButton = visibleModal.getByRole(
+  "button",
+  { name: /^send$/i }
 );
+
 
   await finalSendButton.waitFor({
     state: "visible",
