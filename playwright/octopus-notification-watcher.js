@@ -974,6 +974,7 @@ await page.waitForFunction(
       );
     });
   },
+   undefined,
   {
     timeout: 120000,
     polling: 1000
