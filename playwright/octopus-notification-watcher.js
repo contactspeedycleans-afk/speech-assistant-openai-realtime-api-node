@@ -1153,13 +1153,19 @@ let checkRunning = false;
 
     checkRunning = true;
 
-    try {
-      await readNotifications(page);
-    } catch (error) {
-      console.error("Notification check failed:", error);
-    } finally {
-      checkRunning = false;
-    }
+   try {
+    await readNotifications(page);
+
+    await dispatchNextBooking(page);
+
+} catch (error) {
+    console.error(
+        "Notification or dispatch check failed:",
+        error
+    );
+} finally {
+    checkRunning = false;
+}
   }, 60000);
 
   const shutdown = async (signal) => {
