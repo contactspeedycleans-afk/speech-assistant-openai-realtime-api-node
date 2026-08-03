@@ -929,30 +929,28 @@ async function openJobRequestModal(page, bookingId) {
 
   await availableFieldworkers.scrollIntoViewIfNeeded();
 
-  console.log(
-    `DRY RUN: Waiting for fieldworker matches for ${bookingId}...`
-  );
+ console.log(
+  `DRY RUN: Waiting for Send Job Request button for ${bookingId}...`
+);
 
-  await page
-    .getByText(
-      /(?:showing\s+)?\d+\s+of\s+\d+\s+(?:available|matches)/i
-    )
-    .waitFor({
-      state: "visible",
-      timeout: 60000
-    });
+const sendJobRequestButton = page.getByRole("button", {
+  name: /send job request/i
+});
 
-  const sendJobRequestButton = page.getByRole("button", {
-    name: /send job request/i
-  });
+await sendJobRequestButton.waitFor({
+  state: "visible",
+  timeout: 90000
+});
 
-  await sendJobRequestButton.waitFor({
-    state: "visible",
-    timeout: 30000
-  });
+await sendJobRequestButton.click({
+  timeout: 90000
+});
 
-  await sendJobRequestButton.click();
+console.log(
+  `DRY RUN: Send Job Request button opened for ${bookingId}.`
+);
 
+ 
   await page
     .getByText("Send Job Request", {
       exact: true
@@ -1016,7 +1014,16 @@ async function main() {
 
 await readNotifications(page);
 
-await openJobRequestModal(page, 563418);
+try {
+  await openJobRequestModal(page, 563418);
+} catch (error) {
+  console.error("Job request dry run failed:", error);
+
+  await page.goto(NOTIFICATIONS_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  }).catch(() => {});
+}
 
 let checkRunning = false;
   setInterval(async () => {
