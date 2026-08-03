@@ -1064,7 +1064,7 @@ async function main() {
 
 await readNotifications(page);
 
-try {await openJobRequestModal(page, 563441);
+
 } catch (error) {
   console.error("Job request dry run failed:", error);
 
