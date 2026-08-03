@@ -951,9 +951,9 @@ console.log(
 );
 
  
-  const finalSendButton = page.locator(
-    "button.save-btn"
-  );
+const finalSendButton = page.locator(
+  "#send-email-button-modal"
+);
 
   await finalSendButton.waitFor({
     state: "visible",
