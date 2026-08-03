@@ -1037,6 +1037,89 @@ console.log(
     timeout: 60000
   });
 }
+
+async function getNextDispatchBooking() {
+  const result = await pool.query(`
+    SELECT
+      booking_number,
+      octopus_booking_id,
+      assignment_status,
+      job_request_status
+    FROM public.booking_dispatch_state
+    WHERE assignment_status = 'NEEDS_CLEANER'
+      AND octopus_booking_id IS NOT NULL
+      AND COALESCE(job_request_status, 'NOT_SENT') = 'NOT_SENT'
+    ORDER BY updated_at ASC
+    LIMIT 1;
+  `);
+
+  return result.rows[0] || null;
+}
+async function markDispatchSent(bookingNumber) {
+  await pool.query(
+    `
+    UPDATE public.booking_dispatch_state
+    SET
+      job_request_status = 'SENT',
+      dispatch_attempts = COALESCE(dispatch_attempts, 0) + 1,
+      last_dispatch_attempt_at = NOW(),
+      updated_at = NOW()
+    WHERE booking_number = $1;
+    `,
+    [bookingNumber]
+  );
+}
+
+async function markDispatchFailed(bookingNumber, error) {
+  await pool.query(
+    `
+    UPDATE public.booking_dispatch_state
+    SET
+      job_request_status = 'FAILED',
+      last_notification_text = $2,
+      updated_at = NOW()
+    WHERE booking_number = $1;
+    `,
+    [
+      bookingNumber,
+      String(error?.message || error).slice(0, 1000)
+    ]
+  );
+}
+
+async function dispatchNextBooking(page) {
+  const booking = await getNextDispatchBooking();
+
+  if (!booking) {
+    console.log("No bookings are waiting for dispatch.");
+    return;
+  }
+
+  console.log(
+    `Dispatching ${booking.booking_number} using Octopus ID ${booking.octopus_booking_id}...`
+  );
+
+  try {
+    await openJobRequestModal(
+      page,
+      booking.octopus_booking_id
+    );
+
+    await markDispatchSent(booking.booking_number);
+
+    console.log(
+      `Dispatch completed and recorded for ${booking.booking_number}.`
+    );
+  } catch (error) {
+    await markDispatchFailed(
+      booking.booking_number,
+      error
+    );
+
+    throw error;
+  }
+}
+  
 async function main() {
   await pool.query("SELECT 1");
   console.log("PostgreSQL connected successfully.");
@@ -1064,17 +1147,15 @@ async function main() {
 
 await readNotifications(page);
 
-
+try {
+  await dispatchNextBooking(page);
 } catch (error) {
-  console.error("Job request dry run failed:", error);
-
-  await page.goto(NOTIFICATIONS_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: 60000
-  }).catch(() => {});
+  console.error("Controlled dispatch test failed:", error);
 }
 
 let checkRunning = false;
+
+
   setInterval(async () => {
     if (checkRunning) {
       console.log(
