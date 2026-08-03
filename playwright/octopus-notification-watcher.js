@@ -929,79 +929,71 @@ async function openJobRequestModal(page, bookingId) {
 
   await availableFieldworkers.scrollIntoViewIfNeeded();
 
- console.log(
-  `DRY RUN: Waiting for Send Job Request button for ${bookingId}...`
-);
+  console.log(
+    `DRY RUN: Waiting for Octopus to calculate fieldworkers for ${bookingId}...`
+  );
 
-const sendJobRequestButton = page.getByRole("button", {
-  name: /send job request/i
-});
-
-await sendJobRequestButton.waitFor({
-  state: "visible",
-  timeout: 90000
-});
-
-await sendJobRequestButton.click({
-  timeout: 90000
-});
-
-console.log(
-  `DRY RUN: Send Job Request button opened for ${bookingId}.`
-);
-
-console.log(
-  `DRY RUN: Waiting for the final Send button for ${bookingId}...`
-);
-
-await page.waitForFunction(
-  () => {
-    const buttons = Array.from(
-      document.querySelectorAll("button")
-    );
-
-    return buttons.some((button) => {
-      const text = button.textContent?.trim();
-      const styles = window.getComputedStyle(button);
-      const rectangle = button.getBoundingClientRect();
+  await page.waitForFunction(
+    () => {
+      const text =
+        document.body?.innerText?.replace(/\s+/g, " ") || "";
 
       return (
-        text === "Send" &&
-        styles.display !== "none" &&
-        styles.visibility !== "hidden" &&
-        rectangle.width > 0 &&
-        rectangle.height > 0
+        /\d+\s+of\s+\d+\s+available/i.test(text) ||
+        /showing\s+\d+\s+of\s+\d+\s+matches/i.test(text)
       );
-    });
-  },
-   undefined,
-  {
-    timeout: 120000,
-    polling: 1000
-  }
-);
-
-console.log(
-  `DRY RUN PASSED: Exact visible Send button found for ${bookingId}.`
-);
-
-console.log(
-  "DRY RUN: Nothing was sent."
-);
-
-  console.log(
-    `DRY RUN PASSED: Send Job Request modal opened for ${bookingId}.`
+    },
+    undefined,
+    {
+      timeout: 120000,
+      polling: 1000
+    }
   );
 
   console.log(
-    "DRY RUN: Final Send button was found, but nothing was sent."
+    `DRY RUN: Fieldworker calculation finished for ${bookingId}.`
   );
 
-await page.keyboard.press("Escape").catch(() => {});
+  const sendJobRequestButton = page.getByRole("button", {
+    name: /send job request/i
+  });
 
-await page.waitForTimeout(1000);
+  await sendJobRequestButton.waitFor({
+    state: "visible",
+    timeout: 30000
+  });
 
-await page.goto(NOTIFICATIONS_URL, {
+  await sendJobRequestButton.click({
+    timeout: 30000
+  });
+
+  console.log(
+    `DRY RUN: Clicked Send Job Request for ${bookingId}.`
+  );
+
+  const smsOption = page.getByText(
+    "Also send as SMS",
+    { exact: true }
+  );
+
+  await smsOption.waitFor({
+    state: "visible",
+    timeout: 60000
+  });
+
+  console.log(
+    `DRY RUN PASSED: Request window opened for ${bookingId}.`
+  );
+
+  console.log(
+    "DRY RUN: Nothing was sent."
+  );
+
+  await page.keyboard.press("Escape").catch(() => {});
+
+  await page.waitForTimeout(1000);
+
+  await page.goto(NOTIFICATIONS_URL, {
     waitUntil: "domcontentloaded",
     timeout: 60000
   });
