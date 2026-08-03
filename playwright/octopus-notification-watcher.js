@@ -951,16 +951,6 @@ console.log(
 );
 
  
-  await page
-    .getByText("Send Job Request", {
-      exact: true
-    })
-    .last()
-    .waitFor({
-      state: "visible",
-      timeout: 30000
-    });
-
   const finalSendButton = page.locator(
     "button.save-btn"
   );
