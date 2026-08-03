@@ -950,20 +950,28 @@ console.log(
   `DRY RUN: Send Job Request button opened for ${bookingId}.`
 );
 
- const visibleModal = page.locator(
-  '.modal.show:visible'
-).last();
+await page.waitForTimeout(5000);
 
-const finalSendButton = visibleModal.getByRole(
-  "button",
-  { name: /^send$/i }
-);
+const finalSendButton = page
+  .locator("button:visible")
+  .filter({
+    hasText: /^\s*Send\s*$/
+  })
+  .last();
 
+await finalSendButton.waitFor({
+  state: "visible",
+  timeout: 60000
+});
 
-  await finalSendButton.waitFor({
-    state: "visible",
-    timeout: 30000
-  });
+const finalButtonText =
+  (await finalSendButton.innerText()).trim();
+
+if (finalButtonText !== "Send") {
+  throw new Error(
+    `Wrong final button found: "${finalButtonText}"`
+  );
+}
 
   console.log(
     `DRY RUN PASSED: Send Job Request modal opened for ${bookingId}.`
