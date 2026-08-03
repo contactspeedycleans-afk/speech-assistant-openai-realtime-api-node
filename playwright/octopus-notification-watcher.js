@@ -101,11 +101,12 @@ async function sendToMake(notification) {
     eventType = "ARRIVED";
   }
 
-  const supportedStatuses = [
-    "ON_THE_WAY",
-    "ARRIVED",
-    "FINISHED"
-  ];
+ const supportedStatuses = [
+  "ON_THE_WAY",
+  "ARRIVED",
+  "STARTED",
+  "FINISHED"
+];
 
   if (!supportedStatuses.includes(eventType)) {
     console.log(
@@ -462,14 +463,6 @@ if (result.rowCount === 0) {
     );
   }
 
-  try {
-    await upsertDispatchState(notification);
-  } catch (error) {
-    console.error(
-      `Failed backfilling dispatch state for ${notification.bookingNumber}:`,
-      error
-    );
-  }
 
   return false;
 }
@@ -499,7 +492,7 @@ if (result.rowCount === 0) {
 try {
   if (
     notification.eventType === "ASSIGNED" ||
-    notification.eventType === "DROPPED"
+    notification.eventType === "NEEDS CLEANER"
   ) {
     await sendAssignmentToMake({
       bookingNumber: notification.bookingNumber,
