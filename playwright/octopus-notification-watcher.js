@@ -950,31 +950,38 @@ console.log(
   `DRY RUN: Send Job Request button opened for ${bookingId}.`
 );
 
-await page.waitForTimeout(5000);
-
-const visibleCloseButton = page
-  .locator("button.cancel-btn:visible")
-  .filter({
-    hasText: /^\s*Close\s*$/
-  })
-  .last();
-
-await visibleCloseButton.waitFor({
-  state: "visible",
-  timeout: 60000
-});
-
-const finalSendButton = visibleCloseButton.locator(
-  "xpath=following-sibling::button[contains(@class,'save-btn')]"
+console.log(
+  `DRY RUN: Waiting for the final Send button for ${bookingId}...`
 );
 
-await finalSendButton.waitFor({
-  state: "visible",
-  timeout: 60000
-});
+await page.waitForFunction(
+  () => {
+    const buttons = Array.from(
+      document.querySelectorAll("button")
+    );
+
+    return buttons.some((button) => {
+      const text = button.textContent?.trim();
+      const styles = window.getComputedStyle(button);
+      const rectangle = button.getBoundingClientRect();
+
+      return (
+        text === "Send" &&
+        styles.display !== "none" &&
+        styles.visibility !== "hidden" &&
+        rectangle.width > 0 &&
+        rectangle.height > 0
+      );
+    });
+  },
+  {
+    timeout: 120000,
+    polling: 1000
+  }
+);
 
 console.log(
-  `DRY RUN PASSED: Exact final Send button found for ${bookingId}.`
+  `DRY RUN PASSED: Exact visible Send button found for ${bookingId}.`
 );
 
 console.log(
