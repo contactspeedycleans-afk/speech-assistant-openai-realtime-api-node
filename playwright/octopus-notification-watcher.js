@@ -48,13 +48,22 @@ const pool = new Pool({
 function classifyNotification(text) {
   const value = text.toLowerCase();
 
-if (value.includes("accepted booking request")) return "ACCEPTED";
-  if (value.includes("is no longer attending")) return "NEEDS CLEANER";
+  if (
+    value.includes("accepted appointment for booking") ||
+    value.includes("accepted booking request") ||
+    value.includes("has accepted booking request")
+  ) {
+    return "ASSIGNED";
+  }
+
+  if (value.includes("is no longer attending")) {
+    return "NEEDS CLEANER";
+  }
 
   if (value.includes("on the way")) return "ON_THE_WAY";
- if (value.includes("automatically checked in")) return "ARRIVED";
-if (value.includes("has arrived")) return "STARTED";
-if (value.includes("has started")) return "STARTED";
+  if (value.includes("automatically checked in")) return "ARRIVED";
+  if (value.includes("has arrived")) return "ARRIVED";
+  if (value.includes("has started")) return "STARTED";
   if (value.includes("has finished")) return "FINISHED";
   if (value.includes("new photos added")) return "PHOTOS_ADDED";
   if (value.includes("photos added")) return "PHOTOS_ADDED";
@@ -87,7 +96,7 @@ function buildOctopusBookingUrl(href) {
 
 function extractWorkerName(text) {
   const match = text.match(
-    /^(.*?)\s+(?:has accepted booking request|is no longer attending|has finished|has started|has arrived|is on the way|has been automatically checked in)/i
+    /^(.*?)\s+(?:accepted appointment for booking|has accepted booking request|accepted booking request|is no longer attending|has finished|has started|has arrived|is on the way|has been automatically checked in)/i
   );
 
   return match ? match[1].trim() : null;
@@ -346,7 +355,7 @@ async function upsertDispatchState(notification) {
   const eventType = notification.eventType;
 
 if (
-  eventType !== "ACCEPTED" &&
+  eventType !== "ASSIGNED" &&
   eventType !== "NEEDS CLEANER"
 ) {
   return;
@@ -355,7 +364,7 @@ if (
 const assignmentStatus = eventType;
 
 const jobRequestStatus =
-  eventType === "ACCEPTED"
+  eventType === "ASSIGNED"
     ? "ACCEPTED"
     : "NOT_SENT";
 
