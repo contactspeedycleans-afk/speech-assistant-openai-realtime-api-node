@@ -14,7 +14,6 @@ const ASSIGNMENT_MAKE_WEBHOOK_URL =
   process.env.ASSIGNMENT_MAKE_WEBHOOK_URL;
 const JOB_REQUEST_SENT_WEBHOOK_URL =
   process.env.JOB_REQUEST_SENT_WEBHOOK_URL;
-await markDispatchSent(booking.booking_number);
 
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME || "SpeedyCleans";
