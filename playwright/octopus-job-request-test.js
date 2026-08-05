@@ -73,6 +73,19 @@ await sendButton.click();
 
 console.log("Job request sent successfully.");
 
+await fetch(MAKE_WEBHOOK, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    booking: BOOKING_URL,
+    status: "SENT",
+    sentAt: new Date().toISOString()
+  })
+});
+
+console.log("Webhook sent to Make.");
 await page.waitForTimeout(3000);
 
 await browser.close();
