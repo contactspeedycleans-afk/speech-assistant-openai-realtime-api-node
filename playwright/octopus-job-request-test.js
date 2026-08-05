@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+Import { chromium } from "playwright";
 
 const BOOKING_URL =
   "https://admin.octopuspro.com/booking/view/563418";
