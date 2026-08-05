@@ -12,12 +12,18 @@ const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 
 const ASSIGNMENT_MAKE_WEBHOOK_URL =
   process.env.ASSIGNMENT_MAKE_WEBHOOK_URL;
+const JOB_REQUEST_SENT_WEBHOOK_URL =
+  process.env.JOB_REQUEST_SENT_WEBHOOK_URL;
+await markDispatchSent(booking.booking_number);
 
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME || "SpeedyCleans";
 
 if (!NOTIFICATIONS_URL) {
   throw new Error("Missing OCTOPUS_NOTIFICATIONS_URL");
+}
+if (!JOB_REQUEST_SENT_WEBHOOK_URL) {
+  throw new Error("Missing JOB_REQUEST_SENT_WEBHOOK_URL");
 }
 
 if (!OCTOPUS_EMAIL) {
