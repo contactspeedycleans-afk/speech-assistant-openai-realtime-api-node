@@ -1087,7 +1087,40 @@ async function markDispatchFailed(bookingNumber, error) {
     ]
   );
 }
+async function sendJobRequestSentToMake({
+  bookingNumber,
+  octopusBookingId
+}) {
+  const sentAt = new Date().toISOString();
 
+  const response = await fetch(
+    JOB_REQUEST_SENT_WEBHOOK_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        booking_number: bookingNumber,
+        octopus_booking_id: octopusBookingId,
+        job_request_status: "SENT",
+        sent_at: sentAt
+      })
+    }
+  );
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `Job request sent webhook failed: ${response.status} ${responseText}`
+    );
+  }
+
+  console.log(
+    `Job request sent webhook delivered for ${bookingNumber} at ${sentAt}.`
+  );
+}
 async function dispatchNextBooking(page) {
   const booking = await getNextDispatchBooking();
 
@@ -1107,6 +1140,10 @@ async function dispatchNextBooking(page) {
     );
 
     await markDispatchSent(booking.booking_number);
+    await sendJobRequestSentToMake({
+  bookingNumber: booking.booking_number,
+  octopusBookingId: booking.octopus_booking_id
+});
 
     console.log(
       `Dispatch completed and recorded for ${booking.booking_number}.`
