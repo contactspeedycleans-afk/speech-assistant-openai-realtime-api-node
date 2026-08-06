@@ -341,6 +341,8 @@ let customerBookings = [];
 let customerBookingCount = 0;
 let openAiConnected = false;
 let sessionStarted = false;
+            let outboundGreetingTimer = null;
+let customerSpokeBeforeGreeting = false;
 
             const openAiWs = new WebSocket(
                 `wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature=${TEMPERATURE}`,
@@ -945,11 +947,34 @@ Keep responses short, friendly, and conversational.`                     }
                 );
 
                
-                openAiWs.send(
-                    JSON.stringify({
-                        type: 'response.create'
-                    })
-                );
+              if (callMode.startsWith('OUTBOUND')) {
+    customerSpokeBeforeGreeting = false;
+
+    outboundGreetingTimer = setTimeout(() => {
+        outboundGreetingTimer = null;
+
+        if (
+            !customerSpokeBeforeGreeting &&
+            openAiWs.readyState === WebSocket.OPEN
+        ) {
+            openAiWs.send(
+                JSON.stringify({
+                    type: 'response.create'
+                })
+            );
+
+            console.log(
+                'No customer speech detected. Starting outbound greeting after 2 seconds.'
+            );
+        }
+    }, 2500);
+} else {
+    openAiWs.send(
+        JSON.stringify({
+            type: 'response.create'
+        })
+    );
+}
             };
 
             openAiWs.on('open', () => {
@@ -1172,18 +1197,31 @@ if (
     );
 }
     // Instantly stop Twilio audio when the customer interrupts
-                    if (
-                        response.type === 'input_audio_buffer.speech_started' &&
-                        connection.readyState === WebSocket.OPEN
-                    ) {
-                        connection.send(
-                            JSON.stringify({
-                                event: 'clear',
-                                streamSid: streamSid
-                            })
-                        );
-                        console.log('Customer interrupted - clearing Twilio audio buffer.');
-                    }
+                    if (response.type === 'input_audio_buffer.speech_started') {
+    customerSpokeBeforeGreeting = true;
+
+    if (outboundGreetingTimer) {
+        clearTimeout(outboundGreetingTimer);
+        outboundGreetingTimer = null;
+
+        console.log(
+            'Customer spoke before outbound greeting timer finished.'
+        );
+    }
+
+    if (connection.readyState === WebSocket.OPEN) {
+        connection.send(
+            JSON.stringify({
+                event: 'clear',
+                streamSid
+            })
+        );
+    }
+
+    console.log(
+        'Customer started speaking - cleared Twilio audio buffer.'
+    );
+}
 
                     // Send normal audio back to Twilio
                     if (
