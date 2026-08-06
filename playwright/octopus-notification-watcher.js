@@ -909,9 +909,7 @@ async function openJobRequestModal(page, bookingId) {
   const bookingUrl =
     `https://admin.octopuspro.com/booking/view/${bookingId}`;
 
-  console.log(
-    `Opening Octopus booking ${bookingId}...`
-  );
+  console.log(`Opening Octopus booking ${bookingId}...`);
 
   await page.goto(bookingUrl, {
     waitUntil: "domcontentloaded",
@@ -920,9 +918,7 @@ async function openJobRequestModal(page, bookingId) {
 
   const availableFieldworkers = page.getByText(
     "Available Fieldworkers",
-    {
-      exact: true
-    }
+    { exact: true }
   );
 
   await availableFieldworkers.waitFor({
@@ -936,12 +932,11 @@ async function openJobRequestModal(page, bookingId) {
     `Waiting for Octopus to calculate fieldworkers for ${bookingId}...`
   );
 
-  const sendJobRequestButton = page.getByRole(
-    "button",
-    {
+  const sendJobRequestButton = page
+    .getByRole("button", {
       name: /send job request/i
-    }
-  ).first();
+    })
+    .first();
 
   await sendJobRequestButton.waitFor({
     state: "visible",
@@ -962,35 +957,6 @@ async function openJobRequestModal(page, bookingId) {
     `Opened Send Job Request window for ${bookingId}.`
   );
 
-  const sendJobRequestHeading = page.getByRole(
-    "heading",
-    {
-      name: /send job request/i
-    }
-  ).first();
-
-  await sendJobRequestHeading.waitFor({
-    state: "visible",
-    timeout: 30000
-  }).catch(() => {
-    console.log(
-      `Send Job Request heading was not found, continuing with final Send button.`
-    );
-  });
-
-  console.log(
-  `Waiting for the final Send button for ${bookingId}...`
-);
-
-await finalSendButton.waitFor({
-  state: "visible",
-  timeout: 60000
-});
-
-console.log(
-  `Final Send button is ready for ${bookingId}.`
-);
-
   const finalSendButton = page
     .locator("button.save-btn")
     .filter({
@@ -998,68 +964,37 @@ console.log(
     })
     .first();
 
-  const finalButtonVisible =
-    await finalSendButton
-      .isVisible()
-      .catch(() => false);
+  console.log(
+    `Waiting for the final Send button for ${bookingId}...`
+  );
 
-  if (finalButtonVisible) {
-    await finalSendButton.click({
-      timeout: 30000
-    });
-  } else {
-    const sendClicked = await page.evaluate(() => {
-      const buttons = Array.from(
-        document.querySelectorAll("button")
-      );
+  await finalSendButton.waitFor({
+    state: "visible",
+    timeout: 120000
+  });
 
-      const sendButton = buttons.find((button) => {
-        const text =
-          button.textContent?.trim() || "";
+  console.log(
+    `Final Send button is ready for ${bookingId}.`
+  );
 
-        const styles =
-          window.getComputedStyle(button);
+  await finalSendButton.scrollIntoViewIfNeeded();
 
-        const rectangle =
-          button.getBoundingClientRect();
-
-        return (
-          /^send$/i.test(text) &&
-          styles.display !== "none" &&
-          styles.visibility !== "hidden" &&
-          rectangle.width > 0 &&
-          rectangle.height > 0 &&
-          !button.disabled
-        );
-      });
-
-      if (!sendButton) {
-        return false;
-      }
-
-      sendButton.click();
-      return true;
-    });
-
-    if (!sendClicked) {
-      throw new Error(
-        `Final Send button was not found for ${bookingId}.`
-      );
-    }
-  }
+  await finalSendButton.click({
+    timeout: 30000
+  });
 
   console.log(
     `Clicked final Send button for ${bookingId}.`
   );
 
- console.log(
-  `Waiting for Octopus to finish sending the job request for ${bookingId}...`
-);
+  console.log(
+    `Waiting 45 seconds for Octopus to finish sending job requests for ${bookingId}...`
+  );
 
-await page.waitForTimeout(45000);
+  await page.waitForTimeout(45000);
 
   console.log(
-    `Job request was sent for ${bookingId}.`
+    `Job request send process finished for ${bookingId}.`
   );
 
   await page.goto(NOTIFICATIONS_URL, {
