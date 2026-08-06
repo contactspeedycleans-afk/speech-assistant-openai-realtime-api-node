@@ -910,7 +910,7 @@ async function openJobRequestModal(page, bookingId) {
     `https://admin.octopuspro.com/booking/view/${bookingId}`;
 
   console.log(
-    `DRY RUN: Opening Octopus booking ${bookingId}...`
+    `Opening Octopus booking ${bookingId}...`
   );
 
   await page.goto(bookingUrl, {
@@ -920,7 +920,9 @@ async function openJobRequestModal(page, bookingId) {
 
   const availableFieldworkers = page.getByText(
     "Available Fieldworkers",
-    { exact: true }
+    {
+      exact: true
+    }
   );
 
   await availableFieldworkers.waitFor({
@@ -931,106 +933,150 @@ async function openJobRequestModal(page, bookingId) {
   await availableFieldworkers.scrollIntoViewIfNeeded();
 
   console.log(
-    `DRY RUN: Waiting for Octopus to calculate fieldworkers for ${bookingId}...`
+    `Waiting for Octopus to calculate fieldworkers for ${bookingId}...`
   );
 
-await sendJobRequestButton.waitFor({
-  state: "visible",
-  timeout: 120000
-});
-
-console.log(
-  `Fieldworker section is ready for ${bookingId}.`
-);
-
-  console.log(
-    `DRY RUN: Fieldworker calculation finished for ${bookingId}.`
-  );
-
-  const sendJobRequestButton = page.getByRole("button", {
-    name: /send job request/i
-  });
+  const sendJobRequestButton = page.getByRole(
+    "button",
+    {
+      name: /send job request/i
+    }
+  ).first();
 
   await sendJobRequestButton.waitFor({
     state: "visible",
-    timeout: 30000
+    timeout: 120000
   });
+
+  console.log(
+    `Fieldworker section is ready for ${bookingId}.`
+  );
+
+  await sendJobRequestButton.scrollIntoViewIfNeeded();
 
   await sendJobRequestButton.click({
     timeout: 30000
   });
 
   console.log(
-    `DRY RUN: Clicked Send Job Request for ${bookingId}.`
+    `Opened Send Job Request window for ${bookingId}.`
   );
+
+  const sendJobRequestHeading = page.getByRole(
+    "heading",
+    {
+      name: /send job request/i
+    }
+  ).first();
+
+  await sendJobRequestHeading.waitFor({
+    state: "visible",
+    timeout: 30000
+  }).catch(() => {
+    console.log(
+      `Send Job Request heading was not found, continuing with final Send button.`
+    );
+  });
 
   const smsOption = page.getByText(
     "Also send as SMS",
-    { exact: true }
-  );
+    {
+      exact: true
+    }
+  ).first();
 
   await smsOption.waitFor({
     state: "visible",
     timeout: 60000
   });
 
- console.log(
-  `LIVE TEST: Request window opened for ${bookingId}.`
-);
-
-console.log(
-  `LIVE TEST: Clicking the final Send button for ${bookingId}...`
-);
-
-const sendClicked = await page.evaluate(() => {
-  const buttons = Array.from(
-    document.querySelectorAll("button")
+  console.log(
+    `Job Request window is ready for ${bookingId}.`
   );
 
-  const sendButton = buttons.find((button) => {
-    const text = button.textContent?.trim();
-    const styles = window.getComputedStyle(button);
-    const rectangle = button.getBoundingClientRect();
+  const finalSendButton = page
+    .locator("button.save-btn")
+    .filter({
+      hasText: /^Send$/i
+    })
+    .first();
 
-    return (
-      text === "Send" &&
-      styles.display !== "none" &&
-      styles.visibility !== "hidden" &&
-      rectangle.width > 0 &&
-      rectangle.height > 0
+  const finalButtonVisible =
+    await finalSendButton
+      .isVisible()
+      .catch(() => false);
+
+  if (finalButtonVisible) {
+    await finalSendButton.click({
+      timeout: 30000
+    });
+  } else {
+    const sendClicked = await page.evaluate(() => {
+      const buttons = Array.from(
+        document.querySelectorAll("button")
+      );
+
+      const sendButton = buttons.find((button) => {
+        const text =
+          button.textContent?.trim() || "";
+
+        const styles =
+          window.getComputedStyle(button);
+
+        const rectangle =
+          button.getBoundingClientRect();
+
+        return (
+          /^send$/i.test(text) &&
+          styles.display !== "none" &&
+          styles.visibility !== "hidden" &&
+          rectangle.width > 0 &&
+          rectangle.height > 0 &&
+          !button.disabled
+        );
+      });
+
+      if (!sendButton) {
+        return false;
+      }
+
+      sendButton.click();
+      return true;
+    });
+
+    if (!sendClicked) {
+      throw new Error(
+        `Final Send button was not found for ${bookingId}.`
+      );
+    }
+  }
+
+  console.log(
+    `Clicked final Send button for ${bookingId}.`
+  );
+
+  await smsOption.waitFor({
+    state: "hidden",
+    timeout: 60000
+  }).catch(() => {
+    console.log(
+      `Send window did not close automatically for ${bookingId}; continuing after click.`
     );
   });
 
-  if (!sendButton) {
-    return false;
-  }
+  await page.waitForTimeout(3000);
 
-  sendButton.click();
-  return true;
-});
-
-if (!sendClicked) {
-  throw new Error(
-    `Final Send button was not found for ${bookingId}.`
+  console.log(
+    `Job request was sent for ${bookingId}.`
   );
-}
-
-await smsOption.waitFor({
-  state: "hidden",
-  timeout: 60000
-});
-
-console.log(
-  `LIVE TEST PASSED: Job request was sent for ${bookingId}.`
-);
-  await page.waitForTimeout(1000);
 
   await page.goto(NOTIFICATIONS_URL, {
     waitUntil: "domcontentloaded",
     timeout: 60000
   });
-}
 
+  await page.waitForTimeout(2000);
+}
 async function getNextDispatchBooking() {
   const result = await pool.query(`
     SELECT
