@@ -978,21 +978,18 @@ async function openJobRequestModal(page, bookingId) {
     );
   });
 
-  const smsOption = page.getByText(
-    "Also send as SMS",
-    {
-      exact: true
-    }
-  ).first();
-
-  await smsOption.waitFor({
-    state: "visible",
-    timeout: 60000
-  });
-
   console.log(
-    `Job Request window is ready for ${bookingId}.`
-  );
+  `Waiting for the final Send button for ${bookingId}...`
+);
+
+await finalSendButton.waitFor({
+  state: "visible",
+  timeout: 60000
+});
+
+console.log(
+  `Final Send button is ready for ${bookingId}.`
+);
 
   const finalSendButton = page
     .locator("button.save-btn")
@@ -1055,16 +1052,11 @@ async function openJobRequestModal(page, bookingId) {
     `Clicked final Send button for ${bookingId}.`
   );
 
-  await smsOption.waitFor({
-    state: "hidden",
-    timeout: 60000
-  }).catch(() => {
-    console.log(
-      `Send window did not close automatically for ${bookingId}; continuing after click.`
-    );
-  });
+ console.log(
+  `Waiting for Octopus to finish sending the job request for ${bookingId}...`
+);
 
-  await page.waitForTimeout(3000);
+await page.waitForTimeout(45000);
 
   console.log(
     `Job request was sent for ${bookingId}.`
