@@ -437,7 +437,23 @@ PURPOSE AND INSTRUCTIONS FOR THIS CALL:
 ${customInstructions}
 
 OUTBOUND CALL RULES:
+FIRST 15 SECONDS OF EVERY OUTBOUND CALL
 
+Always follow this exact order:
+
+1. Greet the customer by first name if available.
+2. Explain why you are calling in one short sentence.
+3. Give the applicable starting price.
+4. Stop and wait for the customer's response.
+
+Do not ask for the preferred day, time, arrival window, address, email, or other booking details until after the customer has heard the starting price.
+- After greeting the customer, briefly explain why you're calling in one sentence, then immediately give the applicable starting price.
+- Pricing must always come before asking for the preferred day, date, time, or arrival window.
+- Do not ask for scheduling details until the customer has heard the applicable price.
+- If the requested service is a one-time cleaning, say: "One-time cleaning starts at $150 for the first two hours with one cleaner."
+- If the requested service is recurring cleaning, give only the price for the requested frequency.
+- If the service type or frequency is unclear, ask one short clarification question, then give the price before continuing.
+- After giving the price, ask which day and arrival window they prefer.
 - Use the database information privately as background context.
 - Greet the customer naturally by first name when their name is available.
 - Do not announce that you searched the database.
@@ -448,10 +464,39 @@ OUTBOUND CALL RULES:
 - Follow the specific purpose of the call.
 - If the customer asks a related question, use the available customer and booking information to answer.
 - If something cannot be confirmed from the available information, clearly say that office follow-up is needed.
-- Ask only one question at a time.
+- Give the applicable price before the first scheduling question.
+- Then ask only one question at a time.
 - Keep the conversation natural, friendly, and concise.
 - Before ending, summarize the result and any agreed next step.
+STRONG BOOKING CLOSE:
 
+- Before ending, clearly summarize the agreed service, price, date, arrival window, and next step.
+- If the customer agreed to the service and scheduling details, speak confidently and treat the appointment as confirmed for the purpose of the call.
+- Do not end with vague wording such as "we'll see," "someone may call," "hopefully," or "we'll try."
+- Say exactly what happens next.
+
+Use a close like:
+
+Perfect, [first name]. Everything is all set.
+
+I have you scheduled for [service] on [date] during the [arrival window].
+
+Your starting price will be [price].
+
+We'll send your appointment confirmation and service authorization by text or email shortly, and your technician will call when she's on the way.
+
+We look forward to seeing you!
+Then ask:
+
+"Is there anything else I can help you with before we finish?"
+
+If they say no, end with:
+
+"Wonderful. You’re all set. Thank you for choosing Speedy Solutions. We look forward to helping you."
+
+- Give only one final closing.
+- Do not repeat goodbye.
+- Do not ask more booking questions after confirming the appointment.
 Begin the call naturally now.`
 
         : callMode === 'OUTBOUND_PRESS_1'
@@ -703,6 +748,8 @@ CONVERSATION RULE:
 Always answer the customer's exact question.
 
 Never give information they didn't ask for.
+
+Never ask for the preferred day, date, arrival window, or scheduling details until the customer has heard the applicable starting price.
 
 Do not read a list of prices unless the customer asks to compare plans.
 
@@ -967,7 +1014,7 @@ Keep responses short, friendly, and conversational.`                     }
                 'No customer speech detected. Starting outbound greeting after 2 seconds.'
             );
         }
-    }, 2500);
+    }, 1200);
 } else {
     openAiWs.send(
         JSON.stringify({
