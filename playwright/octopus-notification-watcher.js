@@ -958,25 +958,39 @@ async function openJobRequestModal(page, bookingId) {
   );
 
   console.log(
-  `Waiting for the visible final Send button for ${bookingId}...`
+  `Checking visible buttons inside the Job Request window for ${bookingId}...`
 );
 
-const finalSendButton = page.locator(
-  'button#send-email-button-modal:visible, button.save-btn:visible'
-).filter({
-  hasText: /^Send$/i
-}).last();
+await page.waitForTimeout(3000);
 
-await finalSendButton.waitFor({
-  state: "visible",
-  timeout: 120000
-});
+const visibleButtons = await page.locator("button:visible").allTextContents();
 
 console.log(
-  `Visible final Send button is ready for ${bookingId}.`
+  "VISIBLE BUTTONS:",
+  visibleButtons.map((text) => text.trim()).filter(Boolean)
 );
 
-await finalSendButton.scrollIntoViewIfNeeded();
+const finalSendButton = page
+  .locator("button:visible")
+  .filter({
+    hasText: /^\s*Send\s*$/i
+  })
+  .last();
+
+const finalSendCount = await finalSendButton.count();
+
+console.log(
+  `Visible exact Send buttons found: ${finalSendCount}`
+);
+
+if (finalSendCount === 0) {
+  throw new Error(
+    `No visible exact Send button found. Visible buttons were: ${visibleButtons
+      .map((text) => text.trim())
+      .filter(Boolean)
+      .join(" | ")}`
+  );
+}
 
 await finalSendButton.click({
   timeout: 30000,
@@ -986,7 +1000,6 @@ await finalSendButton.click({
 console.log(
   `Clicked final Send button for ${bookingId}.`
 );
-
   console.log(
     `Clicked final Send button for ${bookingId}.`
   );
