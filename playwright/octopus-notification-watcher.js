@@ -934,22 +934,14 @@ async function openJobRequestModal(page, bookingId) {
     `DRY RUN: Waiting for Octopus to calculate fieldworkers for ${bookingId}...`
   );
 
-  await page.waitForFunction(
-    () => {
-      const text =
-        document.body?.innerText?.replace(/\s+/g, " ") || "";
+await sendJobRequestButton.waitFor({
+  state: "visible",
+  timeout: 120000
+});
 
-      return (
-        /\d+\s+of\s+\d+\s+available/i.test(text) ||
-        /showing\s+\d+\s+of\s+\d+\s+matches/i.test(text)
-      );
-    },
-    undefined,
-    {
-      timeout: 120000,
-      polling: 1000
-    }
-  );
+console.log(
+  `Fieldworker section is ready for ${bookingId}.`
+);
 
   console.log(
     `DRY RUN: Fieldworker calculation finished for ${bookingId}.`
