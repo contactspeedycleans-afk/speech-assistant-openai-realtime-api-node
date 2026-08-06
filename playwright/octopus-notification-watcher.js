@@ -957,31 +957,35 @@ async function openJobRequestModal(page, bookingId) {
     `Opened Send Job Request window for ${bookingId}.`
   );
 
-  const finalSendButton = page
-    .locator("button.save-btn")
-    .filter({
-      hasText: /^Send$/i
-    })
-    .first();
-
   console.log(
-    `Waiting for the final Send button for ${bookingId}...`
-  );
+  `Waiting for the visible final Send button for ${bookingId}...`
+);
 
-  await finalSendButton.waitFor({
-    state: "visible",
-    timeout: 120000
-  });
+const finalSendButton = page.locator(
+  'button#send-email-button-modal:visible, button.save-btn:visible'
+).filter({
+  hasText: /^Send$/i
+}).last();
 
-  console.log(
-    `Final Send button is ready for ${bookingId}.`
-  );
+await finalSendButton.waitFor({
+  state: "visible",
+  timeout: 120000
+});
 
-  await finalSendButton.scrollIntoViewIfNeeded();
+console.log(
+  `Visible final Send button is ready for ${bookingId}.`
+);
 
-  await finalSendButton.click({
-    timeout: 30000
-  });
+await finalSendButton.scrollIntoViewIfNeeded();
+
+await finalSendButton.click({
+  timeout: 30000,
+  force: true
+});
+
+console.log(
+  `Clicked final Send button for ${bookingId}.`
+);
 
   console.log(
     `Clicked final Send button for ${bookingId}.`
