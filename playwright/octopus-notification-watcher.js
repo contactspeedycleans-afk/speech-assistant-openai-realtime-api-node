@@ -955,63 +955,75 @@ async function openJobRequestModal(page, bookingId) {
 
 await sendJobRequestButton.scrollIntoViewIfNeeded();
 
-await sendJobRequestButton.click({
-  timeout: 30000,
-  force: true
+console.log(
+  `Clicking Send Job Request for ${bookingId}...`
+);
+
+const clickedJobRequest = await page.evaluate(() => {
+  const buttons = Array.from(document.querySelectorAll("button"));
+
+  const button = buttons.find((el) => {
+    const text = (el.textContent || "").trim().toLowerCase();
+    const rect = el.getBoundingClientRect();
+    const styles = window.getComputedStyle(el);
+
+    return (
+      text === "send job request" &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      styles.display !== "none" &&
+      styles.visibility !== "hidden" &&
+      !el.disabled
+    );
+  });
+
+  if (!button) {
+    return false;
+  }
+
+  button.scrollIntoView({
+    behavior: "instant",
+    block: "center"
+  });
+
+  button.click();
+
+  return true;
 });
 
-await page.waitForTimeout(5000);
-
-const visibleDialogs = page.locator(
-  '[role="dialog"]:visible, .modal:visible, .v-dialog:visible'
-);
-
-const dialogCount = await visibleDialogs.count();
+if (!clickedJobRequest) {
+  throw new Error(
+    `Could not click visible Send Job Request button for ${bookingId}.`
+  );
+}
 
 console.log(
-  `Visible job request windows found: ${dialogCount}`
+  `Browser clicked Send Job Request for ${bookingId}.`
 );
 
-const frameDetails = page.frames().map((frame) => ({
-  name: frame.name(),
-  url: frame.url()
-}));
+await page.waitForTimeout(10000);
 
-console.log(
-  "PAGE FRAMES:",
-  frameDetails
-);
-
-const visibleButtons = await page
+const visibleButtonsAfterClick = await page
   .locator("button:visible")
   .allTextContents();
 
 console.log(
-  "VISIBLE BUTTONS AFTER CLICK:",
-  visibleButtons
+  "VISIBLE BUTTONS 10 SECONDS AFTER CLICK:",
+  visibleButtonsAfterClick
     .map((text) => text.trim())
     .filter(Boolean)
 );
 
-const finalSendButton = page
-  .locator(
-    '[role="dialog"]:visible button:visible, .modal:visible button:visible, .v-dialog:visible button:visible'
-  )
-  .filter({
-    hasText: /^\s*Send\s*$/i
-  })
-  .last();
+const bodyAfterClick = await page.locator("body").innerText();
 
-const finalSendCount =
-  await finalSendButton.count();
+console.log(
+  "PAGE TEXT AFTER JOB REQUEST CLICK:",
+  bodyAfterClick.slice(-4000)
+);
 
-if (finalSendCount === 0) {
-  throw new Error(
-    `Send Job Request window did not open for ${bookingId}. Visible buttons after click: ${visibleButtons
-      .map((text) => text.trim())
-      .filter(Boolean)
-      .join(" | ")}`
-  );
+throw new Error(
+  `Diagnostic stop after clicking Send Job Request for ${bookingId}.`
+);
 }
 
 console.log(
