@@ -949,48 +949,74 @@ async function openJobRequestModal(page, bookingId) {
 
   await sendJobRequestButton.scrollIntoViewIfNeeded();
 
-  await sendJobRequestButton.click({
-    timeout: 30000
-  });
-
   console.log(
-    `Opened Send Job Request window for ${bookingId}.`
-  );
-
-  console.log(
-  `Checking visible buttons inside the Job Request window for ${bookingId}...`
+  `Clicking Send Job Request for ${bookingId}...`
 );
 
-await page.waitForTimeout(3000);
+await sendJobRequestButton.scrollIntoViewIfNeeded();
 
-const visibleButtons = await page.locator("button:visible").allTextContents();
+await sendJobRequestButton.click({
+  timeout: 30000,
+  force: true
+});
+
+await page.waitForTimeout(5000);
+
+const visibleDialogs = page.locator(
+  '[role="dialog"]:visible, .modal:visible, .v-dialog:visible'
+);
+
+const dialogCount = await visibleDialogs.count();
 
 console.log(
-  "VISIBLE BUTTONS:",
-  visibleButtons.map((text) => text.trim()).filter(Boolean)
+  `Visible job request windows found: ${dialogCount}`
+);
+
+const frameDetails = page.frames().map((frame) => ({
+  name: frame.name(),
+  url: frame.url()
+}));
+
+console.log(
+  "PAGE FRAMES:",
+  frameDetails
+);
+
+const visibleButtons = await page
+  .locator("button:visible")
+  .allTextContents();
+
+console.log(
+  "VISIBLE BUTTONS AFTER CLICK:",
+  visibleButtons
+    .map((text) => text.trim())
+    .filter(Boolean)
 );
 
 const finalSendButton = page
-  .locator("button:visible")
+  .locator(
+    '[role="dialog"]:visible button:visible, .modal:visible button:visible, .v-dialog:visible button:visible'
+  )
   .filter({
     hasText: /^\s*Send\s*$/i
   })
   .last();
 
-const finalSendCount = await finalSendButton.count();
-
-console.log(
-  `Visible exact Send buttons found: ${finalSendCount}`
-);
+const finalSendCount =
+  await finalSendButton.count();
 
 if (finalSendCount === 0) {
   throw new Error(
-    `No visible exact Send button found. Visible buttons were: ${visibleButtons
+    `Send Job Request window did not open for ${bookingId}. Visible buttons after click: ${visibleButtons
       .map((text) => text.trim())
       .filter(Boolean)
       .join(" | ")}`
   );
 }
+
+console.log(
+  `Final Send button found for ${bookingId}.`
+);
 
 await finalSendButton.click({
   timeout: 30000,
@@ -1000,13 +1026,6 @@ await finalSendButton.click({
 console.log(
   `Clicked final Send button for ${bookingId}.`
 );
-  console.log(
-    `Clicked final Send button for ${bookingId}.`
-  );
-
-  console.log(
-    `Waiting 45 seconds for Octopus to finish sending job requests for ${bookingId}...`
-  );
 
   await page.waitForTimeout(45000);
 
