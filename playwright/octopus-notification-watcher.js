@@ -1745,45 +1745,49 @@ async function openJobRequestModal(
   );
 
 
-  const findAvailabilityButton =
-    page
-      .getByRole(
-        "button",
-        {
-          name:
-            /find availability/i
-        }
-      )
-      .first();
+  /*
+   * IMPORTANT:
+   * Do NOT click Find Availability here.
+   *
+   * Octopus already calculates and displays its
+   * Available Fieldworkers on the booking page.
+   *
+   * Clicking Find Availability opens a separate
+   * availability interface which can show zero
+   * matches even when the booking page already
+   * has eligible fieldworkers.
+   */
 
 
-  if (
-    await findAvailabilityButton
-      .isVisible()
-      .catch(() => false)
-  ) {
-    console.log(
-      `Clicking Find availability for ${bookingId}...`
+  console.log(
+    `Using Octopus Available Fieldworkers already loaded for ${bookingId}.`
+  );
+
+
+  await page.waitForTimeout(
+    5000
+  );
+
+
+  const bodyBeforeSend =
+    await page
+      .locator("body")
+      .innerText();
+
+
+  const availabilityMatch =
+    bodyBeforeSend.match(
+      /(\d+)\s+of\s+(\d+)\s+available/i
     );
 
 
-    await findAvailabilityButton.click({
-      timeout: 30000,
-      force: true
-    });
-
-
+  if (availabilityMatch) {
     console.log(
-      `Waiting for Octopus availability calculation for ${bookingId}...`
-    );
-
-
-    await page.waitForTimeout(
-      30000
+      `Octopus reports ${availabilityMatch[1]} of ${availabilityMatch[2]} fieldworkers available for ${bookingId}.`
     );
   } else {
     console.log(
-      `Find availability button was not visible for ${bookingId}; continuing.`
+      `Could not read an available-fieldworker count for ${bookingId}; continuing to Send Job Request.`
     );
   }
 
