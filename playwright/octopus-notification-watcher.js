@@ -950,107 +950,89 @@ async function openJobRequestModal(page, bookingId) {
   await sendJobRequestButton.scrollIntoViewIfNeeded();
 
   console.log(
-  `Clicking Send Job Request for ${bookingId}...`
-);
+    `Clicking Send Job Request for ${bookingId}...`
+  );
 
-await sendJobRequestButton.scrollIntoViewIfNeeded();
-
-console.log(
-  `Clicking Send Job Request for ${bookingId}...`
-);
-
-const clickedJobRequest = await page.evaluate(() => {
-  const buttons = Array.from(document.querySelectorAll("button"));
-
-  const button = buttons.find((el) => {
-    const text = (el.textContent || "").trim().toLowerCase();
-    const rect = el.getBoundingClientRect();
-    const styles = window.getComputedStyle(el);
-
-    return (
-      text === "send job request" &&
-      rect.width > 0 &&
-      rect.height > 0 &&
-      styles.display !== "none" &&
-      styles.visibility !== "hidden" &&
-      !el.disabled
+  const clickedJobRequest = await page.evaluate(() => {
+    const buttons = Array.from(
+      document.querySelectorAll("button")
     );
+
+    const button = buttons.find((el) => {
+      const text =
+        (el.textContent || "").trim().toLowerCase();
+
+      const rect = el.getBoundingClientRect();
+      const styles = window.getComputedStyle(el);
+
+      return (
+        text === "send job request" &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        styles.display !== "none" &&
+        styles.visibility !== "hidden" &&
+        !el.disabled
+      );
+    });
+
+    if (!button) {
+      return false;
+    }
+
+    button.scrollIntoView({
+      behavior: "instant",
+      block: "center"
+    });
+
+    button.click();
+
+    return true;
   });
 
-  if (!button) {
-    return false;
+  if (!clickedJobRequest) {
+    throw new Error(
+      `Could not click visible Send Job Request button for ${bookingId}.`
+    );
   }
 
-  button.scrollIntoView({
-    behavior: "instant",
-    block: "center"
-  });
-
-  button.click();
-
-  return true;
-});
-
-if (!clickedJobRequest) {
-  throw new Error(
-    `Could not click visible Send Job Request button for ${bookingId}.`
+  console.log(
+    `Browser clicked Send Job Request for ${bookingId}.`
   );
-}
 
-console.log(
-  `Browser clicked Send Job Request for ${bookingId}.`
-);
+  // Octopus can take a while to build the Job Request interface.
+  // Give it time before deciding anything failed.
+  console.log(
+    `Waiting for Octopus Job Request interface for ${bookingId}...`
+  );
 
-await page.waitForTimeout(10000);
+  await page.waitForTimeout(30000);
 
-const visibleButtonsAfterClick = await page
-  .locator("button:visible")
-  .allTextContents();
-
-console.log(
-  "VISIBLE BUTTONS 10 SECONDS AFTER CLICK:",
-  visibleButtonsAfterClick
-    .map((text) => text.trim())
-    .filter(Boolean)
-);
-
-const bodyAfterClick = await page.locator("body").innerText();
-
-console.log(
-  "PAGE TEXT AFTER JOB REQUEST CLICK:",
-  bodyAfterClick.slice(-4000)
-);
-
-throw new Error(
-  `Diagnostic stop after clicking Send Job Request for ${bookingId}.`
-);
-}
-
-console.log(
-  `Final Send button found for ${bookingId}.`
-);
-
-await finalSendButton.click({
-  timeout: 30000,
-  force: true
-});
-
-console.log(
-  `Clicked final Send button for ${bookingId}.`
-);
-
-  await page.waitForTimeout(45000);
+  const visibleButtonsAfterClick = await page
+    .locator("button:visible")
+    .allTextContents();
 
   console.log(
-    `Job request send process finished for ${bookingId}.`
+    "VISIBLE BUTTONS AFTER 30 SECONDS:",
+    visibleButtonsAfterClick
+      .map((text) => text.trim())
+      .filter(Boolean)
   );
 
-  await page.goto(NOTIFICATIONS_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: 60000
-  });
+  const bodyAfterClick =
+    await page.locator("body").innerText();
 
-  await page.waitForTimeout(2000);
+  console.log(
+    "PAGE TEXT AFTER JOB REQUEST CLICK:",
+    bodyAfterClick.slice(-5000)
+  );
+
+  // IMPORTANT:
+  // We are deliberately stopping here for ONE diagnostic run.
+  // This prevents accidentally sending requests while we identify
+  // exactly what Octopus displays after the 30-second load.
+  throw new Error(
+    `DIAGNOSTIC STOP: Job Request clicked for ${bookingId}. Check Railway logs for visible buttons and page text.`
+  );
 }
 async function getNextDispatchBooking() {
   const result = await pool.query(`
