@@ -929,9 +929,48 @@ async function openJobRequestModal(page, bookingId) {
   await availableFieldworkers.scrollIntoViewIfNeeded();
 
   console.log(
-    `Waiting for Octopus to calculate fieldworkers for ${bookingId}...`
+    `Available Fieldworkers section found for ${bookingId}.`
   );
 
+  /*
+   * FIRST:
+   * Ask Octopus to calculate/find availability.
+   */
+  const findAvailabilityButton = page
+    .getByRole("button", {
+      name: /find availability/i
+    })
+    .first();
+
+  if (
+    await findAvailabilityButton
+      .isVisible()
+      .catch(() => false)
+  ) {
+    console.log(
+      `Clicking Find availability for ${bookingId}...`
+    );
+
+    await findAvailabilityButton.click({
+      timeout: 30000,
+      force: true
+    });
+
+    console.log(
+      `Waiting for Octopus availability calculation for ${bookingId}...`
+    );
+
+    await page.waitForTimeout(30000);
+  } else {
+    console.log(
+      `Find availability button was not visible for ${bookingId}; continuing.`
+    );
+  }
+
+  /*
+   * SECOND:
+   * Find the visible Send Job Request button.
+   */
   const sendJobRequestButton = page
     .getByRole("button", {
       name: /send job request/i
@@ -943,35 +982,40 @@ async function openJobRequestModal(page, bookingId) {
     timeout: 120000
   });
 
-  console.log(
-    `Fieldworker section is ready for ${bookingId}.`
-  );
-
   await sendJobRequestButton.scrollIntoViewIfNeeded();
 
   console.log(
-    `Clicking Send Job Request for ${bookingId}...`
+    `Send Job Request button is ready for ${bookingId}.`
   );
 
+  /*
+   * THIRD:
+   * Click Send Job Request using the actual DOM element.
+   */
   const clickedJobRequest = await page.evaluate(() => {
     const buttons = Array.from(
       document.querySelectorAll("button")
     );
 
-    const button = buttons.find((el) => {
+    const button = buttons.find((element) => {
       const text =
-        (el.textContent || "").trim().toLowerCase();
+        (element.textContent || "")
+          .trim()
+          .toLowerCase();
 
-      const rect = el.getBoundingClientRect();
-      const styles = window.getComputedStyle(el);
+      const rectangle =
+        element.getBoundingClientRect();
+
+      const styles =
+        window.getComputedStyle(element);
 
       return (
         text === "send job request" &&
-        rect.width > 0 &&
-        rect.height > 0 &&
+        rectangle.width > 0 &&
+        rectangle.height > 0 &&
         styles.display !== "none" &&
         styles.visibility !== "hidden" &&
-        !el.disabled
+        !element.disabled
       );
     });
 
@@ -991,50 +1035,227 @@ async function openJobRequestModal(page, bookingId) {
 
   if (!clickedJobRequest) {
     throw new Error(
-      `Could not click visible Send Job Request button for ${bookingId}.`
+      `Could not click Send Job Request for ${bookingId}.`
     );
   }
 
   console.log(
-    `Browser clicked Send Job Request for ${bookingId}.`
+    `Clicked Send Job Request for ${bookingId}.`
   );
 
-  // Octopus can take a while to build the Job Request interface.
-  // Give it time before deciding anything failed.
+  /*
+   * FOURTH:
+   * Octopus can take time to prepare the request recipients.
+   */
   console.log(
-    `Waiting for Octopus Job Request interface for ${bookingId}...`
+    `Waiting for Octopus to prepare the Job Request for ${bookingId}...`
   );
 
   await page.waitForTimeout(30000);
 
-  const visibleButtonsAfterClick = await page
+  /*
+   * FIFTH:
+   * Find the FINAL visible "Send" button.
+   *
+   * Search the main page AND every iframe because Octopus
+   * can render parts of its interface in embedded frames.
+   */
+  let finalSendButton = null;
+  let finalSendLocation = "";
+
+  const mainPageSendButtons = page
     .locator("button:visible")
-    .allTextContents();
+    .filter({
+      hasText: /^\s*Send\s*$/i
+    });
+
+  if (
+    await mainPageSendButtons
+      .count()
+      .catch(() => 0) > 0
+  ) {
+    finalSendButton =
+      mainPageSendButtons.last();
+
+    finalSendLocation =
+      "main page";
+  }
+
+  if (!finalSendButton) {
+    for (const frame of page.frames()) {
+      if (frame === page.mainFrame()) {
+        continue;
+      }
+
+      try {
+        const frameSendButtons = frame
+          .locator("button:visible")
+          .filter({
+            hasText: /^\s*Send\s*$/i
+          });
+
+        const frameSendCount =
+          await frameSendButtons.count();
+
+        if (frameSendCount > 0) {
+          finalSendButton =
+            frameSendButtons.last();
+
+          finalSendLocation =
+            `iframe: ${frame.name() || frame.url()}`;
+
+          break;
+        }
+      } catch {
+        // Ignore inaccessible frames.
+      }
+    }
+  }
+
+  /*
+   * If the final Send button still isn't ready,
+   * wait and check repeatedly for up to another 90 seconds.
+   */
+  if (!finalSendButton) {
+    console.log(
+      `Final Send button is not ready yet for ${bookingId}. Waiting...`
+    );
+
+    for (let attempt = 1; attempt <= 9; attempt += 1) {
+      await page.waitForTimeout(10000);
+
+      const sendButtons = page
+        .locator("button:visible")
+        .filter({
+          hasText: /^\s*Send\s*$/i
+        });
+
+      if (
+        await sendButtons
+          .count()
+          .catch(() => 0) > 0
+      ) {
+        finalSendButton =
+          sendButtons.last();
+
+        finalSendLocation =
+          "main page after waiting";
+
+        break;
+      }
+
+      for (const frame of page.frames()) {
+        if (frame === page.mainFrame()) {
+          continue;
+        }
+
+        try {
+          const frameSendButtons = frame
+            .locator("button:visible")
+            .filter({
+              hasText: /^\s*Send\s*$/i
+            });
+
+          if (
+            await frameSendButtons.count() > 0
+          ) {
+            finalSendButton =
+              frameSendButtons.last();
+
+            finalSendLocation =
+              `iframe after waiting: ${frame.name() || frame.url()}`;
+
+            break;
+          }
+        } catch {
+          // Continue checking.
+        }
+      }
+
+      if (finalSendButton) {
+        break;
+      }
+
+      console.log(
+        `Still waiting for final Send button — attempt ${attempt}/9 for ${bookingId}.`
+      );
+    }
+  }
+
+  /*
+   * If we STILL cannot find Send, print useful debugging
+   * information instead of pretending the request worked.
+   */
+  if (!finalSendButton) {
+    const visibleButtons = await page
+      .locator("button:visible")
+      .allTextContents();
+
+    const bodyText =
+      await page.locator("body").innerText();
+
+    console.log(
+      "VISIBLE BUTTONS WHEN SEND FAILED:",
+      visibleButtons
+        .map((text) => text.trim())
+        .filter(Boolean)
+    );
+
+    console.log(
+      "JOB REQUEST PAGE TEXT WHEN SEND FAILED:",
+      bodyText.slice(-6000)
+    );
+
+    throw new Error(
+      `Final Send button never appeared for ${bookingId}.`
+    );
+  }
 
   console.log(
-    "VISIBLE BUTTONS AFTER 30 SECONDS:",
-    visibleButtonsAfterClick
-      .map((text) => text.trim())
-      .filter(Boolean)
+    `Final Send button found for ${bookingId} in ${finalSendLocation}.`
   );
 
-  const bodyAfterClick =
-    await page.locator("body").innerText();
+  /*
+   * SIXTH:
+   * Actually send the job request.
+   */
+  await finalSendButton
+    .scrollIntoViewIfNeeded()
+    .catch(() => {});
+
+  await finalSendButton.click({
+    timeout: 30000,
+    force: true
+  });
 
   console.log(
-    "PAGE TEXT AFTER JOB REQUEST CLICK:",
-    bodyAfterClick.slice(-5000)
+    `Clicked FINAL Send button for ${bookingId}.`
   );
 
-  // IMPORTANT:
-  // We are deliberately stopping here for ONE diagnostic run.
-  // This prevents accidentally sending requests while we identify
-  // exactly what Octopus displays after the 30-second load.
-  throw new Error(
-    `DIAGNOSTIC STOP: Job Request clicked for ${bookingId}. Check Railway logs for visible buttons and page text.`
+  /*
+   * You said Octopus normally takes 30+ seconds to actually
+   * distribute the requests, so give it 45 seconds.
+   */
+  console.log(
+    `Waiting 45 seconds for Octopus to finish sending ${bookingId}...`
   );
+
+  await page.waitForTimeout(45000);
+
+  console.log(
+    `Job request send process completed for ${bookingId}.`
+  );
+
+  /*
+   * Return to notifications.
+   */
+  await page.goto(NOTIFICATIONS_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+
+  await page.waitForTimeout(2000);
 }
-async function getNextDispatchBooking() {
   const result = await pool.query(`
     SELECT
       booking_number,
