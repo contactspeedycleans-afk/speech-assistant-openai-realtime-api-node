@@ -698,8 +698,7 @@ async function upsertDispatchState(
 
       jobRequestStatus,
       eventType,
-
-      notification.text ||
+            notification.text ||
         "",
 
       notification.octopusBookingId ||
@@ -1745,51 +1744,57 @@ async function openJobRequestModal(
   );
 
 
-  /*
-   * IMPORTANT:
-   * Do NOT click Find Availability here.
-   *
-   * Octopus already calculates and displays its
-   * Available Fieldworkers on the booking page.
-   *
-   * Clicking Find Availability opens a separate
-   * availability interface which can show zero
-   * matches even when the booking page already
-   * has eligible fieldworkers.
-   */
+  console.log(
+    `Waiting for Octopus to finish calculating available fieldworkers for ${bookingId}...`
+  );
+
+
+  let availabilityMatch =
+    null;
+
+
+  const availabilityStartedAt =
+    Date.now();
+
+
+  while (
+    Date.now() -
+      availabilityStartedAt <
+    120000
+  ) {
+    const bodyText =
+      await page
+        .locator("body")
+        .innerText();
+
+
+    availabilityMatch =
+      bodyText.match(
+        /(\d+)\s+of\s+(\d+)\s+available/i
+      );
+
+
+    if (availabilityMatch) {
+      break;
+    }
+
+
+    await page.waitForTimeout(
+      5000
+    );
+  }
+
+
+  if (!availabilityMatch) {
+    throw new Error(
+      `Octopus never finished loading the available-fieldworker count for ${bookingId}. Job request was NOT sent.`
+    );
+  }
 
 
   console.log(
-    `Using Octopus Available Fieldworkers already loaded for ${bookingId}.`
+    `Octopus reports ${availabilityMatch[1]} of ${availabilityMatch[2]} fieldworkers available for ${bookingId}.`
   );
-
-
-  await page.waitForTimeout(
-    5000
-  );
-
-
-  const bodyBeforeSend =
-    await page
-      .locator("body")
-      .innerText();
-
-
-  const availabilityMatch =
-    bodyBeforeSend.match(
-      /(\d+)\s+of\s+(\d+)\s+available/i
-    );
-
-
-  if (availabilityMatch) {
-    console.log(
-      `Octopus reports ${availabilityMatch[1]} of ${availabilityMatch[2]} fieldworkers available for ${bookingId}.`
-    );
-  } else {
-    console.log(
-      `Could not read an available-fieldworker count for ${bookingId}; continuing to Send Job Request.`
-    );
-  }
 
 
   const sendJobRequestButton =
@@ -1927,103 +1932,9 @@ async function openJobRequestModal(
     "";
 
 
-  const mainPageSendButtons =
-    page
-      .locator(
-        "button:visible"
-      )
-      .filter({
-        hasText:
-          /^\s*Send\s*$/i
-      });
-
-
-  if (
-    (
-      await mainPageSendButtons
-        .count()
-        .catch(() => 0)
-    ) > 0
-  ) {
-    finalSendButton =
-      mainPageSendButtons.last();
-
-
-    finalSendLocation =
-      "main page";
-  }
-
-
-  if (!finalSendButton) {
-    for (
-      const frame
-      of page.frames()
-    ) {
-      if (
-        frame ===
-        page.mainFrame()
-      ) {
-        continue;
-      }
-
-
-      try {
-        const frameSendButtons =
-          frame
-            .locator(
-              "button:visible"
-            )
-            .filter({
-              hasText:
-                /^\s*Send\s*$/i
-            });
-
-
-        const frameSendCount =
-          await frameSendButtons.count();
-
-
-        if (
-          frameSendCount >
-          0
-        ) {
-          finalSendButton =
-            frameSendButtons.last();
-
-
-          finalSendLocation =
-            `iframe: ${
-              frame.name() ||
-              frame.url()
-            }`;
-
-
-          break;
-        }
-      } catch {
-        // Ignore inaccessible frames.
-      }
-    }
-  }
-
-
-  if (!finalSendButton) {
-    console.log(
-      `Final Send button is not ready yet for ${bookingId}. Waiting...`
-    );
-
-
-    for (
-      let attempt = 1;
-      attempt <= 9;
-      attempt += 1
-    ) {
-      await page.waitForTimeout(
-        10000
-      );
-
-
-      const sendButtons =
+  const findFinalSendButton =
+    async () => {
+      const mainPageSendButtons =
         page
           .locator(
             "button:visible"
@@ -2036,20 +1947,18 @@ async function openJobRequestModal(
 
       if (
         (
-          await sendButtons
+          await mainPageSendButtons
             .count()
             .catch(() => 0)
         ) > 0
       ) {
-        finalSendButton =
-          sendButtons.last();
+        return {
+          button:
+            mainPageSendButtons.last(),
 
-
-        finalSendLocation =
-          "main page after waiting";
-
-
-        break;
+          location:
+            "main page"
+        };
       }
 
 
@@ -2078,29 +1987,75 @@ async function openJobRequestModal(
 
 
           if (
-            await frameSendButtons.count() >
-            0
+            (
+              await frameSendButtons
+                .count()
+            ) > 0
           ) {
-            finalSendButton =
-              frameSendButtons.last();
+            return {
+              button:
+                frameSendButtons.last(),
 
-
-            finalSendLocation =
-              `iframe after waiting: ${
-                frame.name() ||
-                frame.url()
-              }`;
-
-
-            break;
+              location:
+                `iframe: ${
+                  frame.name() ||
+                  frame.url()
+                }`
+            };
           }
         } catch {
-          // Continue checking.
+          // Ignore inaccessible frames.
         }
       }
 
 
-      if (finalSendButton) {
+      return null;
+    };
+
+
+  const firstSendResult =
+    await findFinalSendButton();
+
+
+  if (firstSendResult) {
+    finalSendButton =
+      firstSendResult.button;
+
+
+    finalSendLocation =
+      firstSendResult.location;
+  }
+
+
+  if (!finalSendButton) {
+    console.log(
+      `Final Send button is not ready yet for ${bookingId}. Waiting...`
+    );
+
+
+    for (
+      let attempt = 1;
+      attempt <= 9;
+      attempt += 1
+    ) {
+      await page.waitForTimeout(
+        10000
+      );
+
+
+      const sendResult =
+        await findFinalSendButton();
+
+
+      if (sendResult) {
+        finalSendButton =
+          sendResult.button;
+
+
+        finalSendLocation =
+          `${sendResult.location} after waiting`;
+
+
         break;
       }
 
@@ -2204,8 +2159,6 @@ async function openJobRequestModal(
     2000
   );
 }
-
-
 async function getNextDispatchBooking() {
   const result =
     await pool.query(
@@ -2217,10 +2170,8 @@ async function getNextDispatchBooking() {
         job_request_status
       FROM public.booking_dispatch_state
       WHERE
-        assignment_status =
-          'NEEDS CLEANER'
-        AND octopus_booking_id
-          IS NOT NULL
+        assignment_status = 'NEEDS CLEANER'
+        AND octopus_booking_id IS NOT NULL
         AND COALESCE(
           job_request_status,
           'NOT_SENT'
@@ -2230,11 +2181,7 @@ async function getNextDispatchBooking() {
       `
     );
 
-
-  return (
-    result.rows[0] ||
-    null
-  );
+  return result.rows[0] || null;
 }
 
 
@@ -2245,27 +2192,14 @@ async function markDispatchSent(
     `
     UPDATE public.booking_dispatch_state
     SET
-      job_request_status =
-        'SENT',
-
+      job_request_status = 'SENT',
       dispatch_attempts =
-        COALESCE(
-          dispatch_attempts,
-          0
-        ) + 1,
-
-      last_dispatch_attempt_at =
-        NOW(),
-
-      updated_at =
-        NOW()
-
-    WHERE booking_number =
-      $1;
+        COALESCE(dispatch_attempts, 0) + 1,
+      last_dispatch_attempt_at = NOW(),
+      updated_at = NOW()
+    WHERE booking_number = $1;
     `,
-    [
-      bookingNumber
-    ]
+    [bookingNumber]
   );
 }
 
@@ -2277,30 +2211,17 @@ async function markDispatchFailed(
   await pool.query(
     `
     UPDATE public.booking_dispatch_state
-
     SET
-      job_request_status =
-        'FAILED',
-
-      last_notification_text =
-        $2,
-
-      updated_at =
-        NOW()
-
-    WHERE booking_number =
-      $1;
+      job_request_status = 'FAILED',
+      last_notification_text = $2,
+      updated_at = NOW()
+    WHERE booking_number = $1;
     `,
     [
       bookingNumber,
-
       String(
-        error?.message ||
-        error
-      ).slice(
-        0,
-        1000
-      )
+        error?.message || error
+      ).slice(0, 1000)
     ]
   );
 }
@@ -2313,7 +2234,6 @@ async function sendJobRequestSentToMake({
   const sentAt =
     new Date().toISOString();
 
-
   const response =
     await fetch(
       JOB_REQUEST_SENT_WEBHOOK_URL,
@@ -2325,34 +2245,30 @@ async function sendJobRequestSentToMake({
             "application/json"
         },
 
-        body:
-          JSON.stringify({
-            booking_number:
-              bookingNumber,
+        body: JSON.stringify({
+          booking_number:
+            bookingNumber,
 
-            octopus_booking_id:
-              octopusBookingId,
+          octopus_booking_id:
+            octopusBookingId,
 
-            job_request_status:
-              "SENT",
+          job_request_status:
+            "SENT",
 
-            sent_at:
-              sentAt
-          })
+          sent_at:
+            sentAt
+        })
       }
     );
 
-
   const responseText =
     await response.text();
-
 
   if (!response.ok) {
     throw new Error(
       `Job request sent webhook failed: ${response.status} ${responseText}`
     );
   }
-
 
   console.log(
     `Job request sent webhook delivered for ${bookingNumber} at ${sentAt}.`
@@ -2366,7 +2282,6 @@ async function dispatchNextBooking(
   const booking =
     await getNextDispatchBooking();
 
-
   if (!booking) {
     console.log(
       "No bookings are waiting for dispatch."
@@ -2375,11 +2290,9 @@ async function dispatchNextBooking(
     return;
   }
 
-
   console.log(
     `Dispatching ${booking.booking_number} using Octopus ID ${booking.octopus_booking_id}...`
   );
-
 
   try {
     await openJobRequestModal(
@@ -2387,11 +2300,9 @@ async function dispatchNextBooking(
       booking.octopus_booking_id
     );
 
-
     await markDispatchSent(
       booking.booking_number
     );
-
 
     await sendJobRequestSentToMake({
       bookingNumber:
@@ -2401,7 +2312,6 @@ async function dispatchNextBooking(
         booking.octopus_booking_id
     });
 
-
     console.log(
       `Dispatch completed and recorded for ${booking.booking_number}.`
     );
@@ -2410,7 +2320,6 @@ async function dispatchNextBooking(
       booking.booking_number,
       error
     );
-
 
     throw error;
   }
@@ -2422,11 +2331,9 @@ async function main() {
     "SELECT 1"
   );
 
-
   console.log(
     "PostgreSQL connected successfully."
   );
-
 
   const browser =
     await chromium.launch({
@@ -2439,7 +2346,6 @@ async function main() {
       ]
     });
 
-
   const context =
     await browser.newContext({
       viewport: {
@@ -2448,25 +2354,20 @@ async function main() {
       }
     });
 
-
   const page =
     await context.newPage();
-
 
   page.setDefaultTimeout(
     30000
   );
 
-
   page.setDefaultNavigationTimeout(
     60000
   );
 
-
   await readNotifications(
     page
   );
-
 
   try {
     await dispatchNextBooking(
@@ -2479,10 +2380,8 @@ async function main() {
     );
   }
 
-
   let checkRunning =
     false;
-
 
   setInterval(
     async () => {
@@ -2494,16 +2393,12 @@ async function main() {
         return;
       }
 
-
-      checkRunning =
-        true;
-
+      checkRunning = true;
 
       try {
         await readNotifications(
           page
         );
-
 
         await dispatchNextBooking(
           page
@@ -2514,13 +2409,11 @@ async function main() {
           error
         );
       } finally {
-        checkRunning =
-          false;
+        checkRunning = false;
       }
     },
     60000
   );
-
 
   const shutdown =
     async (signal) => {
@@ -2528,36 +2421,27 @@ async function main() {
         `Received ${signal}. Shutting down watcher.`
       );
 
-
       await browser
         .close()
         .catch(() => {});
-
 
       await pool
         .end()
         .catch(() => {});
 
-
       process.exit(0);
     };
-
 
   process.on(
     "SIGTERM",
     () =>
-      shutdown(
-        "SIGTERM"
-      )
+      shutdown("SIGTERM")
   );
-
 
   process.on(
     "SIGINT",
     () =>
-      shutdown(
-        "SIGINT"
-      )
+      shutdown("SIGINT")
   );
 }
 
@@ -2569,11 +2453,9 @@ main().catch(
       error
     );
 
-
     await pool
       .end()
       .catch(() => {});
-
 
     process.exit(1);
   }
