@@ -935,11 +935,23 @@ fastify.post('/outbound-call', async (request, reply) => {
 </Response>`;
 
     try {
-        const call = await twilioClient.calls.create({
-            to: phone,
-            from: process.env.TWILIO_PHONE_NUMBER,
-            twiml
-        });
+      const call = await twilioClient.calls.create({
+    to: phone,
+    from: process.env.TWILIO_PHONE_NUMBER,
+    twiml,
+
+    statusCallback:
+        'https://emma-development-production.up.railway.app/call-status',
+
+    statusCallbackMethod: 'POST',
+
+    statusCallbackEvent: [
+        'initiated',
+        'ringing',
+        'answered',
+        'completed'
+    ]
+});
 
         console.log('Custom outbound call started:', {
             callSid: call.sid,
