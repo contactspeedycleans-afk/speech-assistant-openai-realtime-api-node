@@ -948,13 +948,14 @@ fastify.post('/outbound-call', async (request, reply) => {
             sheetRowNumber: sheet_row_number
         });
 
-        return reply.send({
-            success: true,
-            call_sid: call.sid,
-            status: call.status,
-            phone,
-            sheet_row_number
-        });
+    return reply.send({
+    success: true,
+    call_sid: call.sid,
+    status: call.status,
+    queue_time: call.queueTime,
+    phone,
+    sheet_row_number
+});
     } catch (error) {
         console.error(
             'Custom outbound call failed:',
