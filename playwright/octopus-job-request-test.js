@@ -6,40 +6,11 @@ const BOOKING_URL =
 const MAKE_WEBHOOK =
   "https://hook.us2.make.com/evvl72a9k1malbj3fscv3xasu3i5oadf";
 
-const RADII = [30, 45, 60, 70];
+// FIRST TEST:
+const RADII = [30];
 
-async function clickLoadMoreUntilDone(page) {
-  let pageCount = 1;
-
-  while (true) {
-    const loadMoreButton = page
-      .getByRole("button", {
-        name: /load more|show more/i
-      })
-      .first();
-
-    const visible = await loadMoreButton
-      .isVisible()
-      .catch(() => false);
-
-    if (!visible) {
-      console.log(
-        `No more fieldworker pages. Loaded ${pageCount} page(s).`
-      );
-      break;
-    }
-
-    console.log(
-      `Loading additional fieldworkers - page ${pageCount + 1}...`
-    );
-
-    await loadMoreButton.click();
-
-    await page.waitForTimeout(2000);
-
-    pageCount++;
-  }
-}
+// AFTER 30 MILES WORKS, CHANGE BACK TO:
+// const RADII = [30, 45, 60, 70];
 
 async function setRadius(page, radius) {
   console.log(`Setting radius to ${radius} miles...`);
@@ -53,9 +24,11 @@ async function setRadius(page, radius) {
 
   if (await radiusSelect.isVisible().catch(() => false)) {
     await radiusSelect.selectOption(String(radius));
+
     await page.waitForTimeout(2500);
 
     console.log(`Radius changed to ${radius} miles.`);
+
     return;
   }
 
@@ -67,9 +40,11 @@ async function setRadius(page, radius) {
 
   if (await radiusButton.isVisible().catch(() => false)) {
     await radiusButton.click();
+
     await page.waitForTimeout(2500);
 
     console.log(`Radius changed to ${radius} miles.`);
+
     return;
   }
 
@@ -78,7 +53,7 @@ async function setRadius(page, radius) {
   );
 }
 
-async function sendJobRequests(page, radius) {
+async function openSendJobRequest(page, radius) {
   console.log(
     `Opening Send Job Request window for ${radius} miles...`
   );
@@ -94,38 +69,185 @@ async function sendJobRequests(page, radius) {
 
   await sendJobRequestButton.click();
 
-  await page
-    .getByRole("heading", {
-      name: /send job request/i
-    })
-    .waitFor({
-      state: "visible",
-      timeout: 30000
-    });
+  const modalHeading = page.getByRole("heading", {
+    name: /send job request/i
+  });
+
+  await modalHeading.waitFor({
+    state: "visible",
+    timeout: 30000
+  });
 
   console.log("Send Job Request window opened.");
 
-  const sendButton = page.locator("button.save-btn");
+  await page.waitForTimeout(1000);
+}
+
+async function getLoadedCounts(page) {
+  const countText = page
+    .getByText(/showing\s+\d+\s+of\s+\d+\s+matches/i)
+    .first();
+
+  if (!(await countText.isVisible().catch(() => false))) {
+    return null;
+  }
+
+  const text = await countText.innerText();
+
+  const match = text.match(
+    /showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    loaded: Number(match[1]),
+    total: Number(match[2])
+  };
+}
+
+async function clickLoadMoreUntilDone(page) {
+  console.log("Loading all available fieldworkers...");
+
+  while (true) {
+    const counts = await getLoadedCounts(page);
+
+    if (counts) {
+      console.log(
+        `Currently showing ${counts.loaded} of ${counts.total} matches.`
+      );
+
+      if (counts.loaded >= counts.total) {
+        console.log("All matching fieldworkers are loaded.");
+
+        break;
+      }
+    }
+
+    const loadMoreButton = page
+      .getByRole("button", {
+        name: /load more/i
+      })
+      .first();
+
+    const visible = await loadMoreButton
+      .isVisible()
+      .catch(() => false);
+
+    if (!visible) {
+      console.log(
+        "Load More button is no longer visible."
+      );
+
+      break;
+    }
+
+    const beforeCounts = await getLoadedCounts(page);
+
+    const previousLoaded =
+      beforeCounts?.loaded ?? 0;
+
+    console.log(
+      `Clicking Load More. Currently loaded: ${previousLoaded}`
+    );
+
+    await loadMoreButton.click();
+
+    const loadingButton = page
+      .getByRole("button", {
+        name: /loading/i
+      })
+      .first();
+
+    if (
+      await loadingButton
+        .isVisible()
+        .catch(() => false)
+    ) {
+      console.log("Waiting for Octopus to finish loading...");
+
+      await loadingButton
+        .waitFor({
+          state: "hidden",
+          timeout: 60000
+        })
+        .catch(() => {});
+    }
+
+    await page.waitForFunction(
+      (previous) => {
+        const bodyText =
+          document.body.innerText;
+
+        const match = bodyText.match(
+          /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
+        );
+
+        if (!match) {
+          return true;
+        }
+
+        return Number(match[1]) > previous;
+      },
+      previousLoaded,
+      {
+        timeout: 60000
+      }
+    ).catch(() => {});
+
+    await page.waitForTimeout(750);
+
+    const afterCounts = await getLoadedCounts(page);
+
+    if (
+      afterCounts &&
+      afterCounts.loaded <= previousLoaded &&
+      afterCounts.loaded < afterCounts.total
+    ) {
+      throw new Error(
+        `Load More stopped progressing at ${afterCounts.loaded} of ${afterCounts.total}.`
+      );
+    }
+  }
+}
+
+async function sendCurrentRequest(page, radius) {
+  const sendButton =
+    page.locator("button.save-btn");
 
   await sendButton.waitFor({
     state: "visible",
     timeout: 30000
   });
 
-  console.log(`Sending ${radius}-mile requests...`);
+  const counts = await getLoadedCounts(page);
+
+  if (counts) {
+    console.log(
+      `Ready to send: ${counts.loaded} of ${counts.total} fieldworkers loaded.`
+    );
+  }
+
+  console.log(
+    `Clicking Send for ${radius}-mile round...`
+  );
 
   await sendButton.click();
 
-  const sentAt = new Date().toISOString();
+  const sentAt =
+    new Date().toISOString();
 
   console.log(
-    `${radius}-mile job request sent at ${sentAt}`
+    `${radius}-mile request sent at ${sentAt}`
   );
 
   await fetch(MAKE_WEBHOOK, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type":
+        "application/json"
     },
     body: JSON.stringify({
       booking: BOOKING_URL,
@@ -139,41 +261,76 @@ async function sendJobRequests(page, radius) {
     `${radius}-mile timestamp sent to Make.`
   );
 
-  await page.waitForTimeout(3000);
+  const modalHeading =
+    page.getByRole("heading", {
+      name: /send job request/i
+    });
+
+  await modalHeading
+    .waitFor({
+      state: "hidden",
+      timeout: 10000
+    })
+    .catch(async () => {
+      const closeButton =
+        page.getByRole("button", {
+          name: /^close$/i
+        });
+
+      if (
+        await closeButton
+          .isVisible()
+          .catch(() => false)
+      ) {
+        await closeButton.click();
+
+        await page.waitForTimeout(1000);
+      }
+    });
 }
 
 async function run() {
-  const browser = await chromium.launch({
-    headless: false
-  });
+  const browser =
+    await chromium.launch({
+      headless: false
+    });
 
-  const page = await browser.newPage();
+  const page =
+    await browser.newPage();
 
-  console.log("Opening Octopus booking...");
+  console.log(
+    "Opening Octopus booking..."
+  );
 
   await page.goto(BOOKING_URL, {
     waitUntil: "domcontentloaded",
     timeout: 60000
   });
 
-  console.log("Waiting for Available Fieldworkers...");
-
-  const availableFieldworkers = page.getByText(
-    "Available Fieldworkers",
-    {
-      exact: true
-    }
+  console.log(
+    "Waiting for Available Fieldworkers..."
   );
+
+  const availableFieldworkers =
+    page.getByText(
+      "Available Fieldworkers",
+      {
+        exact: true
+      }
+    );
 
   await availableFieldworkers.waitFor({
     state: "visible",
     timeout: 60000
   });
 
-  await availableFieldworkers.scrollIntoViewIfNeeded();
+  await availableFieldworkers
+    .scrollIntoViewIfNeeded();
 
   await page
-    .getByText(/\d+\s+of\s+\d+\s+available/i)
+    .getByText(
+      /\d+\s+of\s+\d+\s+available/i
+    )
     .waitFor({
       state: "visible",
       timeout: 60000
@@ -185,27 +342,49 @@ async function run() {
       `========== ${radius} MILE ROUND ==========`
     );
 
-    await setRadius(page, radius);
+    // 1. Change radius
+    await setRadius(
+      page,
+      radius
+    );
 
+    // 2. Wait for Octopus availability to refresh
     await page
-      .getByText(/\d+\s+of\s+\d+\s+available/i)
+      .getByText(
+        /\d+\s+of\s+\d+\s+available/i
+      )
       .waitFor({
         state: "visible",
         timeout: 60000
       });
 
-    await clickLoadMoreUntilDone(page);
+    // 3. OPEN popup first
+    await openSendJobRequest(
+      page,
+      radius
+    );
 
-    await sendJobRequests(page, radius);
+    // 4. Load ALL pages inside popup
+    await clickLoadMoreUntilDone(
+      page
+    );
+
+    // 5. Send only after everything is loaded
+    await sendCurrentRequest(
+      page,
+      radius
+    );
 
     console.log(
-      `Finished ${radius}-mile dispatch round.`
+      `Finished ${radius}-mile round.`
     );
+
+    await page.waitForTimeout(2000);
   }
 
   console.log("");
   console.log(
-    "All 30 / 45 / 60 / 70 mile rounds completed."
+    "All requested radius rounds completed."
   );
 
   await browser.close();
