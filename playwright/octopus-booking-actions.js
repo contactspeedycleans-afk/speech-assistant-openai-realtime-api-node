@@ -210,7 +210,8 @@ async function cancelBooking(page) {
   await statusControl.click();
 
   const cancelledOption = page.getByText("CANCELLED", { exact: true }).last();
-  await cancelledOption.waitFor({ state: "visible", timeout: 15000 });
+  await cancelledOption.waitFor({ state: "attached", timeout: 15000 });
+  await cancelledOption.scrollIntoViewIfNeeded();
   await cancelledOption.click();
 
   const noticeHeading = page.getByText("Cancellation Notice", { exact: true });
