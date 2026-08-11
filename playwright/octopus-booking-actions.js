@@ -346,7 +346,21 @@ async function cancelBooking(page) {
   }
 
   let notificationSent = false;
-  const sendButton = await waitForLargestVisibleExactText(page, "Send", 25000);
+  let sendButton = await getLargestVisibleExactText(page, "Send");
+
+  if (!sendButton) {
+    const saveChangesButton = await waitForLargestVisibleExactText(
+      page,
+      "Save changes",
+      20000
+    );
+    if (!saveChangesButton) {
+      throw new Error("Could not find the visible Save changes button");
+    }
+    await saveChangesButton.click();
+    sendButton = await waitForLargestVisibleExactText(page, "Send", 25000);
+  }
+
   if (sendButton) {
     await sendButton.click();
     notificationSent = true;
