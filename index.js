@@ -1288,7 +1288,8 @@ if (!knowledgeHandled) {
         await handleCancelBookingTool({
             response,
             openAiWs,
-            WebSocket
+            WebSocket,
+            customerBookings
         });
     }
 }
