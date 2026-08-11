@@ -181,6 +181,20 @@ async function getLargestVisibleExactText(page, text) {
   return candidates[0]?.match || null;
 }
 
+async function waitForLargestVisibleExactText(
+  page,
+  text,
+  timeout = 20000
+) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    const match = await getLargestVisibleExactText(page, text);
+    if (match) return match;
+    await page.waitForTimeout(250);
+  }
+  return null;
+}
+
 async function cancelBooking(page) {
   const initialState = await getPageState(page);
 
@@ -325,31 +339,15 @@ async function cancelBooking(page) {
     }
     await voidInvoiceButton.click();
 
-    const success = page.getByText("Success", { exact: true });
-    await success.waitFor({ state: "visible", timeout: 20000 });
-    const successDialog = success.locator("xpath=ancestor::*[@role='dialog'][1]");
-    const successModal =
-      (await successDialog.count()) > 0
-        ? successDialog
-        : page.locator(".modal.show").last();
-    const okButton = await getLargestVisibleExactText(page, "Ok");
+    const okButton = await waitForLargestVisibleExactText(page, "Ok", 20000);
     if (!okButton) throw new Error("Could not find the visible Ok button");
     await okButton.click();
     invoiceVoided = true;
   }
 
-  await notifyHeading.waitFor({ state: "visible", timeout: 25000 }).catch(() => {});
   let notificationSent = false;
-  if (await notifyHeading.isVisible().catch(() => false)) {
-    const notifyDialog = notifyHeading.locator(
-      "xpath=ancestor::*[@role='dialog'][1]"
-    );
-    const notifyModal =
-      (await notifyDialog.count()) > 0
-        ? notifyDialog
-        : page.locator(".modal.show").last();
-    const sendButton = await getLargestVisibleExactText(page, "Send");
-    if (!sendButton) throw new Error("Could not find the visible Send button");
+  const sendButton = await waitForLargestVisibleExactText(page, "Send", 25000);
+  if (sendButton) {
     await sendButton.click();
     notificationSent = true;
     await page.waitForTimeout(3000);
