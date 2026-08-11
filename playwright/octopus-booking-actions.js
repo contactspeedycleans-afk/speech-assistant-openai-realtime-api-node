@@ -165,6 +165,22 @@ async function closeVisibleDialog(page) {
   if (await close.isVisible().catch(() => false)) await close.click();
 }
 
+async function getLargestVisibleExactText(page, text) {
+  const matches = page.getByText(text, { exact: true });
+  const candidates = [];
+
+  for (let index = 0; index < (await matches.count()); index += 1) {
+    const match = matches.nth(index);
+    if (!(await match.isVisible().catch(() => false))) continue;
+    const box = await match.boundingBox();
+    if (!box) continue;
+    candidates.push({ match, area: box.width * box.height });
+  }
+
+  candidates.sort((a, b) => b.area - a.area);
+  return candidates[0]?.match || null;
+}
+
 async function cancelBooking(page) {
   const initialState = await getPageState(page);
 
@@ -203,16 +219,20 @@ async function cancelBooking(page) {
     return;
   }
 
-  const statusControl = page
-    .locator("a.title-booking.status-label, .title-booking.status-label")
-    .first();
-  await statusControl.waitFor({ state: "visible", timeout: 30000 });
+  const statusControl = await getLargestVisibleExactText(page, "TO DO");
+  if (!statusControl) {
+    throw new Error("Could not find the visible TO DO booking status badge");
+  }
   await statusControl.click();
+  await page.waitForTimeout(500);
 
-  const firstStatusOption = page
-    .getByText("IN PROGRESS", { exact: true })
-    .last();
-  await firstStatusOption.waitFor({ state: "visible", timeout: 15000 });
+  const firstStatusOption = await getLargestVisibleExactText(
+    page,
+    "IN PROGRESS"
+  );
+  if (!firstStatusOption) {
+    throw new Error("The visible booking status menu did not open");
+  }
   await firstStatusOption.evaluate((element) => {
     let current = element.parentElement;
     while (current) {
@@ -227,9 +247,10 @@ async function cancelBooking(page) {
   });
   await page.waitForTimeout(750);
 
-  const cancelledOption = page.getByText("CANCELLED", { exact: true }).last();
-  await cancelledOption.waitFor({ state: "visible", timeout: 15000 });
-  await cancelledOption.scrollIntoViewIfNeeded();
+  const cancelledOption = await getLargestVisibleExactText(page, "CANCELLED");
+  if (!cancelledOption) {
+    throw new Error("CANCELLED did not become visible in the status menu");
+  }
   await cancelledOption.click();
 
   const noticeHeading = page.getByText("Cancellation Notice", { exact: true });
