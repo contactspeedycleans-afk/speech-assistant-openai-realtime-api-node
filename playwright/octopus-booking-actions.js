@@ -6,16 +6,37 @@ const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME || "SpeedyCleans";
 
 const args = process.argv.slice(2);
-const mode = args[0]?.toLowerCase() === "cancel" ? "cancel" : "inspect";
-const bookingId = mode === "cancel" ? args[1] : args[0];
+const requestedMode = args[0]?.toLowerCase();
+const mode = ["cancel", "reschedule"].includes(requestedMode)
+  ? requestedMode
+  : "inspect";
+const bookingId = mode === "inspect" ? args[0] : args[1];
 const requestedReason =
   mode === "cancel" ? args.slice(2).join(" ").trim() || "Other" : "";
+const requestedDate = mode === "reschedule" ? args[2] : "";
+const requestedStartTime = mode === "reschedule" ? args[3] : "";
 
 if (!OCTOPUS_EMAIL) throw new Error("Missing OCTOPUS_EMAIL");
 if (!OCTOPUS_PASSWORD) throw new Error("Missing OCTOPUS_PASSWORD");
 if (!/^\d+$/.test(String(bookingId || ""))) {
   throw new Error(
     "A numeric booking ID is required. Example: node playwright/octopus-booking-actions.js inspect 562455"
+  );
+}
+if (
+  mode === "reschedule" &&
+  !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
+) {
+  throw new Error(
+    "Rescheduling requires a date in YYYY-MM-DD format."
+  );
+}
+if (
+  mode === "reschedule" &&
+  !/^([01]\d|2[0-3]):[0-5]\d$/.test(requestedStartTime)
+) {
+  throw new Error(
+    "Rescheduling requires a start time in 24-hour HH:MM format."
   );
 }
 
@@ -384,6 +405,252 @@ async function cancelBooking(page) {
   });
 }
 
+function parseClockTime(value) {
+  const text = String(value || "").trim().toUpperCase();
+  const twelveHour = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+  const twentyFourHour = text.match(/^(\d{1,2}):(\d{2})$/);
+
+  if (twelveHour) {
+    let hours = Number(twelveHour[1]) % 12;
+    if (twelveHour[3] === "PM") hours += 12;
+    return hours * 60 + Number(twelveHour[2]);
+  }
+  if (twentyFourHour) {
+    return Number(twentyFourHour[1]) * 60 + Number(twentyFourHour[2]);
+  }
+
+  throw new Error(`Could not understand appointment time: ${value}`);
+}
+
+function formatClockTime(totalMinutes) {
+  const normalized = ((totalMinutes % 1440) + 1440) % 1440;
+  const hours24 = Math.floor(normalized / 60);
+  const minutes = normalized % 60;
+  const suffix = hours24 >= 12 ? "PM" : "AM";
+  const hours12 = hours24 % 12 || 12;
+  return `${hours12}:${String(minutes).padStart(2, "0")} ${suffix}`;
+}
+
+function formatLongDate(isoDate) {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(new Date(Date.UTC(year, month - 1, day)));
+}
+
+function normalizeDateText(value) {
+  return String(value || "")
+    .replace(/,/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+async function visibleInputAfterLabel(page, labelText, inputOffset = 0) {
+  const labels = page.getByText(labelText, { exact: true });
+
+  for (let labelIndex = 0; labelIndex < (await labels.count()); labelIndex += 1) {
+    const label = labels.nth(labelIndex);
+    if (!(await label.isVisible().catch(() => false))) continue;
+
+    const inputs = label.locator("xpath=following::input");
+    let visibleIndex = 0;
+
+    for (let inputIndex = 0; inputIndex < (await inputs.count()); inputIndex += 1) {
+      const input = inputs.nth(inputIndex);
+      if (!(await input.isVisible().catch(() => false))) continue;
+      if (visibleIndex === inputOffset) return input;
+      visibleIndex += 1;
+    }
+  }
+
+  return null;
+}
+
+async function forceInputValue(input, value) {
+  await input.scrollIntoViewIfNeeded();
+
+  try {
+    await input.fill(value, { timeout: 5000 });
+  } catch {
+    await input.evaluate((element, nextValue) => {
+      element.removeAttribute("readonly");
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )?.set;
+      if (valueSetter) valueSetter.call(element, nextValue);
+      else element.value = nextValue;
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.dispatchEvent(new Event("blur", { bubbles: true }));
+    }, value);
+  }
+
+  await input.press("Tab").catch(() => {});
+  await input.evaluate((element) => {
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    element.dispatchEvent(new Event("blur", { bubbles: true }));
+  });
+}
+
+async function rescheduleBooking(page) {
+  const initialState = await getPageState(page);
+
+  if (initialState.cancelled) {
+    logResult({
+      ok: false,
+      action: "reschedule",
+      booking_id: Number(bookingId),
+      outcome: "staff_review_required",
+      reason: "A cancelled booking cannot be rescheduled automatically.",
+      changed: false
+    });
+    return;
+  }
+
+  if (initialState.unsafeState) {
+    logResult({
+      ok: false,
+      action: "reschedule",
+      booking_id: Number(bookingId),
+      outcome: "staff_review_required",
+      reason: `Fieldworker status may be ${initialState.unsafeState}.`,
+      changed: false
+    });
+    return;
+  }
+
+  if (!initialState.toDo) {
+    logResult({
+      ok: false,
+      action: "reschedule",
+      booking_id: Number(bookingId),
+      outcome: "staff_review_required",
+      reason: "Booking is not clearly in TO DO status.",
+      changed: false
+    });
+    return;
+  }
+
+  const fromDateInput = await visibleInputAfterLabel(page, "From", 0);
+  const fromTimeInput = await visibleInputAfterLabel(page, "From", 1);
+  const toDateInput = await visibleInputAfterLabel(page, "To", 0);
+  const toTimeInput = await visibleInputAfterLabel(page, "To", 1);
+
+  if (!fromDateInput || !fromTimeInput || !toDateInput || !toTimeInput) {
+    throw new Error(
+      "Could not find the visible From and To appointment fields."
+    );
+  }
+
+  const oldFromDate = await fromDateInput.inputValue();
+  const oldFromTime = await fromTimeInput.inputValue();
+  const oldToTime = await toTimeInput.inputValue();
+  const oldDurationMinutes =
+    (parseClockTime(oldToTime) - parseClockTime(oldFromTime) + 1440) % 1440;
+
+  if (oldDurationMinutes <= 0 || oldDurationMinutes > 12 * 60) {
+    throw new Error(
+      `The existing appointment duration is unsafe: ${oldFromTime} to ${oldToTime}.`
+    );
+  }
+
+  const newDateText = formatLongDate(requestedDate);
+  const newStartMinutes = parseClockTime(requestedStartTime);
+  const newStartText = formatClockTime(newStartMinutes);
+  const newEndText = formatClockTime(
+    newStartMinutes + oldDurationMinutes
+  );
+
+  console.log("Rescheduling appointment:", {
+    oldFromDate,
+    oldFromTime,
+    oldToTime,
+    newDate: newDateText,
+    newStartTime: newStartText,
+    newEndTime: newEndText,
+    preservedDurationMinutes: oldDurationMinutes
+  });
+
+  await forceInputValue(fromDateInput, newDateText);
+  await forceInputValue(fromTimeInput, newStartText);
+  await forceInputValue(toDateInput, newDateText);
+  await forceInputValue(toTimeInput, newEndText);
+  await page.waitForTimeout(1000);
+
+  const saveChangesButton = await waitForLargestVisibleExactText(
+    page,
+    "Save changes",
+    20000
+  );
+  if (!saveChangesButton) {
+    throw new Error("Could not find the visible Save changes button.");
+  }
+  await saveChangesButton.click();
+
+  const notifyHeading = page.getByText("Notify Customer", { exact: true });
+  await notifyHeading.waitFor({ state: "visible", timeout: 30000 });
+
+  const sendButton = await waitForLargestVisibleExactText(page, "Send", 20000);
+  if (!sendButton) {
+    throw new Error("Could not find the Notify Customer Send button.");
+  }
+  await sendButton.click();
+  await page.waitForTimeout(4000);
+
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+  await page.waitForTimeout(5000);
+
+  const verifiedFromDateInput = await visibleInputAfterLabel(page, "From", 0);
+  const verifiedFromTimeInput = await visibleInputAfterLabel(page, "From", 1);
+  const verifiedToDateInput = await visibleInputAfterLabel(page, "To", 0);
+  const verifiedToTimeInput = await visibleInputAfterLabel(page, "To", 1);
+
+  const savedFromDate = verifiedFromDateInput
+    ? await verifiedFromDateInput.inputValue()
+    : "";
+  const savedFromTime = verifiedFromTimeInput
+    ? await verifiedFromTimeInput.inputValue()
+    : "";
+  const savedToDate = verifiedToDateInput
+    ? await verifiedToDateInput.inputValue()
+    : "";
+  const savedToTime = verifiedToTimeInput
+    ? await verifiedToTimeInput.inputValue()
+    : "";
+
+  const dateVerified =
+    normalizeDateText(savedFromDate) === normalizeDateText(newDateText) &&
+    normalizeDateText(savedToDate) === normalizeDateText(newDateText);
+  const timeVerified =
+    parseClockTime(savedFromTime) === newStartMinutes &&
+    parseClockTime(savedToTime) ===
+      (newStartMinutes + oldDurationMinutes) % 1440;
+  const verified = dateVerified && timeVerified;
+
+  logResult({
+    ok: verified,
+    action: "reschedule",
+    booking_id: Number(bookingId),
+    outcome: verified ? "rescheduled" : "verification_failed",
+    previous_date: oldFromDate,
+    previous_start_time: oldFromTime,
+    previous_end_time: oldToTime,
+    new_date: savedFromDate,
+    new_start_time: savedFromTime,
+    new_end_time: savedToTime,
+    duration_minutes: oldDurationMinutes,
+    customer_notification_sent: true,
+    verified_rescheduled_in_octopus: verified,
+    changed: verified
+  });
+}
+
 async function main() {
   const browser = await chromium.launch({
     headless: true,
@@ -398,6 +665,7 @@ async function main() {
     await openBooking(page);
 
     if (mode === "cancel") await cancelBooking(page);
+    else if (mode === "reschedule") await rescheduleBooking(page);
     else await inspectBooking(page);
   } catch (error) {
     console.error("Octopus booking action failed:");
