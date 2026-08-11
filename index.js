@@ -1011,10 +1011,10 @@ Keep responses short, friendly, and conversational.`                     }
             );
 
             console.log(
-                'No customer speech detected. Starting outbound greeting after 2 seconds.'
+                'No customer speech detected. Starting outbound greeting after 0.75 seconds.'
             );
         }
-    }, 1200);
+    }, 850);
 } else {
     openAiWs.send(
         JSON.stringify({
