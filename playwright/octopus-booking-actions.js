@@ -209,8 +209,26 @@ async function cancelBooking(page) {
   await statusControl.waitFor({ state: "visible", timeout: 30000 });
   await statusControl.click();
 
+  const firstStatusOption = page
+    .getByText("IN PROGRESS", { exact: true })
+    .last();
+  await firstStatusOption.waitFor({ state: "visible", timeout: 15000 });
+  await firstStatusOption.evaluate((element) => {
+    let current = element.parentElement;
+    while (current) {
+      if (current.scrollHeight > current.clientHeight + 5) {
+        current.scrollTop = current.scrollHeight;
+        current.dispatchEvent(new Event("scroll", { bubbles: true }));
+        return;
+      }
+      current = current.parentElement;
+    }
+    throw new Error("Could not find the scrollable booking status menu");
+  });
+  await page.waitForTimeout(750);
+
   const cancelledOption = page.getByText("CANCELLED", { exact: true }).last();
-  await cancelledOption.waitFor({ state: "attached", timeout: 15000 });
+  await cancelledOption.waitFor({ state: "visible", timeout: 15000 });
   await cancelledOption.scrollIntoViewIfNeeded();
   await cancelledOption.click();
 
