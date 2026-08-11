@@ -501,17 +501,29 @@ Begin the call naturally now.`
 
         : callMode === 'OUTBOUND_PRESS_1'
         ? customer
-            ? `Begin the outbound quote call now.
+            ? `Begin the outbound quote call promptly with a warm greeting.
 
 The customer has already requested a cleaning quote.
 
-Use all available customer information and notes as background context.
-
-If you already know the requested cleaning service, acknowledge it naturally without reading the notes aloud.
+Use all available customer information and notes as private background context.
 
 Do not mention internal information such as Lead ID, Match Type, Lead Source, customer notes, or the full address.
 
-Greet ${customer?.first_name || 'the customer'} warmly by first name, ask the single most appropriate next question, and then wait for the customer's response.`
+Greet ${customer?.first_name || 'the customer'} warmly by first name and briefly explain that Speedy Solutions offers standard cleaning, deep cleaning, and move-in or move-out cleaning.
+
+If the requested service is already known, acknowledge it naturally and explain one useful benefit in a single sentence. Do not ask for the service again.
+
+If the service is unknown, ask which type of cleaning they need. If they are unsure, explain the three options briefly and recommend the best match based on what they describe.
+
+Standard cleaning is for routine upkeep. Deep cleaning is for heavier buildup or a detailed reset. Move-in or move-out cleaning prepares an empty or mostly empty home for the next occupant.
+
+Mention naturally that the cleaner brings professional supplies and equipment.
+
+After identifying the service, ask whether it is one-time or recurring, provide only the applicable starting price, and then ask them to choose a preferred date and arrival window.
+
+Collect or confirm the full name, phone number, email address, and service address. Ask only one question at a time.
+
+Sell the convenience and result confidently, but stay concise and never pressure the customer.`
 
         : `Begin the outbound Angi follow-up call now.
 
@@ -525,15 +537,21 @@ Wait for the customer's response.
 
 If they say yes, ask:
 
-"Wonderful! What type of cleaning are you looking for?"
+"Wonderful! We offer standard cleaning for routine upkeep, deep cleaning for a more detailed reset, and move-in or move-out cleaning. Which type would help you most?"
 
 Wait for their answer.
+
+If they are unsure, ask what they want cleaned or what condition the home is in, then recommend the best match in one short sentence.
+
+Mention naturally that the cleaner brings professional supplies and equipment.
 
 Then ask:
 
 "Would this be a one-time cleaning or recurring service?"
 
 Wait for their answer.
+
+After giving the applicable starting price, move confidently to their preferred date and arrival window.
 
 CONTACT INFORMATION VERIFICATION — REQUIRED:
 
@@ -1014,7 +1032,7 @@ Keep responses short, friendly, and conversational.`                     }
                 'No customer speech detected. Starting outbound greeting after 0.75 seconds.'
             );
         }
-    }, 850);
+    }, 750);
 } else {
     openAiWs.send(
         JSON.stringify({
