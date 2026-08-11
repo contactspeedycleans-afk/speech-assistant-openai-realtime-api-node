@@ -72,7 +72,8 @@ const {
     handleCancelBookingTool
 } = createOpenAiToolHandlers({
     searchCompanyKnowledge,
-    recordTechnicianStatusUpdate
+    recordTechnicianStatusUpdate,
+    db
 });
 
 
