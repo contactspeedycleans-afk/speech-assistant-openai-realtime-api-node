@@ -287,9 +287,14 @@ async function cancelBooking(page) {
     });
   }
 
-  await modal
-    .getByRole("button", { name: /cancel without fee/i })
-    .click();
+  const cancelWithoutFeeButton = await getLargestVisibleExactText(
+    page,
+    "Cancel Without Fee"
+  );
+  if (!cancelWithoutFeeButton) {
+    throw new Error("Could not find the visible Cancel Without Fee button");
+  }
+  await cancelWithoutFeeButton.click();
 
   const invoiceHeading = page.getByText("Update invoice status", {
     exact: true
@@ -311,9 +316,14 @@ async function cancelBooking(page) {
         ? invoiceDialog
         : page.locator(".modal.show").last();
 
-    await invoiceModal
-      .getByRole("button", { name: /convert invoice to void/i })
-      .click();
+    const voidInvoiceButton = await getLargestVisibleExactText(
+      page,
+      "Convert invoice to Void"
+    );
+    if (!voidInvoiceButton) {
+      throw new Error("Could not find the visible Convert invoice to Void button");
+    }
+    await voidInvoiceButton.click();
 
     const success = page.getByText("Success", { exact: true });
     await success.waitFor({ state: "visible", timeout: 20000 });
@@ -322,7 +332,9 @@ async function cancelBooking(page) {
       (await successDialog.count()) > 0
         ? successDialog
         : page.locator(".modal.show").last();
-    await successModal.getByRole("button", { name: /^ok$/i }).click();
+    const okButton = await getLargestVisibleExactText(page, "Ok");
+    if (!okButton) throw new Error("Could not find the visible Ok button");
+    await okButton.click();
     invoiceVoided = true;
   }
 
@@ -336,7 +348,9 @@ async function cancelBooking(page) {
       (await notifyDialog.count()) > 0
         ? notifyDialog
         : page.locator(".modal.show").last();
-    await notifyModal.getByRole("button", { name: /^send$/i }).click();
+    const sendButton = await getLargestVisibleExactText(page, "Send");
+    if (!sendButton) throw new Error("Could not find the visible Send button");
+    await sendButton.click();
     notificationSent = true;
     await page.waitForTimeout(3000);
   }
