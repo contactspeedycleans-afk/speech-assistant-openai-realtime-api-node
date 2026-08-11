@@ -68,7 +68,8 @@ const {
 } = createTwilioRecording(twilioClient);
 const {
     handleKnowledgeTool,
-    handleTechnicianStatusTool
+    handleTechnicianStatusTool,
+    handleCancelBookingTool
 } = createOpenAiToolHandlers({
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate
@@ -1274,12 +1275,21 @@ const knowledgeHandled =
     });
 
 if (!knowledgeHandled) {
-    await handleTechnicianStatusTool({
+    const technicianStatusHandled =
+        await handleTechnicianStatusTool({
         response,
         openAiWs,
         WebSocket,
         callerPhone
     });
+
+    if (!technicianStatusHandled) {
+        await handleCancelBookingTool({
+            response,
+            openAiWs,
+            WebSocket
+        });
+    }
 }
 
     
