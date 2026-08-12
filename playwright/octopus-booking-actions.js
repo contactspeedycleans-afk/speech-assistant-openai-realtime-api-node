@@ -991,9 +991,7 @@ async function rescheduleBooking(page) {
   }
   console.log("Clicking Save changes...");
   if (mode === "capture-reschedule") {
-    await saveChangesButton.click({ noWaitAfter: true }).catch((error) => {
-      console.log(`Save request was blocked as intended: ${error.message}`);
-    });
+    await saveChangesButton.evaluate((element) => element.click());
   } else {
     await saveChangesButton.click();
   }
