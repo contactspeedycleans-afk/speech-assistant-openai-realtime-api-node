@@ -513,15 +513,68 @@ async function getVisibleMatches(page, regex) {
   return visible;
 }
 
+async function scrollToScheduledAppointments(page) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const heading = page.getByText("Scheduled Appointments", {
+      exact: true
+    });
+
+    if ((await heading.count()) > 0) {
+      await heading.first().scrollIntoViewIfNeeded();
+      await page.waitForTimeout(1200);
+      return;
+    }
+
+    await page.mouse.wheel(0, 700);
+    await page.waitForTimeout(350);
+  }
+
+  throw new Error(
+    "Could not find the Scheduled Appointments section after scrolling."
+  );
+}
+
+async function getVisibleInputValuesMatching(page, regex) {
+  const inputs = page.locator("input");
+  const visible = [];
+
+  for (let index = 0; index < (await inputs.count()); index += 1) {
+    const input = inputs.nth(index);
+    if (!(await input.isVisible().catch(() => false))) continue;
+    const value = (await input.inputValue().catch(() => "")).trim();
+    if (!regex.test(value)) continue;
+    const box = await input.boundingBox();
+    if (box) visible.push({ match: input, box, value });
+  }
+
+  visible.sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x);
+  return visible;
+}
+
 async function getAppointmentDisplayValues(page) {
-  const dates = await getVisibleMatches(
+  await scrollToScheduledAppointments(page);
+
+  let dates = await getVisibleInputValuesMatching(
     page,
     /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),? \d{1,2} (January|February|March|April|May|June|July|August|September|October|November|December) \d{4}$/
   );
-  const times = await getVisibleMatches(
+  let times = await getVisibleInputValuesMatching(
     page,
     /^\d{1,2}:\d{2}\s*(AM|PM)$/i
   );
+
+  if (dates.length < 2) {
+    dates = await getVisibleMatches(
+      page,
+      /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),? \d{1,2} (January|February|March|April|May|June|July|August|September|October|November|December) \d{4}$/
+    );
+  }
+  if (times.length < 2) {
+    times = await getVisibleMatches(
+      page,
+      /^\d{1,2}:\d{2}\s*(AM|PM)$/i
+    );
+  }
 
   if (dates.length < 2 || times.length < 2) {
     throw new Error(
@@ -530,11 +583,31 @@ async function getAppointmentDisplayValues(page) {
   }
 
   return {
-    fromDate: (await dates[0].match.innerText()).trim(),
-    toDate: (await dates[1].match.innerText()).trim(),
-    fromTime: (await times[0].match.innerText()).trim(),
-    toTime: (await times[1].match.innerText()).trim()
+    fromDate:
+      dates[0].value ||
+      (await dates[0].match.innerText()).trim(),
+    toDate:
+      dates[1].value ||
+      (await dates[1].match.innerText()).trim(),
+    fromTime:
+      times[0].value ||
+      (await times[0].match.innerText()).trim(),
+    toTime:
+      times[1].value ||
+      (await times[1].match.innerText()).trim()
   };
+}
+
+async function findVisibleControlByValueOrText(page, value) {
+  const inputs = await getVisibleInputValuesMatching(
+    page,
+    new RegExp(
+      `^${String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+      "i"
+    )
+  );
+  if (inputs.length > 0) return inputs[0].match;
+  return getLargestVisibleExactText(page, value);
 }
 
 function parseLongDate(value) {
@@ -546,7 +619,7 @@ function parseLongDate(value) {
 }
 
 async function chooseCalendarDate(page, controlText, targetIsoDate) {
-  const control = await getLargestVisibleExactText(page, controlText);
+  const control = await findVisibleControlByValueOrText(page, controlText);
   if (!control) {
     throw new Error(`Could not find date control: ${controlText}`);
   }
@@ -661,7 +734,7 @@ async function spinValue(page, partName, targetValue, maximumClicks) {
 }
 
 async function chooseClockTime(page, controlText, targetMinutes) {
-  const control = await getLargestVisibleExactText(page, controlText);
+  const control = await findVisibleControlByValueOrText(page, controlText);
   if (!control) {
     throw new Error(`Could not find time control: ${controlText}`);
   }
