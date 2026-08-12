@@ -435,17 +435,9 @@ async function updateBookingTracking(
   ];
 
 
-  if (
-    !supportedStatuses.includes(
-      eventType
-    )
-  ) {
-    console.log(
-      `Skipping tracker update for unsupported event: ${eventType}`
-    );
-
-    return;
-  }
+  const trackedStatus = supportedStatuses.includes(eventType)
+    ? eventType
+    : "DISCOVERED";
 
 
   const trackingToken =
@@ -508,8 +500,11 @@ async function updateBookingTracking(
 
     DO UPDATE SET
 
-      status =
-        EXCLUDED.status,
+      status = CASE
+        WHEN EXCLUDED.status = 'DISCOVERED'
+        THEN public.booking_tracking.status
+        ELSE EXCLUDED.status
+      END,
 
       worker_name =
         COALESCE(
@@ -578,12 +573,19 @@ async function updateBookingTracking(
         END,
 
       updated_at =
-        NOW();
+        NOW(),
+
+      booking_details_synced_at =
+        CASE
+          WHEN public.booking_tracking.octopus_booking_url IS DISTINCT FROM EXCLUDED.octopus_booking_url
+          THEN NULL
+          ELSE public.booking_tracking.booking_details_synced_at
+        END;
     `,
     [
       notification.bookingNumber,
       trackingToken,
-      eventType,
+      trackedStatus,
       notification.fieldworkerName,
       notification.octopusBookingId,
       notification.octopusBookingUrl
