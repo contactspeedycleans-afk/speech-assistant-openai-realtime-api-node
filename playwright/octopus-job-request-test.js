@@ -109,110 +109,101 @@ async function getLoadedCounts(page) {
 }
 
 async function clickLoadMoreUntilDone(page) {
-  console.log("Loading all available fieldworkers...");
+    console.log("Loading all available fieldworkers...");
 
-  while (true) {
-    const counts = await getLoadedCounts(page);
+    let safetyCounter = 0;
+    let fullyLoaded = false;
 
-    if (counts) {
-      console.log(
-        `Currently showing ${counts.loaded} of ${counts.total} matches.`
-      );
+    while (safetyCounter < 50) {
+        safetyCounter++;
 
-      if (counts.loaded >= counts.total) {
-        console.log("All matching fieldworkers are loaded.");
+        const counts = await getLoadedCounts(page);
 
-        break;
-      }
-    }
+        if (counts) {
+            console.log(
+                `Currently showing ${counts.loaded} of ${counts.total} matches.`
+            );
 
-    const loadMoreButton = page
-      .getByRole("button", {
-        name: /load more/i
-      })
-      .first();
-
-    const visible = await loadMoreButton
-      .isVisible()
-      .catch(() => false);
-
-    if (!visible) {
-      console.log(
-        "Load More button is no longer visible."
-      );
-
-      break;
-    }
-
-    const beforeCounts = await getLoadedCounts(page);
-
-    const previousLoaded =
-      beforeCounts?.loaded ?? 0;
-
-    console.log(
-      `Clicking Load More. Currently loaded: ${previousLoaded}`
-    );
-
-    await loadMoreButton.click();
-
-    const loadingButton = page
-      .getByRole("button", {
-        name: /loading/i
-      })
-      .first();
-
-    if (
-      await loadingButton
-        .isVisible()
-        .catch(() => false)
-    ) {
-      console.log("Waiting for Octopus to finish loading...");
-
-      await loadingButton
-        .waitFor({
-          state: "hidden",
-          timeout: 60000
-        })
-        .catch(() => {});
-    }
-
-    await page.waitForFunction(
-      (previous) => {
-        const bodyText =
-          document.body.innerText;
-
-        const match = bodyText.match(
-          /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
-        );
-
-        if (!match) {
-          return true;
+            if (counts.loaded >= counts.total) {
+                console.log("All matching fieldworkers are loaded.");
+                fullyLoaded = true;
+                break;
+            }
         }
 
-        return Number(match[1]) > previous;
-      },
-      previousLoaded,
-      {
-        timeout: 60000
-      }
-    ).catch(() => {});
+        const loadMoreButton = page
+            .getByText(/load more/i, { exact: false })
+            .first();
 
-    await page.waitForTimeout(750);
+        const visible = await loadMoreButton
+            .isVisible()
+            .catch(() => false);
 
-    const afterCounts = await getLoadedCounts(page);
+        if (!visible) {
+            console.log("Load More button not visible. Checking again...");
 
-    if (
-      afterCounts &&
-      afterCounts.loaded <= previousLoaded &&
-      afterCounts.loaded < afterCounts.total
-    ) {
-      throw new Error(
-        `Load More stopped progressing at ${afterCounts.loaded} of ${afterCounts.total}.`
-      );
+            await page.waitForTimeout(1500);
+
+            const newCounts = await getLoadedCounts(page);
+
+            if (
+                newCounts &&
+                newCounts.loaded >= newCounts.total
+            ) {
+                console.log("All fieldworkers are loaded.");
+                fullyLoaded = true;
+                break;
+            }
+
+            throw new Error(
+                "Load More disappeared before all fieldworkers loaded."
+            );
+        }
+
+        const beforeCounts = await getLoadedCounts(page);
+        const previousLoaded = beforeCounts?.loaded ?? 0;
+
+        console.log(
+            `Clicking Load More at ${previousLoaded} loaded.`
+        );
+
+        await loadMoreButton.scrollIntoViewIfNeeded();
+
+        await loadMoreButton.click({
+            force: true
+        });
+
+        await page.waitForTimeout(2000);
+
+        const afterCounts = await getLoadedCounts(page);
+
+        if (afterCounts) {
+            console.log(
+                `After click: ${afterCounts.loaded} of ${afterCounts.total} matches.`
+            );
+
+            if (afterCounts.loaded >= afterCounts.total) {
+                console.log("All matching fieldworkers are loaded.");
+                fullyLoaded = true;
+                break;
+            }
+
+            if (afterCounts.loaded <= previousLoaded) {
+                console.log(
+                    "Count did not increase yet. Waiting longer..."
+                );
+
+                await page.waitForTimeout(3000);
+            }
+        }
     }
-  }
-}
 
+    if (!fullyLoaded) {
+        throw new Error(
+            "Stopped after 50 Load More attempts before all fieldworkers were loaded."
+        );
+    }
+}
 async function sendCurrentRequest(page, radius) {
   const sendButton =
     page.locator("button.save-btn");
