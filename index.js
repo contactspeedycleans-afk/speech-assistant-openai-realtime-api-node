@@ -69,6 +69,7 @@ const {
 const {
     handleKnowledgeTool,
     handleTechnicianStatusTool,
+    handleBillingLookupTool,
     handleCancelBookingTool,
     handleRescheduleBookingTool
 } = createOpenAiToolHandlers({
@@ -1355,6 +1356,16 @@ if (!knowledgeHandled) {
     });
 
     if (!technicianStatusHandled) {
+        const billingHandled =
+            await handleBillingLookupTool({
+                response,
+                openAiWs,
+                WebSocket,
+                customerBookings
+            });
+
+        if (billingHandled) return;
+
         const isBookingAction =
             response.name === 'cancel_octopus_booking' ||
             response.name === 'reschedule_octopus_booking';
