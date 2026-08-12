@@ -27,6 +27,12 @@ const JOB_REQUEST_SENT_WEBHOOK_URL =
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME ||
   "SpeedyCleans";
+const JOB_REQUEST_RADII = [
+  30,
+  45,
+  60,
+  70
+];
 
 
 if (!NOTIFICATIONS_URL) {
