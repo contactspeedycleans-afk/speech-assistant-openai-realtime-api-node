@@ -1,7 +1,7 @@
 import { chromium } from "playwright";
 
 const BOOKING_URL =
-  "https://admin.octopuspro.com/booking/view/563418";
+"https://admin.octopuspro.com/booking/view/565096";
 
 const MAKE_WEBHOOK =
   "https://hook.us2.make.com/evvl72a9k1malbj3fscv3xasu3i5oadf";
