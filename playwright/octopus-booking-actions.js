@@ -515,12 +515,15 @@ async function getVisibleMatches(page, regex) {
 
 async function scrollToScheduledAppointments(page) {
   for (let attempt = 0; attempt < 12; attempt += 1) {
-    const heading = page.getByText("Scheduled Appointments", {
+    const headings = page.getByText("Scheduled Appointments", {
       exact: true
     });
 
-    if ((await heading.count()) > 0) {
-      await heading.first().scrollIntoViewIfNeeded();
+    for (let index = 0; index < (await headings.count()); index += 1) {
+      const heading = headings.nth(index);
+      if (!(await heading.isVisible().catch(() => false))) continue;
+
+      await heading.scrollIntoViewIfNeeded({ timeout: 5000 });
       await page.waitForTimeout(1200);
       return;
     }
