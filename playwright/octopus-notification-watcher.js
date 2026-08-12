@@ -2268,7 +2268,6 @@ if (page.isClosed()) {
   console.log(
     `${radius}-mile timestamp saved for ${bookingNumber}.`
   );
-}
 async function getNextDispatchBooking() {
   const result =
     await pool.query(
