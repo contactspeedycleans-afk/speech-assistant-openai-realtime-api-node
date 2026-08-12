@@ -2027,8 +2027,6 @@ async function setRadius(
     `Could not find the Octopus radius control for ${radius} miles. Check RADIUS SELECT DEBUG in Railway logs.`
   );
 }
-  );
-}
 
 
 async function getLoadedCounts(
