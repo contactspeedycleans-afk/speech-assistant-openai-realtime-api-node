@@ -1100,8 +1100,17 @@ async function rescheduleBooking(page) {
   await page.waitForTimeout(3000);
 
   const verifier = await page.context().newPage();
-  await verifier.goto(page.url(), { waitUntil: "domcontentloaded", timeout: 60000 });
-  await verifier.waitForTimeout(4000);
+  await verifier.setExtraHTTPHeaders({
+    "Cache-Control": "no-cache, no-store, max-age=0",
+    Pragma: "no-cache"
+  });
+  const verificationUrl = new URL(page.url());
+  verificationUrl.searchParams.set("emma_verify", String(Date.now()));
+  await verifier.goto(verificationUrl.toString(), {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+  await verifier.waitForTimeout(6000);
   const persistedAppointment = await readStoredAppointment(verifier);
   await verifier.close();
   const persisted =
