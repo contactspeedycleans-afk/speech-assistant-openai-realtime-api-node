@@ -427,6 +427,7 @@ async function updateBookingTracking(
 
 
   const supportedStatuses = [
+    "ASSIGNED",
     "ON_THE_WAY",
     "ARRIVED",
     "STARTED",
