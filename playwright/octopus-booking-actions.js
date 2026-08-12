@@ -498,6 +498,196 @@ async function forceInputValue(input, value) {
   });
 }
 
+async function getVisibleMatches(page, regex) {
+  const matches = page.getByText(regex, { exact: true });
+  const visible = [];
+
+  for (let index = 0; index < (await matches.count()); index += 1) {
+    const match = matches.nth(index);
+    if (!(await match.isVisible().catch(() => false))) continue;
+    const box = await match.boundingBox();
+    if (box) visible.push({ match, box });
+  }
+
+  visible.sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x);
+  return visible;
+}
+
+async function getAppointmentDisplayValues(page) {
+  const dates = await getVisibleMatches(
+    page,
+    /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),? \d{1,2} (January|February|March|April|May|June|July|August|September|October|November|December) \d{4}$/
+  );
+  const times = await getVisibleMatches(
+    page,
+    /^\d{1,2}:\d{2}\s*(AM|PM)$/i
+  );
+
+  if (dates.length < 2 || times.length < 2) {
+    throw new Error(
+      `Could not find the visible appointment date/time controls. Found ${dates.length} dates and ${times.length} times.`
+    );
+  }
+
+  return {
+    fromDate: (await dates[0].match.innerText()).trim(),
+    toDate: (await dates[1].match.innerText()).trim(),
+    fromTime: (await times[0].match.innerText()).trim(),
+    toTime: (await times[1].match.innerText()).trim()
+  };
+}
+
+function parseLongDate(value) {
+  const parsed = new Date(`${String(value).replace(/,/g, "")} 12:00:00 UTC`);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Could not understand appointment date: ${value}`);
+  }
+  return parsed;
+}
+
+async function chooseCalendarDate(page, controlText, targetIsoDate) {
+  const control = await getLargestVisibleExactText(page, controlText);
+  if (!control) {
+    throw new Error(`Could not find date control: ${controlText}`);
+  }
+  await control.click();
+  await page.waitForTimeout(500);
+
+  const current = parseLongDate(controlText);
+  const [targetYear, targetMonth, targetDay] = targetIsoDate
+    .split("-")
+    .map(Number);
+  const monthDifference =
+    (targetYear - current.getUTCFullYear()) * 12 +
+    (targetMonth - (current.getUTCMonth() + 1));
+
+  if (Math.abs(monthDifference) > 18) {
+    throw new Error("Automatic rescheduling is limited to 18 months.");
+  }
+
+  for (let step = 0; step < Math.abs(monthDifference); step += 1) {
+    const monthNames = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    ];
+    const shownMonth = monthNames[
+      (current.getUTCMonth() +
+        (monthDifference > 0 ? step : -step) +
+        12) % 12
+    ];
+    const monthLabel = await getLargestVisibleExactText(page, shownMonth);
+    if (!monthLabel) {
+      throw new Error("Could not locate the calendar month controls.");
+    }
+    const box = await monthLabel.boundingBox();
+    if (!box) throw new Error("Calendar month control had no position.");
+
+    await page.mouse.click(
+      monthDifference > 0 ? box.x + 165 : box.x - 60,
+      box.y + box.height / 2
+    );
+    await page.waitForTimeout(250);
+  }
+
+  const dayMatches = await getVisibleMatches(
+    page,
+    new RegExp(`^${targetDay}$`)
+  );
+  const day = dayMatches
+    .filter(({ box }) => box.width < 80 && box.height < 80)
+    .sort((a, b) => b.box.y - a.box.y)[0];
+
+  if (!day) {
+    throw new Error(`Could not find day ${targetDay} in the open calendar.`);
+  }
+  await day.match.click();
+  await page.waitForTimeout(500);
+}
+
+async function getTimeSpinnerParts(page) {
+  const meridiems = await getVisibleMatches(page, /^(AM|PM)$/);
+  if (meridiems.length === 0) {
+    throw new Error("Could not find the AM/PM control in the time picker.");
+  }
+
+  const meridiem = meridiems[meridiems.length - 1];
+  const numbers = await getVisibleMatches(page, /^\d{2}$/);
+  const nearby = numbers
+    .filter(({ box }) =>
+      box.y > meridiem.box.y - 40 &&
+      box.y < meridiem.box.y + 40 &&
+      box.x < meridiem.box.x
+    )
+    .sort((a, b) => a.box.x - b.box.x);
+
+  if (nearby.length < 2) {
+    throw new Error("Could not find the hour and minute spinner values.");
+  }
+
+  return {
+    hour: nearby[nearby.length - 2],
+    minute: nearby[nearby.length - 1],
+    meridiem
+  };
+}
+
+async function spinValue(page, partName, targetValue, maximumClicks) {
+  for (let clickCount = 0; clickCount <= maximumClicks; clickCount += 1) {
+    const parts = await getTimeSpinnerParts(page);
+    const part = parts[partName];
+    const currentValue = Number((await part.match.innerText()).trim());
+
+    if (currentValue === targetValue) return;
+
+    let clickUp;
+    if (partName === "hour") {
+      const upDistance = (targetValue - currentValue + 12) % 12;
+      const downDistance = (currentValue - targetValue + 12) % 12;
+      clickUp = upDistance <= downDistance;
+    } else {
+      const upDistance = (targetValue - currentValue + 60) % 60;
+      const downDistance = (currentValue - targetValue + 60) % 60;
+      clickUp = upDistance <= downDistance;
+    }
+
+    await page.mouse.click(
+      part.box.x + part.box.width / 2,
+      clickUp ? part.box.y - 42 : part.box.y + part.box.height + 20
+    );
+    await page.waitForTimeout(100);
+  }
+
+  throw new Error(`Could not set the ${partName} spinner.`);
+}
+
+async function chooseClockTime(page, controlText, targetMinutes) {
+  const control = await getLargestVisibleExactText(page, controlText);
+  if (!control) {
+    throw new Error(`Could not find time control: ${controlText}`);
+  }
+  await control.click();
+  await page.waitForTimeout(500);
+
+  const targetHour24 = Math.floor(targetMinutes / 60) % 24;
+  const targetHour12 = targetHour24 % 12 || 12;
+  const targetMinute = targetMinutes % 60;
+  const targetMeridiem = targetHour24 >= 12 ? "PM" : "AM";
+
+  await spinValue(page, "hour", targetHour12, 12);
+  await spinValue(page, "minute", targetMinute, 60);
+
+  const parts = await getTimeSpinnerParts(page);
+  const currentMeridiem = (await parts.meridiem.match.innerText())
+    .trim()
+    .toUpperCase();
+  if (currentMeridiem !== targetMeridiem) {
+    await parts.meridiem.match.click();
+  }
+
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForTimeout(400);
+}
+
 async function rescheduleBooking(page) {
   const initialState = await getPageState(page);
 
@@ -537,20 +727,10 @@ async function rescheduleBooking(page) {
     return;
   }
 
-  const fromDateInput = await visibleInputAfterLabel(page, "From", 0);
-  const fromTimeInput = await visibleInputAfterLabel(page, "From", 1);
-  const toDateInput = await visibleInputAfterLabel(page, "To", 0);
-  const toTimeInput = await visibleInputAfterLabel(page, "To", 1);
-
-  if (!fromDateInput || !fromTimeInput || !toDateInput || !toTimeInput) {
-    throw new Error(
-      "Could not find the visible From and To appointment fields."
-    );
-  }
-
-  const oldFromDate = await fromDateInput.inputValue();
-  const oldFromTime = await fromTimeInput.inputValue();
-  const oldToTime = await toTimeInput.inputValue();
+  const initialAppointment = await getAppointmentDisplayValues(page);
+  const oldFromDate = initialAppointment.fromDate;
+  const oldFromTime = initialAppointment.fromTime;
+  const oldToTime = initialAppointment.toTime;
   const oldDurationMinutes =
     (parseClockTime(oldToTime) - parseClockTime(oldFromTime) + 1440) % 1440;
 
@@ -577,10 +757,16 @@ async function rescheduleBooking(page) {
     preservedDurationMinutes: oldDurationMinutes
   });
 
-  await forceInputValue(fromDateInput, newDateText);
-  await forceInputValue(fromTimeInput, newStartText);
-  await forceInputValue(toDateInput, newDateText);
-  await forceInputValue(toTimeInput, newEndText);
+  await chooseCalendarDate(page, oldFromDate, requestedDate);
+  await chooseClockTime(page, oldFromTime, newStartMinutes);
+
+  const afterFromChange = await getAppointmentDisplayValues(page);
+  await chooseCalendarDate(page, afterFromChange.toDate, requestedDate);
+  await chooseClockTime(
+    page,
+    afterFromChange.toTime,
+    (newStartMinutes + oldDurationMinutes) % 1440
+  );
   await page.waitForTimeout(1000);
 
   const saveChangesButton = await waitForLargestVisibleExactText(
@@ -606,23 +792,11 @@ async function rescheduleBooking(page) {
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForTimeout(5000);
 
-  const verifiedFromDateInput = await visibleInputAfterLabel(page, "From", 0);
-  const verifiedFromTimeInput = await visibleInputAfterLabel(page, "From", 1);
-  const verifiedToDateInput = await visibleInputAfterLabel(page, "To", 0);
-  const verifiedToTimeInput = await visibleInputAfterLabel(page, "To", 1);
-
-  const savedFromDate = verifiedFromDateInput
-    ? await verifiedFromDateInput.inputValue()
-    : "";
-  const savedFromTime = verifiedFromTimeInput
-    ? await verifiedFromTimeInput.inputValue()
-    : "";
-  const savedToDate = verifiedToDateInput
-    ? await verifiedToDateInput.inputValue()
-    : "";
-  const savedToTime = verifiedToTimeInput
-    ? await verifiedToTimeInput.inputValue()
-    : "";
+  const savedAppointment = await getAppointmentDisplayValues(page);
+  const savedFromDate = savedAppointment.fromDate;
+  const savedFromTime = savedAppointment.fromTime;
+  const savedToDate = savedAppointment.toDate;
+  const savedToTime = savedAppointment.toTime;
 
   const dateVerified =
     normalizeDateText(savedFromDate) === normalizeDateText(newDateText) &&
