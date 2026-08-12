@@ -1361,6 +1361,7 @@ if (!knowledgeHandled) {
                 response,
                 openAiWs,
                 WebSocket,
+                callerPhone,
                 customerBookings
             });
 
