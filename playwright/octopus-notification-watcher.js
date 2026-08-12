@@ -1729,19 +1729,20 @@ async function openJobRequestModal(
     );
 
 
-  await availableFieldworkers.waitFor({
-    state: "visible",
-    timeout: 60000
-  });
+await availableFieldworkers.waitFor({
+  state: "visible",
+  timeout: 60000
+});
 
+console.log(
+  `Available Fieldworkers section found for ${bookingId}.`
+);
 
-  await availableFieldworkers
-    .scrollIntoViewIfNeeded();
-
-
-  console.log(
-    `Available Fieldworkers section found for ${bookingId}.`
+if (page.isClosed()) {
+  throw new Error(
+    `Octopus booking page closed unexpectedly for ${bookingId}.`
   );
+}
 
 
   console.log(
