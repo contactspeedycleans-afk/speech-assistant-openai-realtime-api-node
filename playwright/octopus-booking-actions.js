@@ -990,7 +990,13 @@ async function rescheduleBooking(page) {
     throw new Error("Could not find the visible Save changes button.");
   }
   console.log("Clicking Save changes...");
-  await saveChangesButton.click();
+  if (mode === "capture-reschedule") {
+    await saveChangesButton.click({ noWaitAfter: true }).catch((error) => {
+      console.log(`Save request was blocked as intended: ${error.message}`);
+    });
+  } else {
+    await saveChangesButton.click();
+  }
 
   if (mode === "capture-reschedule") {
     await page.waitForTimeout(5000);
