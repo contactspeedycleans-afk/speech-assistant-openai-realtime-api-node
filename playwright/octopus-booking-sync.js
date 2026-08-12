@@ -183,13 +183,15 @@ async function extractBookingDetails(page) {
     };
   });
 
-  let customerPhone = details.phoneValues
-    .map(normalizeUsPhone)
-    .find(Boolean) || null;
+  const customerPhones = [...new Set(
+    details.phoneValues
+      .map(normalizeUsPhone)
+      .filter(Boolean)
+  )];
 
-  if (!customerPhone) {
+  if (customerPhones.length === 0) {
     const hiddenPhones = await extractHiddenCustomerPhones(page);
-    customerPhone = hiddenPhones[0] || null;
+    customerPhones.push(...hiddenPhones);
   }
   const dateMatch = details.bodyText.match(
     /\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(20\d{2})\b/i
@@ -209,7 +211,8 @@ async function extractBookingDetails(page) {
   }
 
   return {
-    customerPhone,
+    customerPhone: customerPhones[0] || null,
+    customerPhones: [...new Set(customerPhones)],
     bookingDate,
     arrivalWindow: timeMatch
       ? timeMatch[0].replace(/\s+/g, " ").trim()
@@ -570,8 +573,15 @@ async function loadBookingsToSync() {
         OR booking_details_synced_at IS NULL
         OR pricing_synced_at < updated_at
       )
-    ORDER BY updated_at ASC
-    LIMIT 10;
+    ORDER BY
+      CASE
+        WHEN booking_date >= CURRENT_DATE THEN 0
+        WHEN booking_date IS NULL THEN 1
+        ELSE 2
+      END,
+      CASE WHEN booking_details_synced_at IS NULL THEN 0 ELSE 1 END,
+      updated_at DESC
+    LIMIT 25;
     `
   );
 
@@ -590,6 +600,11 @@ async function savePricing(bookingNumber, pricing, details) {
       duration_minutes = $6,
       invoice_total = $5,
       customer_phone_normalized = COALESCE($7, customer_phone_normalized),
+      customer_phones_normalized = CASE
+        WHEN COALESCE(array_length($10::text[], 1), 0) > 0
+        THEN $10::text[]
+        ELSE customer_phones_normalized
+      END,
       booking_date = COALESCE($8, booking_date),
       arrival_window = COALESCE($9, arrival_window),
       customer_id = COALESCE(
@@ -611,6 +626,8 @@ async function savePricing(bookingNumber, pricing, details) {
       booking_details_synced_at = NOW(),
       pricing_synced_at = NOW(),
       pricing_sync_error = NULL
+      ,sync_retry_count = 0
+      ,last_sync_attempt_at = NOW()
     WHERE booking_number = $1;
     `,
     [
@@ -622,7 +639,8 @@ async function savePricing(bookingNumber, pricing, details) {
       pricing.durationMinutes,
       details.customerPhone,
       details.bookingDate,
-      details.arrivalWindow
+      details.arrivalWindow,
+      details.customerPhones || []
     ]
   );
 }
@@ -633,6 +651,8 @@ async function saveSyncError(bookingNumber, error) {
     UPDATE public.booking_tracking
     SET
       pricing_sync_error = $2
+      ,sync_retry_count = COALESCE(sync_retry_count, 0) + 1
+      ,last_sync_attempt_at = NOW()
     WHERE booking_number = $1;
     `,
     [
@@ -664,6 +684,7 @@ async function syncBooking(page, booking) {
     `Customer and appointment details extracted for ${booking.booking_number}:`,
     {
       phoneLast4: details.customerPhone?.slice(-4) || null,
+      phoneCount: details.customerPhones?.length || 0,
       bookingDate: details.bookingDate,
       arrivalWindow: details.arrivalWindow
     }
