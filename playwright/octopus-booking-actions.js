@@ -784,6 +784,51 @@ async function chooseClockTime(page, controlText, targetMinutes) {
   await page.waitForTimeout(400);
 }
 
+async function getStoredAppointmentControls(page) {
+  const fromDate = page.locator('input[name^="multi_stpartdate_"]').first();
+  const fromTime = page.locator('input[name^="multi_stparttime_"]').first();
+  const toDate = page.locator('input[name^="multi_etpartdate_"]').first();
+  const toTime = page.locator('input[name^="multi_etparttime_"]').first();
+
+  if (
+    (await fromDate.count()) === 0 ||
+    (await fromTime.count()) === 0 ||
+    (await toDate.count()) === 0 ||
+    (await toTime.count()) === 0
+  ) {
+    throw new Error(
+      "Could not find OctopusPro's stored appointment date/time fields."
+    );
+  }
+
+  return { fromDate, fromTime, toDate, toTime };
+}
+
+async function readStoredAppointment(page) {
+  const controls = await getStoredAppointmentControls(page);
+  return {
+    controls,
+    fromDate: (await controls.fromDate.inputValue()).trim(),
+    fromTime: (await controls.fromTime.inputValue()).trim(),
+    toDate: (await controls.toDate.inputValue()).trim(),
+    toTime: (await controls.toTime.inputValue()).trim()
+  };
+}
+
+async function setStoredAppointmentValue(input, value) {
+  await input.evaluate((element, nextValue) => {
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )?.set;
+    if (valueSetter) valueSetter.call(element, nextValue);
+    else element.value = nextValue;
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    element.dispatchEvent(new Event("blur", { bubbles: true }));
+  }, value);
+}
+
 async function rescheduleBooking(page) {
   const initialState = await getPageState(page);
 
@@ -823,7 +868,7 @@ async function rescheduleBooking(page) {
     return;
   }
 
-  const initialAppointment = await getAppointmentDisplayValues(page);
+  const initialAppointment = await readStoredAppointment(page);
   const oldFromDate = initialAppointment.fromDate;
   const oldFromTime = initialAppointment.fromTime;
   const oldToTime = initialAppointment.toTime;
@@ -853,15 +898,21 @@ async function rescheduleBooking(page) {
     preservedDurationMinutes: oldDurationMinutes
   });
 
-  await chooseCalendarDate(page, oldFromDate, requestedDate);
-  await chooseClockTime(page, oldFromTime, newStartMinutes);
-
-  const afterFromChange = await getAppointmentDisplayValues(page);
-  await chooseCalendarDate(page, afterFromChange.toDate, requestedDate);
-  await chooseClockTime(
-    page,
-    afterFromChange.toTime,
-    (newStartMinutes + oldDurationMinutes) % 1440
+  await setStoredAppointmentValue(
+    initialAppointment.controls.fromDate,
+    newDateText
+  );
+  await setStoredAppointmentValue(
+    initialAppointment.controls.fromTime,
+    newStartText
+  );
+  await setStoredAppointmentValue(
+    initialAppointment.controls.toDate,
+    newDateText
+  );
+  await setStoredAppointmentValue(
+    initialAppointment.controls.toTime,
+    newEndText
   );
   await page.waitForTimeout(1000);
 
@@ -888,7 +939,7 @@ async function rescheduleBooking(page) {
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForTimeout(5000);
 
-  const savedAppointment = await getAppointmentDisplayValues(page);
+  const savedAppointment = await readStoredAppointment(page);
   const savedFromDate = savedAppointment.fromDate;
   const savedFromTime = savedAppointment.fromTime;
   const savedToDate = savedAppointment.toDate;
