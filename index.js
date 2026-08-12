@@ -69,7 +69,8 @@ const {
 const {
     handleKnowledgeTool,
     handleTechnicianStatusTool,
-    handleCancelBookingTool
+    handleCancelBookingTool,
+    handleRescheduleBookingTool
 } = createOpenAiToolHandlers({
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
@@ -1284,12 +1285,22 @@ if (!knowledgeHandled) {
     });
 
     if (!technicianStatusHandled) {
-        await handleCancelBookingTool({
+        const cancellationHandled =
+            await handleCancelBookingTool({
             response,
             openAiWs,
             WebSocket,
             customerBookings
         });
+
+        if (!cancellationHandled) {
+            await handleRescheduleBookingTool({
+                response,
+                openAiWs,
+                WebSocket,
+                customerBookings
+            });
+        }
     }
 }
 
