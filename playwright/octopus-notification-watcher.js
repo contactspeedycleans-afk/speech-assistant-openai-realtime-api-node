@@ -1703,7 +1703,8 @@ async function readNotifications(
 
 async function openJobRequestModal(
   page,
-  bookingId
+  bookingId,
+  radius
 ) {
   const bookingUrl =
     `https://admin.octopuspro.com/booking/view/${bookingId}`;
@@ -1742,6 +1743,82 @@ await availableFieldworkers.waitFor({
 
 console.log(
   `Available Fieldworkers section found for ${bookingId}.`
+);
+  console.log(
+  `Setting job request radius to ${radius} miles...`
+);
+
+const radiusSelects =
+  page.locator("select");
+
+let radiusChanged = false;
+
+for (
+  let i = 0;
+  i < await radiusSelects.count();
+  i += 1
+) {
+  const select =
+    radiusSelects.nth(i);
+
+  const option =
+    select.locator(
+      `option[value="${radius}"]`
+    );
+
+  if (
+    await option.count() > 0
+  ) {
+    await select.selectOption(
+      String(radius)
+    );
+
+    radiusChanged = true;
+
+    break;
+  }
+}
+
+if (!radiusChanged) {
+  const radiusButton =
+    page
+      .getByRole(
+        "button",
+        {
+          name:
+            new RegExp(
+              `${radius}.*mile`,
+              "i"
+            )
+        }
+      )
+      .first();
+
+  if (
+    await radiusButton
+      .isVisible()
+      .catch(() => false)
+  ) {
+    await radiusButton.click({
+      force: true
+    });
+
+    radiusChanged = true;
+  }
+}
+
+if (!radiusChanged) {
+  throw new Error(
+    `Could not set radius to ${radius} miles for ${bookingId}.`
+  );
+}
+
+await page.waitForTimeout(
+  3000
+);
+
+console.log(
+  `Radius set to ${radius} miles for ${bookingId}.`
 );
 
 if (page.isClosed()) {
@@ -2166,6 +2243,42 @@ if (page.isClosed()) {
     2000
   );
 }
+async function markRadiusSent(
+  bookingNumber,
+  radius
+) {
+  const allowedRadii = [
+    30,
+    45,
+    60,
+    70
+  ];
+
+  if (!allowedRadii.includes(radius)) {
+    throw new Error(
+      `Unsupported radius ${radius}`
+    );
+  }
+
+  const column =
+    `job_request_${radius}_sent_at`;
+
+  await pool.query(
+    `
+    UPDATE public.booking_dispatch_state
+    SET
+      ${column} = NOW(),
+      last_dispatch_attempt_at = NOW(),
+      updated_at = NOW()
+    WHERE booking_number = $1;
+    `,
+    [bookingNumber]
+  );
+
+  console.log(
+    `${radius}-mile timestamp saved for ${bookingNumber}.`
+  );
+}
 async function getNextDispatchBooking() {
   const result =
     await pool.query(
@@ -2302,10 +2415,29 @@ async function dispatchNextBooking(
   );
 
   try {
-    await openJobRequestModal(
-      page,
-      booking.octopus_booking_id
-    );
+    for (
+      const radius
+      of JOB_REQUEST_RADII
+    ) {
+      console.log(
+        `========== ${radius} MILE ROUND ==========`
+      );
+
+      await openJobRequestModal(
+        page,
+        booking.octopus_booking_id,
+        radius
+      );
+
+      await markRadiusSent(
+        booking.booking_number,
+        radius
+      );
+
+      console.log(
+        `${radius}-mile job request completed for ${booking.booking_number}.`
+      );
+    }
 
     await markDispatchSent(
       booking.booking_number
@@ -2320,7 +2452,7 @@ async function dispatchNextBooking(
     });
 
     console.log(
-      `Dispatch completed and recorded for ${booking.booking_number}.`
+      `All radius rounds completed for ${booking.booking_number}.`
     );
   } catch (error) {
     await markDispatchFailed(
