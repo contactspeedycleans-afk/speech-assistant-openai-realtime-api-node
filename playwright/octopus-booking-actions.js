@@ -871,11 +871,34 @@ async function applyStoredAppointment(page, values) {
 function summarizeCapturedWrite(request) {
   const rawBody = request.postData() || "";
   const relevant = {};
+  const fieldNames = [];
   try {
-    const params = new URLSearchParams(rawBody);
-    for (const [key, value] of params.entries()) {
-      if (/booking|stpart|etpart|date|time|update/i.test(key)) {
-        relevant[key] = value;
+    const contentType = request.headers()["content-type"] || "";
+    if (/multipart\/form-data/i.test(contentType)) {
+      const parts = rawBody.split(/\r?\n--[^\r\n]+/);
+      for (const part of parts) {
+        const nameMatch = part.match(/name="([^"]+)"/i);
+        if (!nameMatch) continue;
+        const key = nameMatch[1];
+        const value = (part.split(/\r?\n\r?\n/)[1] || "")
+          .replace(/\r?\n--?$/, "")
+          .trim();
+        fieldNames.push(key);
+        if (
+          /booking|stpart|etpart|date|time|update|appointment|visit/i.test(key) ||
+          /^\d{1,2}:\d{2}\s*(AM|PM)$/i.test(value) ||
+          /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),/i.test(value)
+        ) {
+          relevant[key] = value.slice(0, 500);
+        }
+      }
+    } else {
+      const params = new URLSearchParams(rawBody);
+      for (const [key, value] of params.entries()) {
+        fieldNames.push(key);
+        if (/booking|stpart|etpart|date|time|update|appointment|visit/i.test(key)) {
+          relevant[key] = value.slice(0, 500);
+        }
       }
     }
   } catch {}
@@ -884,6 +907,7 @@ function summarizeCapturedWrite(request) {
     method: request.method(),
     url: request.url(),
     content_type: request.headers()["content-type"] || "",
+    field_names: [...new Set(fieldNames)],
     relevant_fields: relevant,
     body_length: rawBody.length
   };
