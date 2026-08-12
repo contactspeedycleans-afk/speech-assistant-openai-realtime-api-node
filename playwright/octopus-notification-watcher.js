@@ -1834,6 +1834,7 @@ async function setRadius(
     `Setting radius to ${radius} miles...`
   );
 
+  // FIRST: Look through every normal <select>
   const selects =
     page.locator("select");
 
@@ -1848,33 +1849,64 @@ async function setRadius(
     const select =
       selects.nth(index);
 
-    const hasOption =
-      (
-        await select
-          .locator(
-            `option[value="${radius}"]`
-          )
-          .count()
-          .catch(() => 0)
-      ) > 0;
+    const options =
+      await select
+        .locator("option")
+        .all();
 
-    if (hasOption) {
-      await select.selectOption(
-        String(radius)
-      );
+    for (
+      const option
+      of options
+    ) {
+      const optionText =
+        (
+          await option
+            .innerText()
+            .catch(() => "")
+        ).trim();
 
-      await page.waitForTimeout(
-        2500
-      );
+      const optionValue =
+        await option
+          .getAttribute("value")
+          .catch(() => null);
 
       console.log(
-        `Radius changed to ${radius} miles.`
+        `Radius option found: text="${optionText}" value="${optionValue}"`
       );
 
-      return;
+      const matchesRadius =
+        optionText
+          .toLowerCase()
+          .includes(
+            String(radius)
+          );
+
+      if (matchesRadius) {
+        if (optionValue) {
+          await select.selectOption(
+            optionValue
+          );
+        } else {
+          await select.selectOption({
+            label: optionText
+          });
+        }
+
+        await page.waitForTimeout(
+          3000
+        );
+
+        console.log(
+          `Radius changed to ${radius} miles using select option "${optionText}".`
+        );
+
+        return;
+      }
     }
   }
 
+
+  // SECOND: Try a visible button
   const radiusButton =
     page
       .getByRole(
@@ -1899,18 +1931,102 @@ async function setRadius(
     });
 
     await page.waitForTimeout(
-      2500
+      3000
     );
 
     console.log(
-      `Radius changed to ${radius} miles.`
+      `Radius changed to ${radius} miles using button.`
     );
 
     return;
   }
 
+
+  // THIRD: Try any visible element containing "30 miles", etc.
+  const radiusText =
+    page
+      .getByText(
+        new RegExp(
+          `${radius}\\s*(mile|miles|mi)`,
+          "i"
+        ),
+        {
+          exact: false
+        }
+      )
+      .first();
+
+  if (
+    await radiusText
+      .isVisible()
+      .catch(() => false)
+  ) {
+    await radiusText.click({
+      force: true
+    });
+
+    await page.waitForTimeout(
+      3000
+    );
+
+    console.log(
+      `Radius changed to ${radius} miles using visible radius text.`
+    );
+
+    return;
+  }
+
+
+  // DEBUGGING: print what Octopus actually gives us
+  const selectDebug = [];
+
+  for (
+    let index = 0;
+    index < selectCount;
+    index += 1
+  ) {
+    const select =
+      selects.nth(index);
+
+    const optionTexts =
+      await select
+        .locator("option")
+        .allTextContents()
+        .catch(() => []);
+
+    selectDebug.push({
+      index,
+      options:
+        optionTexts
+    });
+  }
+
+  console.log(
+    "RADIUS SELECT DEBUG:",
+    JSON.stringify(
+      selectDebug,
+      null,
+      2
+    )
+  );
+
+  const visibleButtons =
+    await page
+      .locator(
+        "button:visible"
+      )
+      .allTextContents()
+      .catch(() => []);
+
+  console.log(
+    "VISIBLE BUTTONS DURING RADIUS FAILURE:",
+    visibleButtons
+  );
+
   throw new Error(
-    `Could not find the Octopus radius control for ${radius} miles.`
+    `Could not find the Octopus radius control for ${radius} miles. Check RADIUS SELECT DEBUG in Railway logs.`
+  );
+}
   );
 }
 
