@@ -7,7 +7,7 @@ const ORGANIZATION_NAME =
 
 const args = process.argv.slice(2);
 const requestedMode = args[0]?.toLowerCase();
-const mode = ["cancel", "reschedule"].includes(requestedMode)
+const mode = ["cancel", "reschedule", "diagnose"].includes(requestedMode)
   ? requestedMode
   : "inspect";
 const bookingId = mode === "inspect" ? args[0] : args[1];
@@ -921,6 +921,88 @@ async function rescheduleBooking(page) {
   });
 }
 
+async function diagnoseBookingPage(page) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await page.evaluate(() => {
+      window.scrollBy(0, 800);
+      for (const element of document.querySelectorAll("*")) {
+        if (element.scrollHeight > element.clientHeight + 20) {
+          element.scrollTop = Math.min(
+            element.scrollTop + 800,
+            element.scrollHeight
+          );
+          element.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
+      }
+    });
+    await page.waitForTimeout(300);
+  }
+
+  const diagnostics = await page.evaluate(() => {
+    const bodyText = document.body?.innerText || "";
+    const relevantLines = bodyText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) =>
+        /scheduled|appointment|from|to|upcoming|fieldworker|save changes/i.test(line)
+      )
+      .slice(0, 120);
+
+    const inputs = Array.from(document.querySelectorAll("input")).map(
+      (input) => {
+        const rect = input.getBoundingClientRect();
+        const style = window.getComputedStyle(input);
+        return {
+          type: input.type,
+          name: input.name,
+          id: input.id,
+          value: input.value,
+          placeholder: input.placeholder,
+          visible:
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            rect.width > 0 &&
+            rect.height > 0,
+          x: Math.round(rect.x),
+          y: Math.round(rect.y)
+        };
+      }
+    );
+
+    const scrollableElements = Array.from(document.querySelectorAll("*"))
+      .filter((element) => element.scrollHeight > element.clientHeight + 20)
+      .slice(0, 40)
+      .map((element) => ({
+        tag: element.tagName,
+        id: element.id,
+        className: String(element.className || "").slice(0, 180),
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        scrollTop: element.scrollTop
+      }));
+
+    return {
+      url: location.href,
+      title: document.title,
+      body_contains_scheduled_appointments:
+        /scheduled appointments/i.test(bodyText),
+      relevant_text_lines: relevantLines,
+      inputs,
+      scrollable_elements: scrollableElements
+    };
+  });
+
+  diagnostics.frames = page.frames().map((frame) => frame.url());
+
+  logResult({
+    ok: true,
+    action: "diagnose",
+    booking_id: Number(bookingId),
+    changed: false,
+    diagnostics
+  });
+}
+
 async function main() {
   const browser = await chromium.launch({
     headless: true,
@@ -936,6 +1018,7 @@ async function main() {
 
     if (mode === "cancel") await cancelBooking(page);
     else if (mode === "reschedule") await rescheduleBooking(page);
+    else if (mode === "diagnose") await diagnoseBookingPage(page);
     else await inspectBooking(page);
   } catch (error) {
     console.error("Octopus booking action failed:");
