@@ -1100,19 +1100,52 @@ async function rescheduleBooking(page) {
   await page.waitForTimeout(3000);
 
   const verifier = await page.context().newPage();
-  await verifier.setExtraHTTPHeaders({
-    "Cache-Control": "no-cache, no-store, max-age=0",
-    Pragma: "no-cache"
-  });
-  const verificationUrl = new URL(page.url());
-  verificationUrl.searchParams.set("emma_verify", String(Date.now()));
-  await verifier.goto(verificationUrl.toString(), {
-    waitUntil: "domcontentloaded",
-    timeout: 60000
-  });
-  await verifier.waitForTimeout(6000);
-  const persistedAppointment = await readStoredAppointment(verifier);
+  let persistedAppointment = null;
+  let verificationError = null;
+
+  try {
+    const cdp = await verifier.context().newCDPSession(verifier);
+    await cdp.send("Network.enable");
+    await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
+
+    const verificationUrl = new URL(page.url());
+    verificationUrl.search = "";
+    verificationUrl.hash = "";
+
+    await verifier.goto(verificationUrl.toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    });
+    await verifier
+      .locator('input[name^="multi_stpartdate_"]')
+      .first()
+      .waitFor({ state: "attached", timeout: 30000 });
+    await verifier.waitForTimeout(3000);
+    persistedAppointment = await readStoredAppointment(verifier);
+  } catch (error) {
+    verificationError = error.message;
+  }
+
   await verifier.close();
+
+  if (!persistedAppointment) {
+    logResult({
+      ok: false,
+      action: "reschedule",
+      booking_id: Number(bookingId),
+      outcome: "verification_unavailable_notification_blocked",
+      requested_date: newDateText,
+      requested_start_time: newStartText,
+      requested_end_time: newEndText,
+      save_response: saveResponseSummary,
+      verification_error: verificationError,
+      customer_notification_sent: false,
+      verified_rescheduled_in_octopus: false,
+      changed: false
+    });
+    return;
+  }
+
   const persisted =
     normalizeDateText(persistedAppointment.fromDate) === normalizeDateText(newDateText) &&
     normalizeDateText(persistedAppointment.toDate) === normalizeDateText(newDateText) &&
