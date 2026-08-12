@@ -1826,208 +1826,263 @@ async function waitForAvailableFieldworkers(
 }
 
 
-async function setRadius(
+async function selectWorkersForRadiusBand(
   page,
   radius
 ) {
+  const previousRadius =
+    radius === 30
+      ? 0
+      : radius === 45
+        ? 30
+        : radius === 60
+          ? 45
+          : radius === 70
+            ? 60
+            : 0;
+
   console.log(
-    `Setting radius to ${radius} miles...`
+    `Selecting fieldworkers over ${previousRadius} miles and up to ${radius} miles...`
   );
 
-  // FIRST: Look through every normal <select>
-  const selects =
-    page.locator("select");
+  const dialog =
+    page
+      .getByRole(
+        "dialog"
+      )
+      .filter({
+        hasText:
+          /send job request/i
+      })
+      .last();
 
-  const selectCount =
-    await selects.count();
+  const scope =
+    await dialog
+      .count()
+      .catch(() => 0)
+      ? dialog
+      : page;
+
+  const rows =
+    scope.locator("tr");
+
+  const rowCount =
+    await rows.count();
+
+  console.log(
+    `Found ${rowCount} table rows in the Send Job Request window.`
+  );
+
+  let workerRows = 0;
+  let selectedCount = 0;
+  let changedCount = 0;
+  let skippedRows = 0;
 
   for (
     let index = 0;
-    index < selectCount;
+    index < rowCount;
     index += 1
   ) {
-    const select =
-      selects.nth(index);
+    const row =
+      rows.nth(index);
 
-    const options =
-      await select
-        .locator("option")
-        .all();
+    const cells =
+      row.locator("td");
 
-    for (
-      const option
-      of options
+    const cellCount =
+      await cells
+        .count()
+        .catch(() => 0);
+
+    if (
+      cellCount < 2
     ) {
-      const optionText =
-        (
-          await option
-            .innerText()
-            .catch(() => "")
-        ).trim();
+      continue;
+    }
 
-      const optionValue =
-        await option
-          .getAttribute("value")
-          .catch(() => null);
+    const distanceText =
+      (
+        await cells
+          .nth(1)
+          .innerText()
+          .catch(() => "")
+      ).trim();
 
-      console.log(
-        `Radius option found: text="${optionText}" value="${optionValue}"`
+    const distanceMatch =
+      distanceText.match(
+        /(\d+(?:\.\d+)?)/
       );
 
-      const matchesRadius =
-        optionText
-          .toLowerCase()
-          .includes(
-            String(radius)
-          );
+    if (!distanceMatch) {
+      skippedRows += 1;
+      continue;
+    }
 
-      if (matchesRadius) {
-        if (optionValue) {
-          await select.selectOption(
-            optionValue
+    const distance =
+      Number(
+        distanceMatch[1]
+      );
+
+    if (
+      !Number.isFinite(
+        distance
+      )
+    ) {
+      skippedRows += 1;
+      continue;
+    }
+
+    workerRows += 1;
+
+    const shouldSelect =
+      distance > previousRadius &&
+      distance <= radius;
+
+    let control =
+      row
+        .locator(
+          '[role="switch"]'
+        )
+        .first();
+
+    if (
+      (
+        await control
+          .count()
+          .catch(() => 0)
+      ) === 0
+    ) {
+      control =
+        row
+          .locator(
+            'input[type="checkbox"]'
+          )
+          .first();
+    }
+
+    if (
+      (
+        await control
+          .count()
+          .catch(() => 0)
+      ) === 0
+    ) {
+      control =
+        row
+          .locator(
+            'button[aria-checked], [aria-checked="true"], [aria-checked="false"]'
+          )
+          .first();
+    }
+
+    if (
+      (
+        await control
+          .count()
+          .catch(() => 0)
+      ) === 0
+    ) {
+      console.log(
+        `No row toggle found for distance ${distance} miles.`
+      );
+      skippedRows += 1;
+      continue;
+    }
+
+    let isSelected = false;
+
+    const tagName =
+      await control
+        .evaluate(
+          (element) =>
+            element.tagName.toLowerCase()
+        )
+        .catch(() => "");
+
+    const inputType =
+      await control
+        .getAttribute("type")
+        .catch(() => null);
+
+    if (
+      tagName === "input" &&
+      inputType === "checkbox"
+    ) {
+      isSelected =
+        await control
+          .isChecked()
+          .catch(() => false);
+    } else {
+      const ariaChecked =
+        await control
+          .getAttribute(
+            "aria-checked"
+          )
+          .catch(() => null);
+
+      if (
+        ariaChecked !== null
+      ) {
+        isSelected =
+          ariaChecked === "true";
+      } else {
+        const className =
+          await control
+            .getAttribute(
+              "class"
+            )
+            .catch(() => "");
+
+        isSelected =
+          /checked|active|on/i.test(
+            className || ""
           );
+      }
+    }
+
+    if (
+      shouldSelect !== isSelected
+    ) {
+      if (
+        tagName === "input" &&
+        inputType === "checkbox"
+      ) {
+        if (shouldSelect) {
+          await control.check({
+            force: true
+          });
         } else {
-          await select.selectOption({
-            label: optionText
+          await control.uncheck({
+            force: true
           });
         }
-
-        await page.waitForTimeout(
-          3000
-        );
-
-        console.log(
-          `Radius changed to ${radius} miles using select option "${optionText}".`
-        );
-
-        return;
+      } else {
+        await control.click({
+          force: true
+        });
       }
+
+      changedCount += 1;
+    }
+
+    if (shouldSelect) {
+      selectedCount += 1;
     }
   }
 
-
-  // SECOND: Try a visible button
-  const radiusButton =
-    page
-      .getByRole(
-        "button",
-        {
-          name:
-            new RegExp(
-              `${radius}.*mile`,
-              "i"
-            )
-        }
-      )
-      .first();
-
-  if (
-    await radiusButton
-      .isVisible()
-      .catch(() => false)
-  ) {
-    await radiusButton.click({
-      force: true
-    });
-
-    await page.waitForTimeout(
-      3000
-    );
-
-    console.log(
-      `Radius changed to ${radius} miles using button.`
-    );
-
-    return;
-  }
-
-
-  // THIRD: Try any visible element containing "30 miles", etc.
-  const radiusText =
-    page
-      .getByText(
-        new RegExp(
-          `${radius}\\s*(mile|miles|mi)`,
-          "i"
-        ),
-        {
-          exact: false
-        }
-      )
-      .first();
-
-  if (
-    await radiusText
-      .isVisible()
-      .catch(() => false)
-  ) {
-    await radiusText.click({
-      force: true
-    });
-
-    await page.waitForTimeout(
-      3000
-    );
-
-    console.log(
-      `Radius changed to ${radius} miles using visible radius text.`
-    );
-
-    return;
-  }
-
-
-  // DEBUGGING: print what Octopus actually gives us
-  const selectDebug = [];
-
-  for (
-    let index = 0;
-    index < selectCount;
-    index += 1
-  ) {
-    const select =
-      selects.nth(index);
-
-    const optionTexts =
-      await select
-        .locator("option")
-        .allTextContents()
-        .catch(() => []);
-
-    selectDebug.push({
-      index,
-      options:
-        optionTexts
-    });
-  }
-
   console.log(
-    "RADIUS SELECT DEBUG:",
-    JSON.stringify(
-      selectDebug,
-      null,
-      2
-    )
+    `Radius ${radius}: ${selectedCount} fieldworkers selected from ${workerRows} distance rows; ${changedCount} toggles changed; ${skippedRows} rows skipped.`
   );
 
-  const visibleButtons =
-    await page
-      .locator(
-        "button:visible"
-      )
-      .allTextContents()
-      .catch(() => []);
-
-  console.log(
-    "VISIBLE BUTTONS DURING RADIUS FAILURE:",
-    visibleButtons
-  );
-
-  throw new Error(
-    `Could not find the Octopus radius control for ${radius} miles. Check RADIUS SELECT DEBUG in Railway logs.`
-  );
+  return {
+    selectedCount,
+    workerRows,
+    changedCount,
+    skippedRows,
+    previousRadius,
+    radius
+  };
 }
-
 
 async function getLoadedCounts(
   page
@@ -2122,6 +2177,32 @@ async function clickLoadMoreUntilDone(
         .catch(() => false);
 
     if (!visible) {
+      const loadingButton =
+        page
+          .getByText(
+            /loading/i,
+            {
+              exact: false
+            }
+          )
+          .first();
+
+      if (
+        await loadingButton
+          .isVisible()
+          .catch(() => false)
+      ) {
+        console.log(
+          `Octopus is still loading more fieldworkers for ${radius} miles. Waiting...`
+        );
+
+        await page.waitForTimeout(
+          3000
+        );
+
+        continue;
+      }
+
       await page.waitForTimeout(
         1500
       );
@@ -2350,15 +2431,6 @@ async function sendOneRadiusRequest(
     bookingId
   );
 
-  await setRadius(
-    page,
-    radius
-  );
-
-  await page.waitForTimeout(
-    2500
-  );
-
   const sendJobRequestButton =
     page
       .getByRole(
@@ -2396,6 +2468,55 @@ async function sendOneRadiusRequest(
     bookingId,
     radius
   );
+
+  const radiusSelection =
+    await selectWorkersForRadiusBand(
+      page,
+      radius
+    );
+
+  if (
+    radiusSelection.workerRows === 0
+  ) {
+    throw new Error(
+      `Could not read any fieldworker distance rows for ${bookingId} at the ${radius}-mile round.`
+    );
+  }
+
+  if (
+    radiusSelection.selectedCount === 0
+  ) {
+    console.log(
+      `No NEW fieldworkers found between ${radiusSelection.previousRadius} and ${radius} miles for ${bookingId}. Recording the radius as complete without sending.`
+    );
+
+    await markRadiusSent(
+      bookingNumber,
+      radius
+    );
+
+    const closeButton =
+      page
+        .getByRole(
+          "button",
+          {
+            name: /^close$/i
+          }
+        )
+        .last();
+
+    if (
+      await closeButton
+        .isVisible()
+        .catch(() => false)
+    ) {
+      await closeButton.click({
+        force: true
+      });
+    }
+
+    return;
+  }
 
   console.log(
     `Waiting for final Send button for ${bookingId} at ${radius} miles...`
