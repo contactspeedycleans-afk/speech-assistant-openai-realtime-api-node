@@ -2395,7 +2395,42 @@ async function sendJobRequestSentToMake({
   );
 }
 
+async function markRadiusSent(
+  bookingNumber,
+  radius
+) {
+  const allowedRadii = [
+    30,
+    45,
+    60,
+    70
+  ];
 
+  if (!allowedRadii.includes(radius)) {
+    throw new Error(
+      `Unsupported radius: ${radius}`
+    );
+  }
+
+  const column =
+    `job_request_${radius}_sent_at`;
+
+  await pool.query(
+    `
+    UPDATE public.booking_dispatch_state
+    SET
+      ${column} = NOW(),
+      last_dispatch_attempt_at = NOW(),
+      updated_at = NOW()
+    WHERE booking_number = $1;
+    `,
+    [bookingNumber]
+  );
+
+  console.log(
+    `${radius}-mile timestamp saved for ${bookingNumber}.`
+  );
+}
 async function dispatchNextBooking(
   page
 ) {
@@ -2432,10 +2467,6 @@ async function dispatchNextBooking(
       await markRadiusSent(
         booking.booking_number,
         radius
-      );
-
-      console.log(
-        `${radius}-mile job request completed for ${booking.booking_number}.`
       );
     }
 
