@@ -7,14 +7,15 @@ const ORGANIZATION_NAME =
 
 const args = process.argv.slice(2);
 const requestedMode = args[0]?.toLowerCase();
-const mode = ["cancel", "reschedule", "diagnose"].includes(requestedMode)
+const mode = ["cancel", "reschedule", "capture-reschedule", "diagnose"].includes(requestedMode)
   ? requestedMode
   : "inspect";
 const bookingId = mode === "inspect" ? args[0] : args[1];
 const requestedReason =
   mode === "cancel" ? args.slice(2).join(" ").trim() || "Other" : "";
-const requestedDate = mode === "reschedule" ? args[2] : "";
-const requestedStartTime = mode === "reschedule" ? args[3] : "";
+const isRescheduleMode = ["reschedule", "capture-reschedule"].includes(mode);
+const requestedDate = isRescheduleMode ? args[2] : "";
+const requestedStartTime = isRescheduleMode ? args[3] : "";
 
 if (!OCTOPUS_EMAIL) throw new Error("Missing OCTOPUS_EMAIL");
 if (!OCTOPUS_PASSWORD) throw new Error("Missing OCTOPUS_PASSWORD");
@@ -24,7 +25,7 @@ if (!/^\d+$/.test(String(bookingId || ""))) {
   );
 }
 if (
-  mode === "reschedule" &&
+  isRescheduleMode &&
   !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
 ) {
   throw new Error(
@@ -32,7 +33,7 @@ if (
   );
 }
 if (
-  mode === "reschedule" &&
+  isRescheduleMode &&
   !/^([01]\d|2[0-3]):[0-5]\d$/.test(requestedStartTime)
 ) {
   throw new Error(
@@ -867,6 +868,27 @@ async function applyStoredAppointment(page, values) {
   }, values);
 }
 
+function summarizeCapturedWrite(request) {
+  const rawBody = request.postData() || "";
+  const relevant = {};
+  try {
+    const params = new URLSearchParams(rawBody);
+    for (const [key, value] of params.entries()) {
+      if (/booking|stpart|etpart|date|time|update/i.test(key)) {
+        relevant[key] = value;
+      }
+    }
+  } catch {}
+
+  return {
+    method: request.method(),
+    url: request.url(),
+    content_type: request.headers()["content-type"] || "",
+    relevant_fields: relevant,
+    body_length: rawBody.length
+  };
+}
+
 async function rescheduleBooking(page) {
   const initialState = await getPageState(page);
 
@@ -946,6 +968,19 @@ async function rescheduleBooking(page) {
   console.log("Appointment values applied.");
   await page.waitForTimeout(1000);
 
+  let capturedWrite = null;
+  if (mode === "capture-reschedule") {
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (!["GET", "HEAD", "OPTIONS"].includes(request.method())) {
+        if (!capturedWrite) capturedWrite = summarizeCapturedWrite(request);
+        await route.abort("blockedbyclient");
+        return;
+      }
+      await route.continue();
+    });
+  }
+
   const saveChangesButton = await waitForLargestVisibleExactText(
     page,
     "Save changes",
@@ -956,10 +991,59 @@ async function rescheduleBooking(page) {
   }
   console.log("Clicking Save changes...");
   await saveChangesButton.click();
+
+  if (mode === "capture-reschedule") {
+    await page.waitForTimeout(5000);
+    logResult({
+      ok: Boolean(capturedWrite),
+      action: "capture-reschedule",
+      booking_id: Number(bookingId),
+      outcome: capturedWrite ? "save_request_captured_and_blocked" : "no_write_request_captured",
+      requested_date: newDateText,
+      requested_start_time: newStartText,
+      requested_end_time: newEndText,
+      captured_write: capturedWrite,
+      customer_notification_sent: false,
+      changed: false
+    });
+    return;
+  }
+
   console.log("Save changes clicked; waiting for Notify Customer...");
 
   const notifyHeading = page.getByText("Notify Customer", { exact: true });
   await notifyHeading.waitFor({ state: "visible", timeout: 30000 });
+
+  const verifier = await page.context().newPage();
+  await verifier.goto(page.url(), { waitUntil: "domcontentloaded", timeout: 60000 });
+  await verifier.waitForTimeout(4000);
+  const persistedAppointment = await readStoredAppointment(verifier);
+  await verifier.close();
+  const persisted =
+    normalizeDateText(persistedAppointment.fromDate) === normalizeDateText(newDateText) &&
+    normalizeDateText(persistedAppointment.toDate) === normalizeDateText(newDateText) &&
+    parseClockTime(persistedAppointment.fromTime) === newStartMinutes &&
+    parseClockTime(persistedAppointment.toTime) ===
+      (newStartMinutes + oldDurationMinutes) % 1440;
+
+  if (!persisted) {
+    logResult({
+      ok: false,
+      action: "reschedule",
+      booking_id: Number(bookingId),
+      outcome: "save_not_persisted_notification_blocked",
+      previous_date: oldFromDate,
+      previous_start_time: oldFromTime,
+      previous_end_time: oldToTime,
+      requested_date: newDateText,
+      requested_start_time: newStartText,
+      requested_end_time: newEndText,
+      customer_notification_sent: false,
+      verified_rescheduled_in_octopus: false,
+      changed: false
+    });
+    return;
+  }
 
   const sendButton = await waitForLargestVisibleExactText(page, "Send", 20000);
   if (!sendButton) {
@@ -1100,7 +1184,7 @@ async function main() {
     await openBooking(page);
 
     if (mode === "cancel") await cancelBooking(page);
-    else if (mode === "reschedule") await rescheduleBooking(page);
+    else if (["reschedule", "capture-reschedule"].includes(mode)) await rescheduleBooking(page);
     else if (mode === "diagnose") await diagnoseBookingPage(page);
     else await inspectBooking(page);
   } catch (error) {
