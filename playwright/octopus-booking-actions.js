@@ -209,7 +209,17 @@ async function inspectBilling(page) {
       )
       .slice(0, 20);
 
-    return { lines, links };
+    const phoneCandidates = Array.from(document.querySelectorAll('a[href^="tel:"]'))
+      .map((anchor) => String(anchor.getAttribute('href') || '').replace(/^tel:/i, ''))
+      .concat(
+        lines
+          .join(' ')
+          .match(/(?:\+?1[\s().-]*)?(?:\d[\s().-]*){10}/g) || []
+      )
+      .map((value) => String(value).replace(/\D/g, '').slice(-10))
+      .filter((value) => value.length === 10);
+
+    return { lines, links, phoneCandidates: [...new Set(phoneCandidates)] };
   });
 
   const lines = billing.lines;
@@ -242,6 +252,7 @@ async function inspectBilling(page) {
     amount_paid: findLabeledAmount(lines, ["amount paid", "paid"]),
     balance_due: findLabeledAmount(lines, ["balance due", "amount due", "balance"]),
     customer_links: safeLinks,
+    customer_phone_candidates: billing.phoneCandidates,
     changed: false
   });
 }
