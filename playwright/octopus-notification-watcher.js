@@ -2243,16 +2243,6 @@ if (page.isClosed()) {
     2000
   );
 }
-async function markRadiusSent(
-  bookingNumber,
-  radius
-) {
-  const allowedRadii = [
-    30,
-    45,
-    60,
-    70
-  ];
 
   if (!allowedRadii.includes(radius)) {
     throw new Error(
