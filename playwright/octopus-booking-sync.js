@@ -52,6 +52,171 @@ function parseNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function normalizeUsPhone(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+  return digits.length === 10 ? digits : null;
+}
+
+async function extractHiddenCustomerPhones(page) {
+  const candidates = new Set();
+
+  const collect = async () => {
+    const values = await page.evaluate(() => {
+      const results = [];
+
+      for (const anchor of document.querySelectorAll('a[href^="tel:"]')) {
+        results.push(anchor.getAttribute("href") || "");
+      }
+
+      for (const input of document.querySelectorAll("input")) {
+        const identity = [
+          input.type,
+          input.name,
+          input.id,
+          input.placeholder,
+          input.getAttribute("aria-label")
+        ].filter(Boolean).join(" ");
+
+        if (/phone|mobile|cell|telephone|tel/i.test(identity)) {
+          results.push(input.value || "");
+        }
+      }
+
+      return results;
+    });
+
+    for (const value of values) {
+      const phone = normalizeUsPhone(value);
+      if (phone) candidates.add(phone);
+    }
+  };
+
+  await collect();
+
+  const customerHeading = page.getByText("Customers", { exact: true }).first();
+  if (!(await customerHeading.isVisible().catch(() => false))) {
+    return [...candidates];
+  }
+
+  const marker = `booking-sync-customer-${Date.now()}`;
+  await customerHeading.evaluate((heading, value) => {
+    let region = heading.parentElement;
+
+    while (region && region !== document.body) {
+      const text = String(region.innerText || "").trim();
+      const controls = region.querySelectorAll(
+        'button, [role="button"], a, [data-toggle], [data-bs-toggle]'
+      ).length;
+      if (controls > 0 && text.length < 1000) break;
+      region = region.parentElement;
+    }
+
+    (region || heading.parentElement || heading)
+      .setAttribute("data-booking-sync-customer", value);
+  }, marker);
+
+  const region = page.locator(
+    `[data-booking-sync-customer="${marker}"]`
+  );
+  const controls = region.locator(
+    'button:visible, [role="button"]:visible, a:visible, [data-toggle]:visible, [data-bs-toggle]:visible'
+  );
+  const count = Math.min(await controls.count(), 10);
+
+  for (let index = 0; index < count; index += 1) {
+    await controls.nth(index).click().catch(() => {});
+    await page.waitForTimeout(500);
+
+    const editChoice = page
+      .locator(
+        '[role="menu"]:visible >> text=/^edit$/i, .dropdown-menu:visible >> text=/^edit$/i, button:visible >> text=/^edit$/i'
+      )
+      .first();
+
+    if (await editChoice.isVisible().catch(() => false)) {
+      await editChoice.click().catch(() => {});
+      await page.waitForTimeout(700);
+    }
+
+    await collect();
+    if (candidates.size > 0) break;
+  }
+
+  const close = page
+    .locator(
+      '[role="dialog"] button[aria-label*="close" i], .modal.show button[aria-label*="close" i], .modal.show .close'
+    )
+    .first();
+  if (await close.isVisible().catch(() => false)) {
+    await close.click().catch(() => {});
+  }
+
+  return [...candidates];
+}
+
+async function extractBookingDetails(page) {
+  const details = await page.evaluate(() => {
+    const phoneValues = [];
+
+    for (const anchor of document.querySelectorAll('a[href^="tel:"]')) {
+      phoneValues.push(anchor.getAttribute("href") || "");
+    }
+
+    for (const input of document.querySelectorAll("input")) {
+      const identity = [
+        input.type,
+        input.name,
+        input.id,
+        input.placeholder,
+        input.getAttribute("aria-label")
+      ].filter(Boolean).join(" ");
+
+      if (/phone|mobile|cell|telephone|tel/i.test(identity)) {
+        phoneValues.push(input.value || "");
+      }
+    }
+
+    return {
+      bodyText: document.body.innerText || "",
+      phoneValues
+    };
+  });
+
+  let customerPhone = details.phoneValues
+    .map(normalizeUsPhone)
+    .find(Boolean) || null;
+
+  if (!customerPhone) {
+    const hiddenPhones = await extractHiddenCustomerPhones(page);
+    customerPhone = hiddenPhones[0] || null;
+  }
+  const dateMatch = details.bodyText.match(
+    /\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(20\d{2})\b/i
+  );
+  const timeMatch = details.bodyText.match(
+    /\b(\d{1,2}):(\d{2})\s*(am|pm)\s*-\s*(\d{1,2}):(\d{2})\s*(am|pm)\b/i
+  );
+
+  let bookingDate = null;
+  if (dateMatch) {
+    const months = {
+      jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+      jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12
+    };
+    const month = months[dateMatch[2].slice(0, 3).toLowerCase()];
+    bookingDate = `${dateMatch[3]}-${String(month).padStart(2, "0")}-${String(dateMatch[1]).padStart(2, "0")}T12:00:00.000Z`;
+  }
+
+  return {
+    customerPhone,
+    bookingDate,
+    arrivalWindow: timeMatch
+      ? timeMatch[0].replace(/\s+/g, " ").trim()
+      : null
+  };
+}
+
 async function selectOrganization(page) {
   console.log(
     `Selecting OctopusPro organization: ${ORGANIZATION_NAME}...`
@@ -393,12 +558,16 @@ async function loadBookingsToSync() {
       octopus_booking_id,
       octopus_booking_url,
       status,
+      billing_synced_at,
+      booking_details_synced_at,
       pricing_synced_at,
       updated_at
     FROM public.booking_tracking
     WHERE octopus_booking_url IS NOT NULL
       AND (
         pricing_synced_at IS NULL
+        OR billing_synced_at IS NULL
+        OR booking_details_synced_at IS NULL
         OR pricing_synced_at < updated_at
       )
     ORDER BY updated_at ASC
@@ -409,7 +578,7 @@ async function loadBookingsToSync() {
   return result.rows;
 }
 
-async function savePricing(bookingNumber, pricing) {
+async function savePricing(bookingNumber, pricing, details) {
   await pool.query(
     `
     UPDATE public.booking_tracking
@@ -420,11 +589,26 @@ async function savePricing(bookingNumber, pricing) {
       final_total = $5,
       duration_minutes = $6,
       invoice_total = $5,
-      billing_synced_at = CASE
-        WHEN customer_phone_normalized IS NOT NULL
-        THEN NOW()
-        ELSE billing_synced_at
-      END,
+      customer_phone_normalized = COALESCE($7, customer_phone_normalized),
+      booking_date = COALESCE($8, booking_date),
+      arrival_window = COALESCE($9, arrival_window),
+      customer_id = COALESCE(
+        customer_id,
+        (
+          SELECT id
+          FROM public.customers
+          WHERE RIGHT(
+            REGEXP_REPLACE(
+              COALESCE(phone_normalized, phone, ''),
+              '[^0-9]', '', 'g'
+            ), 10
+          ) = RIGHT(COALESCE($7, ''), 10)
+          ORDER BY id DESC
+          LIMIT 1
+        )
+      ),
+      billing_synced_at = NOW(),
+      booking_details_synced_at = NOW(),
       pricing_synced_at = NOW(),
       pricing_sync_error = NULL
     WHERE booking_number = $1;
@@ -435,7 +619,10 @@ async function savePricing(bookingNumber, pricing) {
       pricing.discountPercent,
       pricing.subtotal,
       pricing.finalTotal,
-      pricing.durationMinutes
+      pricing.durationMinutes,
+      details.customerPhone,
+      details.bookingDate,
+      details.arrivalWindow
     ]
   );
 }
@@ -466,10 +653,20 @@ async function syncBooking(page, booking) {
   );
 
   const pricing = await extractBookingPricing(page);
+  const details = await extractBookingDetails(page);
 
   console.log(
     `Pricing extracted for ${booking.booking_number}:`,
     pricing
+  );
+
+  console.log(
+    `Customer and appointment details extracted for ${booking.booking_number}:`,
+    {
+      phoneLast4: details.customerPhone?.slice(-4) || null,
+      bookingDate: details.bookingDate,
+      arrivalWindow: details.arrivalWindow
+    }
   );
 
   if (
@@ -484,7 +681,8 @@ async function syncBooking(page, booking) {
 
   await savePricing(
     booking.booking_number,
-    pricing
+    pricing,
+    details
   );
 
   console.log(
