@@ -28,13 +28,6 @@ const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME ||
   "SpeedyCleans";
 
-const JOB_REQUEST_RADII = [
-  30,
-  45,
-  60,
-  70
-];
-
 
 if (!NOTIFICATIONS_URL) {
   throw new Error(
@@ -85,22 +78,6 @@ const pool = new Pool({
     rejectUnauthorized: false
   }
 });
-
-
-async function ensureDispatchRadiusColumns() {
-  await pool.query(`
-    ALTER TABLE public.booking_dispatch_state
-      ADD COLUMN IF NOT EXISTS job_request_30_sent_at TIMESTAMPTZ,
-      ADD COLUMN IF NOT EXISTS job_request_45_sent_at TIMESTAMPTZ,
-      ADD COLUMN IF NOT EXISTS job_request_60_sent_at TIMESTAMPTZ,
-      ADD COLUMN IF NOT EXISTS job_request_70_sent_at TIMESTAMPTZ,
-      ADD COLUMN IF NOT EXISTS job_request_sent_at TIMESTAMPTZ;
-  `);
-
-  console.log(
-    "Dispatch radius timestamp columns are ready."
-  );
-}
 
 
 function classifyNotification(text) {
@@ -264,6 +241,7 @@ async function sendToMake(
   }
 
   const supportedStatuses = [
+    "ASSIGNED",
     "ON_THE_WAY",
     "ARRIVED",
     "STARTED",
@@ -625,8 +603,10 @@ async function upsertDispatchState(
     `Dispatch function called: ${notification.eventType} ${notification.bookingNumber}`
   );
 
+
   const eventType =
     notification.eventType;
+
 
   if (
     eventType !== "ASSIGNED" &&
@@ -635,21 +615,16 @@ async function upsertDispatchState(
     return;
   }
 
+
   const assignmentStatus =
     eventType;
+
 
   const jobRequestStatus =
     eventType === "ASSIGNED"
       ? "ACCEPTED"
       : "NOT_SENT";
 
-  const currentCleaner =
-    eventType === "ASSIGNED"
-      ? (
-          notification.fieldworkerName ||
-          null
-        )
-      : null;
 
   await pool.query(
     `
@@ -658,11 +633,6 @@ async function upsertDispatchState(
       assignment_status,
       current_cleaner,
       job_request_status,
-      job_request_sent_at,
-      job_request_30_sent_at,
-      job_request_45_sent_at,
-      job_request_60_sent_at,
-      job_request_70_sent_at,
       last_event_type,
       last_notification_text,
       last_assignment_change_at,
@@ -675,11 +645,6 @@ async function upsertDispatchState(
       $2,
       $3,
       $4,
-      NULL,
-      NULL,
-      NULL,
-      NULL,
-      NULL,
       $5,
       $6,
       NOW(),
@@ -700,41 +665,6 @@ async function upsertDispatchState(
 
       job_request_status =
         EXCLUDED.job_request_status,
-
-      job_request_sent_at =
-        CASE
-          WHEN EXCLUDED.assignment_status = 'NEEDS CLEANER'
-          THEN NULL
-          ELSE public.booking_dispatch_state.job_request_sent_at
-        END,
-
-      job_request_30_sent_at =
-        CASE
-          WHEN EXCLUDED.assignment_status = 'NEEDS CLEANER'
-          THEN NULL
-          ELSE public.booking_dispatch_state.job_request_30_sent_at
-        END,
-
-      job_request_45_sent_at =
-        CASE
-          WHEN EXCLUDED.assignment_status = 'NEEDS CLEANER'
-          THEN NULL
-          ELSE public.booking_dispatch_state.job_request_45_sent_at
-        END,
-
-      job_request_60_sent_at =
-        CASE
-          WHEN EXCLUDED.assignment_status = 'NEEDS CLEANER'
-          THEN NULL
-          ELSE public.booking_dispatch_state.job_request_60_sent_at
-        END,
-
-      job_request_70_sent_at =
-        CASE
-          WHEN EXCLUDED.assignment_status = 'NEEDS CLEANER'
-          THEN NULL
-          ELSE public.booking_dispatch_state.job_request_70_sent_at
-        END,
 
       last_event_type =
         EXCLUDED.last_event_type,
@@ -763,19 +693,30 @@ async function upsertDispatchState(
     [
       notification.bookingNumber,
       assignmentStatus,
-      currentCleaner,
+
+      notification.fieldworkerName ||
+        null,
+
       jobRequestStatus,
       eventType,
-      notification.text || "",
-      notification.octopusBookingId || null,
-      notification.octopusBookingUrl || null
+            notification.text ||
+        "",
+
+      notification.octopusBookingId ||
+        null,
+
+      notification.octopusBookingUrl ||
+        null
     ]
   );
+
 
   console.log(
     `Dispatch state updated: ${assignmentStatus} ${notification.bookingNumber}`
   );
 }
+
+
 async function saveNotification(
   notification
 ) {
@@ -1753,667 +1694,20 @@ async function readNotifications(
     `Checked ${count} OctopusPro notification links. New events saved: ${newNotifications}.`
   );
 }
-async function waitForAvailableFieldworkers(
+
+
+async function openJobRequestModal(
   page,
   bookingId
-) {
-  const availableFieldworkers =
-    page.getByText(
-      "Available Fieldworkers",
-      {
-        exact: true
-      }
-    );
-
-  await availableFieldworkers.waitFor({
-    state: "visible",
-    timeout: 60000
-  });
-
-  console.log(
-    `Available Fieldworkers section found for ${bookingId}.`
-  );
-
-  if (page.isClosed()) {
-    throw new Error(
-      `Octopus booking page closed unexpectedly for ${bookingId}.`
-    );
-  }
-
-  console.log(
-    `Waiting for Octopus to finish calculating available fieldworkers for ${bookingId}...`
-  );
-
-  let availabilityMatch =
-    null;
-
-  const availabilityStartedAt =
-    Date.now();
-
-  while (
-    Date.now() -
-      availabilityStartedAt <
-    120000
-  ) {
-    const bodyText =
-      await page
-        .locator("body")
-        .innerText();
-
-    availabilityMatch =
-      bodyText.match(
-        /(\d+)\s+of\s+(\d+)\s+available/i
-      );
-
-    if (availabilityMatch) {
-      break;
-    }
-
-    await page.waitForTimeout(
-      5000
-    );
-  }
-
-  if (!availabilityMatch) {
-    throw new Error(
-      `Octopus never finished loading the available-fieldworker count for ${bookingId}. Job request was NOT sent.`
-    );
-  }
-
-  console.log(
-    `Octopus reports ${availabilityMatch[1]} of ${availabilityMatch[2]} fieldworkers available for ${bookingId}.`
-  );
-}
-
-
-async function selectWorkersForRadiusBand(
-  page,
-  radius
-) {
-  const previousRadius =
-    radius === 30
-      ? 0
-      : radius === 45
-        ? 30
-        : radius === 60
-          ? 45
-          : radius === 70
-            ? 60
-            : 0;
-
-  console.log(
-    `Selecting fieldworkers over ${previousRadius} miles and up to ${radius} miles...`
-  );
-
-  const dialog =
-    page
-      .getByRole(
-        "dialog"
-      )
-      .filter({
-        hasText:
-          /send job request/i
-      })
-      .last();
-
-  const scope =
-    await dialog
-      .count()
-      .catch(() => 0)
-      ? dialog
-      : page;
-
-  const rows =
-    scope.locator("tr");
-
-  const rowCount =
-    await rows.count();
-
-  console.log(
-    `Found ${rowCount} table rows in the Send Job Request window.`
-  );
-
-  let workerRows = 0;
-  let selectedCount = 0;
-  let changedCount = 0;
-  let skippedRows = 0;
-
-  for (
-    let index = 0;
-    index < rowCount;
-    index += 1
-  ) {
-    const row =
-      rows.nth(index);
-
-    const cells =
-      row.locator("td");
-
-    const cellCount =
-      await cells
-        .count()
-        .catch(() => 0);
-
-    if (
-      cellCount < 2
-    ) {
-      continue;
-    }
-
-    const distanceText =
-      (
-        await cells
-          .nth(1)
-          .innerText()
-          .catch(() => "")
-      ).trim();
-
-    const distanceMatch =
-      distanceText.match(
-        /(\d+(?:\.\d+)?)/
-      );
-
-    if (!distanceMatch) {
-      skippedRows += 1;
-      continue;
-    }
-
-    const distance =
-      Number(
-        distanceMatch[1]
-      );
-
-    if (
-      !Number.isFinite(
-        distance
-      )
-    ) {
-      skippedRows += 1;
-      continue;
-    }
-
-    workerRows += 1;
-
-    const shouldSelect =
-      distance > previousRadius &&
-      distance <= radius;
-
-    let control =
-      row
-        .locator(
-          '[role="switch"]'
-        )
-        .first();
-
-    if (
-      (
-        await control
-          .count()
-          .catch(() => 0)
-      ) === 0
-    ) {
-      control =
-        row
-          .locator(
-            'input[type="checkbox"]'
-          )
-          .first();
-    }
-
-    if (
-      (
-        await control
-          .count()
-          .catch(() => 0)
-      ) === 0
-    ) {
-      control =
-        row
-          .locator(
-            'button[aria-checked], [aria-checked="true"], [aria-checked="false"]'
-          )
-          .first();
-    }
-
-    if (
-      (
-        await control
-          .count()
-          .catch(() => 0)
-      ) === 0
-    ) {
-      console.log(
-        `No row toggle found for distance ${distance} miles.`
-      );
-      skippedRows += 1;
-      continue;
-    }
-
-    let isSelected = false;
-
-    const tagName =
-      await control
-        .evaluate(
-          (element) =>
-            element.tagName.toLowerCase()
-        )
-        .catch(() => "");
-
-    const inputType =
-      await control
-        .getAttribute("type")
-        .catch(() => null);
-
-    if (
-      tagName === "input" &&
-      inputType === "checkbox"
-    ) {
-      isSelected =
-        await control
-          .isChecked()
-          .catch(() => false);
-    } else {
-      const ariaChecked =
-        await control
-          .getAttribute(
-            "aria-checked"
-          )
-          .catch(() => null);
-
-      if (
-        ariaChecked !== null
-      ) {
-        isSelected =
-          ariaChecked === "true";
-      } else {
-        const className =
-          await control
-            .getAttribute(
-              "class"
-            )
-            .catch(() => "");
-
-        isSelected =
-          /checked|active|on/i.test(
-            className || ""
-          );
-      }
-    }
-
-    if (
-      shouldSelect !== isSelected
-    ) {
-      if (
-        tagName === "input" &&
-        inputType === "checkbox"
-      ) {
-        if (shouldSelect) {
-          await control.check({
-            force: true
-          });
-        } else {
-          await control.uncheck({
-            force: true
-          });
-        }
-      } else {
-        await control.click({
-          force: true
-        });
-      }
-
-      changedCount += 1;
-    }
-
-    if (shouldSelect) {
-      selectedCount += 1;
-    }
-  }
-
-  console.log(
-    `Radius ${radius}: ${selectedCount} fieldworkers selected from ${workerRows} distance rows; ${changedCount} toggles changed; ${skippedRows} rows skipped.`
-  );
-
-  return {
-    selectedCount,
-    workerRows,
-    changedCount,
-    skippedRows,
-    previousRadius,
-    radius
-  };
-}
-
-async function getLoadedCounts(
-  page
-) {
-  const countText =
-    page
-      .getByText(
-        /showing\s+\d+\s+of\s+\d+\s+matches/i
-      )
-      .first();
-
-  if (
-    !(
-      await countText
-        .isVisible()
-        .catch(() => false)
-    )
-  ) {
-    return null;
-  }
-
-  const value =
-    await countText.innerText();
-
-  const match =
-    value.match(
-      /showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
-    );
-
-  if (!match) {
-    return null;
-  }
-
-  return {
-    loaded: Number(match[1]),
-    total: Number(match[2])
-  };
-}
-
-
-async function clickLoadMoreUntilDone(
-  page,
-  bookingId,
-  radius
-) {
-  console.log(
-    `Loading all matching fieldworkers for ${bookingId} at ${radius} miles...`
-  );
-
-  let safetyCounter = 0;
-
-  while (
-    safetyCounter < 50
-  ) {
-    safetyCounter += 1;
-
-    const counts =
-      await getLoadedCounts(
-        page
-      );
-
-    if (counts) {
-      console.log(
-        `Currently showing ${counts.loaded} of ${counts.total} matches.`
-      );
-
-      if (
-        counts.loaded >=
-        counts.total
-      ) {
-        console.log(
-          `All matching fieldworkers are loaded for ${radius} miles.`
-        );
-
-        return;
-      }
-    }
-
-    const loadMoreButton =
-      page
-        .getByText(
-          /load more/i,
-          {
-            exact: false
-          }
-        )
-        .first();
-
-    const visible =
-      await loadMoreButton
-        .isVisible()
-        .catch(() => false);
-
-    if (!visible) {
-      const loadingButton =
-        page
-          .getByText(
-            /loading/i,
-            {
-              exact: false
-            }
-          )
-          .first();
-
-      if (
-        await loadingButton
-          .isVisible()
-          .catch(() => false)
-      ) {
-        console.log(
-          `Octopus is still loading more fieldworkers for ${radius} miles. Waiting...`
-        );
-
-        await page.waitForTimeout(
-          3000
-        );
-
-        continue;
-      }
-
-      await page.waitForTimeout(
-        1500
-      );
-
-      const newCounts =
-        await getLoadedCounts(
-          page
-        );
-
-      if (
-        newCounts &&
-        newCounts.loaded >=
-          newCounts.total
-      ) {
-        console.log(
-          `All matching fieldworkers are loaded for ${radius} miles.`
-        );
-
-        return;
-      }
-
-      if (!counts) {
-        console.log(
-          `No Load More control was needed for ${radius} miles.`
-        );
-
-        return;
-      }
-
-      throw new Error(
-        `Load More disappeared before all fieldworkers loaded for ${bookingId} at ${radius} miles.`
-      );
-    }
-
-    const previousLoaded =
-      counts?.loaded || 0;
-
-    await loadMoreButton
-      .scrollIntoViewIfNeeded()
-      .catch(() => {});
-
-    await loadMoreButton.click({
-      force: true
-    });
-
-    await page.waitForTimeout(
-      2000
-    );
-
-    const afterCounts =
-      await getLoadedCounts(
-        page
-      );
-
-    if (
-      afterCounts &&
-      afterCounts.loaded <=
-        previousLoaded
-    ) {
-      await page.waitForTimeout(
-        3000
-      );
-    }
-  }
-
-  throw new Error(
-    `Stopped after 50 Load More attempts for ${bookingId} at ${radius} miles.`
-  );
-}
-
-
-async function findFinalSendButton(
-  page
-) {
-  const mainPageSendButtons =
-    page
-      .locator(
-        "button:visible"
-      )
-      .filter({
-        hasText:
-          /^\s*Send\s*$/i
-      });
-
-  if (
-    (
-      await mainPageSendButtons
-        .count()
-        .catch(() => 0)
-    ) > 0
-  ) {
-    return {
-      button:
-        mainPageSendButtons.last(),
-
-      location:
-        "main page"
-    };
-  }
-
-  for (
-    const frame
-    of page.frames()
-  ) {
-    if (
-      frame ===
-      page.mainFrame()
-    ) {
-      continue;
-    }
-
-    try {
-      const frameSendButtons =
-        frame
-          .locator(
-            "button:visible"
-          )
-          .filter({
-            hasText:
-              /^\s*Send\s*$/i
-          });
-
-      if (
-        (
-          await frameSendButtons
-            .count()
-        ) > 0
-      ) {
-        return {
-          button:
-            frameSendButtons.last(),
-
-          location:
-            `iframe: ${
-              frame.name() ||
-              frame.url()
-            }`
-        };
-      }
-    } catch {
-      // Ignore inaccessible frames.
-    }
-  }
-
-  return null;
-}
-
-
-async function markRadiusSent(
-  bookingNumber,
-  radius
-) {
-  const allowedRadii = [
-    30,
-    45,
-    60,
-    70
-  ];
-
-  if (
-    !allowedRadii.includes(
-      radius
-    )
-  ) {
-    throw new Error(
-      `Unsupported dispatch radius: ${radius}`
-    );
-  }
-
-  const columnName =
-    `job_request_${radius}_sent_at`;
-
-  await pool.query(
-    `
-    UPDATE public.booking_dispatch_state
-    SET
-      ${columnName} = NOW(),
-      last_dispatch_attempt_at = NOW(),
-      updated_at = NOW()
-    WHERE booking_number = $1;
-    `,
-    [
-      bookingNumber
-    ]
-  );
-
-  console.log(
-    `${radius}-mile timestamp saved for ${bookingNumber}.`
-  );
-}
-
-
-async function sendOneRadiusRequest(
-  page,
-  {
-    bookingNumber,
-    bookingId,
-    radius
-  }
 ) {
   const bookingUrl =
     `https://admin.octopuspro.com/booking/view/${bookingId}`;
 
-  console.log("");
-  console.log(
-    `========== ${radius} MILE ROUND FOR ${bookingNumber} ==========`
-  );
 
   console.log(
     `Opening Octopus booking ${bookingId}...`
   );
+
 
   await page.goto(
     bookingUrl,
@@ -2426,10 +1720,83 @@ async function sendOneRadiusRequest(
     }
   );
 
-  await waitForAvailableFieldworkers(
-    page,
-    bookingId
+
+  const availableFieldworkers =
+    page.getByText(
+      "Available Fieldworkers",
+      {
+        exact: true
+      }
+    );
+
+
+  await availableFieldworkers.waitFor({
+    state: "visible",
+    timeout: 60000
+  });
+
+
+  await availableFieldworkers
+    .scrollIntoViewIfNeeded();
+
+
+  console.log(
+    `Available Fieldworkers section found for ${bookingId}.`
   );
+
+
+  console.log(
+    `Waiting for Octopus to finish calculating available fieldworkers for ${bookingId}...`
+  );
+
+
+  let availabilityMatch =
+    null;
+
+
+  const availabilityStartedAt =
+    Date.now();
+
+
+  while (
+    Date.now() -
+      availabilityStartedAt <
+    120000
+  ) {
+    const bodyText =
+      await page
+        .locator("body")
+        .innerText();
+
+
+    availabilityMatch =
+      bodyText.match(
+        /(\d+)\s+of\s+(\d+)\s+available/i
+      );
+
+
+    if (availabilityMatch) {
+      break;
+    }
+
+
+    await page.waitForTimeout(
+      5000
+    );
+  }
+
+
+  if (!availabilityMatch) {
+    throw new Error(
+      `Octopus never finished loading the available-fieldworker count for ${bookingId}. Job request was NOT sent.`
+    );
+  }
+
+
+  console.log(
+    `Octopus reports ${availabilityMatch[1]} of ${availabilityMatch[2]} fieldworkers available for ${bookingId}.`
+  );
+
 
   const sendJobRequestButton =
     page
@@ -2442,201 +1809,340 @@ async function sendOneRadiusRequest(
       )
       .first();
 
+
   await sendJobRequestButton.waitFor({
     state: "visible",
     timeout: 120000
   });
 
-  console.log(
-    `Send Job Request button is ready for ${bookingId} at ${radius} miles.`
-  );
 
-  await sendJobRequestButton.click({
-    force: true
-  });
+  await sendJobRequestButton
+    .scrollIntoViewIfNeeded();
+
 
   console.log(
-    `Clicked Send Job Request for ${bookingId} at ${radius} miles.`
+    `Send Job Request button is ready for ${bookingId}.`
   );
+
+
+  const clickedJobRequest =
+    await page.evaluate(
+      () => {
+        const buttons =
+          Array.from(
+            document.querySelectorAll(
+              "button"
+            )
+          );
+
+
+        const button =
+          buttons.find(
+            (element) => {
+              const text =
+                (
+                  element.textContent ||
+                  ""
+                )
+                  .trim()
+                  .toLowerCase();
+
+
+              const rectangle =
+                element
+                  .getBoundingClientRect();
+
+
+              const styles =
+                window.getComputedStyle(
+                  element
+                );
+
+
+              return (
+                text ===
+                  "send job request" &&
+
+                rectangle.width >
+                  0 &&
+
+                rectangle.height >
+                  0 &&
+
+                styles.display !==
+                  "none" &&
+
+                styles.visibility !==
+                  "hidden" &&
+
+                !element.disabled
+              );
+            }
+          );
+
+
+        if (!button) {
+          return false;
+        }
+
+
+        button.scrollIntoView({
+          behavior:
+            "instant",
+
+          block:
+            "center"
+        });
+
+
+        button.click();
+
+
+        return true;
+      }
+    );
+
+
+  if (!clickedJobRequest) {
+    throw new Error(
+      `Could not click Send Job Request for ${bookingId}.`
+    );
+  }
+
+
+  console.log(
+    `Clicked Send Job Request for ${bookingId}.`
+  );
+
+
+  console.log(
+    `Waiting for Octopus to prepare the Job Request for ${bookingId}...`
+  );
+
 
   await page.waitForTimeout(
-    3000
+    30000
   );
 
-  await clickLoadMoreUntilDone(
-    page,
-    bookingId,
-    radius
-  );
 
-  const radiusSelection =
-    await selectWorkersForRadiusBand(
-      page,
-      radius
-    );
+  let finalSendButton =
+    null;
 
-  if (
-    radiusSelection.workerRows === 0
-  ) {
-    throw new Error(
-      `Could not read any fieldworker distance rows for ${bookingId} at the ${radius}-mile round.`
-    );
-  }
 
-  if (
-    radiusSelection.selectedCount === 0
-  ) {
-    console.log(
-      `No NEW fieldworkers found between ${radiusSelection.previousRadius} and ${radius} miles for ${bookingId}. Recording the radius as complete without sending.`
-    );
+  let finalSendLocation =
+    "";
 
-    await markRadiusSent(
-      bookingNumber,
-      radius
-    );
 
-    const closeButton =
-      page
-        .getByRole(
-          "button",
-          {
-            name: /^close$/i
+  const findFinalSendButton =
+    async () => {
+      const mainPageSendButtons =
+        page
+          .locator(
+            "button:visible"
+          )
+          .filter({
+            hasText:
+              /^\s*Send\s*$/i
+          });
+
+
+      if (
+        (
+          await mainPageSendButtons
+            .count()
+            .catch(() => 0)
+        ) > 0
+      ) {
+        return {
+          button:
+            mainPageSendButtons.last(),
+
+          location:
+            "main page"
+        };
+      }
+
+
+      for (
+        const frame
+        of page.frames()
+      ) {
+        if (
+          frame ===
+          page.mainFrame()
+        ) {
+          continue;
+        }
+
+
+        try {
+          const frameSendButtons =
+            frame
+              .locator(
+                "button:visible"
+              )
+              .filter({
+                hasText:
+                  /^\s*Send\s*$/i
+              });
+
+
+          if (
+            (
+              await frameSendButtons
+                .count()
+            ) > 0
+          ) {
+            return {
+              button:
+                frameSendButtons.last(),
+
+              location:
+                `iframe: ${
+                  frame.name() ||
+                  frame.url()
+                }`
+            };
           }
-        )
-        .last();
+        } catch {
+          // Ignore inaccessible frames.
+        }
+      }
 
-    if (
-      await closeButton
-        .isVisible()
-        .catch(() => false)
-    ) {
-      await closeButton.click({
-        force: true
-      });
-    }
 
-    return;
+      return null;
+    };
+
+
+  const firstSendResult =
+    await findFinalSendButton();
+
+
+  if (firstSendResult) {
+    finalSendButton =
+      firstSendResult.button;
+
+
+    finalSendLocation =
+      firstSendResult.location;
   }
 
-  console.log(
-    `Waiting for final Send button for ${bookingId} at ${radius} miles...`
-  );
 
-  let sendResult =
-    await findFinalSendButton(
-      page
+  if (!finalSendButton) {
+    console.log(
+      `Final Send button is not ready yet for ${bookingId}. Waiting...`
     );
 
-  if (!sendResult) {
+
     for (
       let attempt = 1;
-      attempt <= 12;
+      attempt <= 9;
       attempt += 1
     ) {
       await page.waitForTimeout(
-        5000
+        10000
       );
 
-      sendResult =
-        await findFinalSendButton(
-          page
-        );
+
+      const sendResult =
+        await findFinalSendButton();
+
 
       if (sendResult) {
+        finalSendButton =
+          sendResult.button;
+
+
+        finalSendLocation =
+          `${sendResult.location} after waiting`;
+
+
         break;
       }
 
+
       console.log(
-        `Still waiting for final Send button — attempt ${attempt}/12 for ${bookingId} at ${radius} miles.`
+        `Still waiting for final Send button — attempt ${attempt}/9 for ${bookingId}.`
       );
     }
   }
 
-  if (!sendResult) {
+
+  if (!finalSendButton) {
+    const visibleButtons =
+      await page
+        .locator(
+          "button:visible"
+        )
+        .allTextContents();
+
+
+    const bodyText =
+      await page
+        .locator("body")
+        .innerText();
+
+
+    console.log(
+      "VISIBLE BUTTONS WHEN SEND FAILED:",
+      visibleButtons
+        .map(
+          (text) =>
+            text.trim()
+        )
+        .filter(Boolean)
+    );
+
+
+    console.log(
+      "JOB REQUEST PAGE TEXT WHEN SEND FAILED:",
+      bodyText.slice(
+        -6000
+      )
+    );
+
+
     throw new Error(
-      `Final Send button never appeared for ${bookingId} at ${radius} miles.`
+      `Final Send button never appeared for ${bookingId}.`
     );
   }
 
+
   console.log(
-    `Final Send button found for ${bookingId} at ${radius} miles in ${sendResult.location}.`
+    `Final Send button found for ${bookingId} in ${finalSendLocation}.`
   );
 
-  await sendResult.button.click({
+
+  await finalSendButton
+    .scrollIntoViewIfNeeded()
+    .catch(() => {});
+
+
+  await finalSendButton.click({
     timeout: 30000,
     force: true
   });
 
-  console.log(
-    `Clicked FINAL Send for ${bookingId} at ${radius} miles.`
-  );
 
   console.log(
-    `Waiting 45 seconds for Octopus to finish the ${radius}-mile send...`
+    `Clicked FINAL Send button for ${bookingId}.`
   );
+
+
+  console.log(
+    `Waiting 45 seconds for Octopus to finish sending ${bookingId}...`
+  );
+
 
   await page.waitForTimeout(
     45000
   );
 
-  await markRadiusSent(
-    bookingNumber,
-    radius
-  );
 
   console.log(
-    `${radius}-mile job request completed for ${bookingNumber}.`
+    `Job request send process completed for ${bookingId}.`
   );
-}
 
-
-async function sendRemainingRadiusRequests(
-  page,
-  booking
-) {
-  const sentColumnByRadius = {
-    30:
-      booking.job_request_30_sent_at,
-
-    45:
-      booking.job_request_45_sent_at,
-
-    60:
-      booking.job_request_60_sent_at,
-
-    70:
-      booking.job_request_70_sent_at
-  };
-
-  for (
-    const radius
-    of JOB_REQUEST_RADII
-  ) {
-    if (
-      sentColumnByRadius[
-        radius
-      ]
-    ) {
-      console.log(
-        `${radius}-mile request already sent for ${booking.booking_number}. Skipping.`
-      );
-
-      continue;
-    }
-
-    await sendOneRadiusRequest(
-      page,
-      {
-        bookingNumber:
-          booking.booking_number,
-
-        bookingId:
-          booking.octopus_booking_id,
-
-        radius
-      }
-    );
-  }
 
   await page.goto(
     NOTIFICATIONS_URL,
@@ -2649,12 +2155,11 @@ async function sendRemainingRadiusRequests(
     }
   );
 
+
   await page.waitForTimeout(
     2000
   );
 }
-
-
 async function getNextDispatchBooking() {
   const result =
     await pool.query(
@@ -2663,11 +2168,7 @@ async function getNextDispatchBooking() {
         booking_number,
         octopus_booking_id,
         assignment_status,
-        job_request_status,
-        job_request_30_sent_at,
-        job_request_45_sent_at,
-        job_request_60_sent_at,
-        job_request_70_sent_at
+        job_request_status
       FROM public.booking_dispatch_state
       WHERE
         assignment_status = 'NEEDS CLEANER'
@@ -2693,12 +2194,9 @@ async function markDispatchSent(
     UPDATE public.booking_dispatch_state
     SET
       job_request_status = 'SENT',
-      job_request_sent_at = NOW(),
       dispatch_attempts =
         COALESCE(dispatch_attempts, 0) + 1,
       last_dispatch_attempt_at = NOW(),
-      last_notification_text =
-        '30, 45, 60, and 70 mile job requests sent successfully.',
       updated_at = NOW()
     WHERE booking_number = $1;
     `,
@@ -2777,6 +2275,8 @@ async function sendJobRequestSentToMake({
     `Job request sent webhook delivered for ${bookingNumber} at ${sentAt}.`
   );
 }
+
+
 async function dispatchNextBooking(
   page
 ) {
@@ -2796,9 +2296,9 @@ async function dispatchNextBooking(
   );
 
   try {
-    await sendRemainingRadiusRequests(
+    await openJobRequestModal(
       page,
-      booking
+      booking.octopus_booking_id
     );
 
     await markDispatchSent(
@@ -2835,8 +2335,6 @@ async function main() {
   console.log(
     "PostgreSQL connected successfully."
   );
-
-  await ensureDispatchRadiusColumns();
 
   const browser =
     await chromium.launch({
