@@ -829,6 +829,44 @@ async function setStoredAppointmentValue(input, value) {
   }, value);
 }
 
+async function applyStoredAppointment(page, values) {
+  await page.evaluate((nextValues) => {
+    const selectors = {
+      fromDate: 'input[name^="multi_stpartdate_"]',
+      fromTime: 'input[name^="multi_stparttime_"]',
+      toDate: 'input[name^="multi_etpartdate_"]',
+      toTime: 'input[name^="multi_etparttime_"]'
+    };
+    const fields = {};
+
+    for (const [key, selector] of Object.entries(selectors)) {
+      const field = document.querySelector(selector);
+      if (!field) throw new Error(`Missing appointment field: ${key}`);
+      fields[key] = field;
+    }
+
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )?.set;
+
+    for (const [key, field] of Object.entries(fields)) {
+      if (valueSetter) valueSetter.call(field, nextValues[key]);
+      else field.value = nextValues[key];
+    }
+
+    const dateFlag = document.querySelector("#booking_date_updates_flag");
+    const bookingFlag = document.querySelector("#booking_updates_flag");
+    if (dateFlag) dateFlag.value = "1";
+    if (bookingFlag) bookingFlag.value = "1";
+
+    for (const field of Object.values(fields)) {
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }, values);
+}
+
 async function rescheduleBooking(page) {
   const initialState = await getPageState(page);
 
@@ -898,22 +936,14 @@ async function rescheduleBooking(page) {
     preservedDurationMinutes: oldDurationMinutes
   });
 
-  await setStoredAppointmentValue(
-    initialAppointment.controls.fromDate,
-    newDateText
-  );
-  await setStoredAppointmentValue(
-    initialAppointment.controls.fromTime,
-    newStartText
-  );
-  await setStoredAppointmentValue(
-    initialAppointment.controls.toDate,
-    newDateText
-  );
-  await setStoredAppointmentValue(
-    initialAppointment.controls.toTime,
-    newEndText
-  );
+  console.log("Applying appointment values...");
+  await applyStoredAppointment(page, {
+    fromDate: newDateText,
+    fromTime: newStartText,
+    toDate: newDateText,
+    toTime: newEndText
+  });
+  console.log("Appointment values applied.");
   await page.waitForTimeout(1000);
 
   const saveChangesButton = await waitForLargestVisibleExactText(
@@ -924,7 +954,9 @@ async function rescheduleBooking(page) {
   if (!saveChangesButton) {
     throw new Error("Could not find the visible Save changes button.");
   }
+  console.log("Clicking Save changes...");
   await saveChangesButton.click();
+  console.log("Save changes clicked; waiting for Notify Customer...");
 
   const notifyHeading = page.getByText("Notify Customer", { exact: true });
   await notifyHeading.waitFor({ state: "visible", timeout: 30000 });
