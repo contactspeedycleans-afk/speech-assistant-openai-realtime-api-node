@@ -286,6 +286,15 @@ async function extractBookingPricing(page) {
   let subtotal = parseNumber(subtotalInput);
   let finalTotal = parseNumber(totalInput);
 
+  // OctopusPro can place unrelated numeric inputs near the Discount label.
+  // Never save an impossible percentage to PostgreSQL.
+  if (
+    discountPercent !== null &&
+    (discountPercent < 0 || discountPercent > 100)
+  ) {
+    discountPercent = null;
+  }
+
   if (hourlyRate === null) {
     const match = bodyText.match(
       /Price\s*Per\s*hour[\s\S]{0,80}?\$?\s*([\d,.]+)/i
@@ -302,6 +311,13 @@ async function extractBookingPricing(page) {
     discountPercent = match
       ? parseNumber(match[1])
       : null;
+  }
+
+  if (
+    discountPercent !== null &&
+    (discountPercent < 0 || discountPercent > 100)
+  ) {
+    discountPercent = null;
   }
 
   if (subtotal === null) {
