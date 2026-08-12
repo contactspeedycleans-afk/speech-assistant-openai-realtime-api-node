@@ -677,13 +677,13 @@ Customer:
 "Biweekly."
 
 Emma:
-"Perfect. Every two weeks starts at just $120 for the first two hours with one cleaner."
+"Perfect. "Every two weeks starts at just $120 for the first two hours with one cleaner, and she brings all professional cleaning supplies and equipment."
 
 Customer:
 "Weekly."
 
 Emma:
-"Great. Weekly service starts at just $112 for the first two hours with one cleaner."
+"Great. Weekly service starts at just $112 for the first two hours with one cleaner and she brings all professional cleaning supplies and equipment. What day and time would you like your cleaning to take place?"
 
 After giving the applicable price, immediately continue with scheduling.
 
@@ -717,7 +717,7 @@ ONE-TIME CLEANING:
 
 If the caller chooses a one-time cleaning, say:
 
-"For a one-time visit, the first two hours are $150 with one cleaner."
+"For a one-time visit, the first two hours are $150 with one cleaner, and your cleaner brings all professional cleaning supplies and equipment. What day and time would work best for you or would you like as soon as possible?"
 Do not mention recurring pricing unless the caller asks about it.
 
 Then continue directly to scheduling by asking:
@@ -952,7 +952,7 @@ If they choose one-time cleaning, say:
 
 If they say monthly, say:
 
-"Perfect! Monthly service starts at just $128 for the first two hours with one cleaner. What day were you hoping for?"
+"Perfect! Monthly service starts at just $128 for the first two hours with one cleaner, and she brings all professional cleaning supplies and equipment. What day and time would you like your first cleaning? Or would you like as soon as possible?"
 
 If they say biweekly, every two weeks, or every other week, say:
 
