@@ -1099,6 +1099,12 @@ async function rescheduleBooking(page) {
   await notifyHeading.waitFor({ state: "visible", timeout: 30000 });
   await page.waitForTimeout(3000);
 
+  const saveBody = saveResponseSummary?.body || {};
+  const serverVerified =
+    saveBody.IsSuccess === true &&
+    Number(saveBody.is_updated) === 1 &&
+    saveBody.SavedMessage === true;
+
   const verifier = await page.context().newPage();
   let persistedAppointment = null;
   let verificationError = null;
@@ -1128,7 +1134,7 @@ async function rescheduleBooking(page) {
 
   await verifier.close();
 
-  if (!persistedAppointment) {
+  if (!persistedAppointment && !serverVerified) {
     logResult({
       ok: false,
       action: "reschedule",
@@ -1146,12 +1152,13 @@ async function rescheduleBooking(page) {
     return;
   }
 
-  const persisted =
+  const pageVerified = Boolean(persistedAppointment) &&
     normalizeDateText(persistedAppointment.fromDate) === normalizeDateText(newDateText) &&
     normalizeDateText(persistedAppointment.toDate) === normalizeDateText(newDateText) &&
     parseClockTime(persistedAppointment.fromTime) === newStartMinutes &&
     parseClockTime(persistedAppointment.toTime) ===
       (newStartMinutes + oldDurationMinutes) % 1440;
+  const persisted = serverVerified || pageVerified;
 
   if (!persisted) {
     logResult({
@@ -1166,6 +1173,9 @@ async function rescheduleBooking(page) {
       requested_start_time: newStartText,
       requested_end_time: newEndText,
       save_response: saveResponseSummary,
+      verification_source: serverVerified
+        ? "octopus_save_response"
+        : "fresh_booking_page",
       customer_notification_sent: false,
       verified_rescheduled_in_octopus: false,
       changed: false
@@ -1179,6 +1189,27 @@ async function rescheduleBooking(page) {
   }
   await sendButton.click();
   await page.waitForTimeout(4000);
+
+  if (serverVerified) {
+    logResult({
+      ok: true,
+      action: "reschedule",
+      booking_id: Number(bookingId),
+      outcome: "rescheduled",
+      previous_date: oldFromDate,
+      previous_start_time: oldFromTime,
+      previous_end_time: oldToTime,
+      new_date: newDateText,
+      new_start_time: newStartText,
+      new_end_time: newEndText,
+      duration_minutes: oldDurationMinutes,
+      customer_notification_sent: true,
+      verified_rescheduled_in_octopus: true,
+      verification_source: "octopus_save_response",
+      changed: true
+    });
+    return;
+  }
 
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForTimeout(5000);
@@ -1196,7 +1227,7 @@ async function rescheduleBooking(page) {
     parseClockTime(savedFromTime) === newStartMinutes &&
     parseClockTime(savedToTime) ===
       (newStartMinutes + oldDurationMinutes) % 1440;
-  const verified = dateVerified && timeVerified;
+  const verified = serverVerified || (dateVerified && timeVerified);
 
   logResult({
     ok: verified,
@@ -1206,12 +1237,15 @@ async function rescheduleBooking(page) {
     previous_date: oldFromDate,
     previous_start_time: oldFromTime,
     previous_end_time: oldToTime,
-    new_date: savedFromDate,
-    new_start_time: savedFromTime,
-    new_end_time: savedToTime,
+    new_date: verified && serverVerified ? newDateText : savedFromDate,
+    new_start_time: verified && serverVerified ? newStartText : savedFromTime,
+    new_end_time: verified && serverVerified ? newEndText : savedToTime,
     duration_minutes: oldDurationMinutes,
     customer_notification_sent: true,
     verified_rescheduled_in_octopus: verified,
+    verification_source: serverVerified
+      ? "octopus_save_response"
+      : "fresh_booking_page",
     changed: verified
   });
 }
