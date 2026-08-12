@@ -452,9 +452,10 @@ const sessionContext = buildSessionContext({
     callModeContext
 } = sessionContext;
 
-          const sessionUpdate = buildOpenAiSession({
+const sessionUpdate = buildOpenAiSession({
     SYSTEM_MESSAGE,
     VOICE,
+    callMode,
     callModeContext,
     customerContext,
     recentCallContext,
@@ -1060,10 +1061,10 @@ Keep responses short, friendly, and conversational.`                     }
             );
 
             console.log(
-                'No customer speech detected. Starting outbound greeting after 0.75 seconds.'
+                'No customer speech detected. Starting outbound greeting after 0.3 seconds.'
             );
         }
-    }, 750);
+    }, 300);
 } else {
     openAiWs.send(
         JSON.stringify({
