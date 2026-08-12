@@ -913,6 +913,33 @@ function summarizeCapturedWrite(request) {
   };
 }
 
+async function summarizeSaveResponse(response) {
+  const contentType = response.headers()["content-type"] || "";
+  const text = await response.text().catch(() => "");
+  if (/application\/json/i.test(contentType)) {
+    try {
+      const data = JSON.parse(text);
+      return {
+        status: response.status(),
+        content_type: contentType,
+        body: data
+      };
+    } catch {}
+  }
+
+  return {
+    status: response.status(),
+    content_type: contentType,
+    body_preview: text
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 1500)
+  };
+}
+
 async function rescheduleBooking(page) {
   const initialState = await getPageState(page);
 
@@ -1015,6 +1042,7 @@ async function rescheduleBooking(page) {
   }
   console.log("Clicking Save changes...");
   let saveResponse = null;
+  let saveResponseSummary = null;
   if (mode === "capture-reschedule") {
     await saveChangesButton.evaluate((element) => element.click());
   } else {
@@ -1026,9 +1054,11 @@ async function rescheduleBooking(page) {
     );
     await saveChangesButton.evaluate((element) => element.click());
     saveResponse = await saveResponsePromise;
+    saveResponseSummary = await summarizeSaveResponse(saveResponse);
     console.log(
       `Octopus save response: ${saveResponse.status()} ${saveResponse.statusText()}`
     );
+    console.log("Octopus response details:", saveResponseSummary);
   }
 
   if (mode === "capture-reschedule") {
@@ -1057,6 +1087,7 @@ async function rescheduleBooking(page) {
       booking_id: Number(bookingId),
       outcome: "octopus_save_rejected_notification_blocked",
       save_status: saveResponse?.status() || null,
+      save_response: saveResponseSummary,
       customer_notification_sent: false,
       verified_rescheduled_in_octopus: false,
       changed: false
@@ -1092,6 +1123,7 @@ async function rescheduleBooking(page) {
       requested_date: newDateText,
       requested_start_time: newStartText,
       requested_end_time: newEndText,
+      save_response: saveResponseSummary,
       customer_notification_sent: false,
       verified_rescheduled_in_octopus: false,
       changed: false
