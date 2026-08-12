@@ -283,7 +283,7 @@ async function sendCurrentRequest(page, radius) {
 async function run() {
   const browser =
     await chromium.launch({
-      headless: false
+      headless: true
     });
 
   const page =
@@ -310,22 +310,33 @@ async function run() {
       }
     );
 
-  await availableFieldworkers.waitFor({
+ await availableFieldworkers.waitFor({
     state: "visible",
     timeout: 60000
-  });
+});
 
-  await availableFieldworkers
-    .scrollIntoViewIfNeeded();
+console.log(
+    "Available Fieldworkers section found."
+);
 
-  await page
+if (page.isClosed()) {
+    throw new Error(
+        "Octopus booking page closed unexpectedly before job request could be sent."
+    );
+}
+
+await page
     .getByText(
-      /\d+\s+of\s+\d+\s+available/i
+        /\d+\s+of\s+\d+\s+available/i
     )
     .waitFor({
-      state: "visible",
-      timeout: 60000
+        state: "visible",
+        timeout: 60000
     });
+
+console.log(
+    "Fieldworker availability loaded."
+);
 
   for (const radius of RADII) {
     console.log("");
