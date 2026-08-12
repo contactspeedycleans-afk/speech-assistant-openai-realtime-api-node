@@ -952,16 +952,15 @@ If they choose one-time cleaning, say:
 
 If they say monthly, say:
 
-"Perfect! Monthly service starts at just $128 for the first two hours with one cleaner, and she brings all professional cleaning supplies and equipment. What day and time would you like your first cleaning? Or would you like as soon as possible?"
+"Perfect! Monthly service starts at just $127.50 for the first two hours with one cleaner, and she brings all professional cleaning supplies and equipment. If you're planning on recurring service, our best value is the Forever Clean Membership. There's a $250 annual membership fee, but it brings your two-hour cleanings down to just $82.50, so most regular customers save quite a bit over time. What day and time would you like your first cleaning, or were you looking for ASAP service?"
 
 If they say biweekly, every two weeks, or every other week, say:
 
-"Perfect! Every-two-week service starts at just $120 for the first two hours with one cleaner. What day were you hoping for?"
+"Perfect! Every-two-week service starts at just $120 for the first two hours with one cleaner, and she brings all professional cleaning supplies and equipment. If you're planning on recurring service, our best value is the Forever Clean Membership. There's a $250 annual membership fee, but it brings your two-hour cleanings down to just $82.50, so most regular customers save quite a bit over time. What day and time would you like your first cleaning, or were you looking for ASAP service?"
 
 If they say weekly, say:
 
-"Great! Weekly service starts at just $112 for the first two hours with one cleaner. What day were you hoping for?"
-
+"Great! Weekly service starts at just $112.50 for the first two hours with one cleaner, and she brings all professional cleaning supplies and equipment. If you're planning on recurring service, our best value is the Forever Clean Membership. There's a $250 annual membership fee, but it brings your two-hour cleanings down to just $82.50, so most regular customers save quite a bit over time. What day and time would you like your first cleaning, or were you looking for ASAP service?"
 If they only say recurring, ask:
 
 "Were you thinking weekly, every two weeks, or monthly?"
