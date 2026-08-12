@@ -347,6 +347,74 @@ let sessionStarted = false;
             let outboundGreetingTimer = null;
 let customerSpokeBeforeGreeting = false;
 
+// Quiet hold melody for slow OctopusPro actions. Twilio expects 8 kHz mu-law.
+let holdMusicTimer = null;
+let holdMusicDelayTimer = null;
+let holdMusicSample = 0;
+
+const pcmToMuLaw = (sample) => {
+    const BIAS = 0x84;
+    const CLIP = 32635;
+    let sign = (sample >> 8) & 0x80;
+    if (sign !== 0) sample = -sample;
+    if (sample > CLIP) sample = CLIP;
+    sample += BIAS;
+
+    let exponent = 7;
+    for (let mask = 0x4000; exponent > 0 && (sample & mask) === 0; exponent--, mask >>= 1) {}
+    const mantissa = (sample >> (exponent + 3)) & 0x0f;
+    return ~(sign | (exponent << 4) | mantissa) & 0xff;
+};
+
+const makeHoldMusicFrame = () => {
+    const sampleRate = 8000;
+    const frame = Buffer.alloc(160);
+    const notes = [261.63, 329.63, 392.0, 329.63];
+
+    for (let index = 0; index < frame.length; index++) {
+        const absoluteSample = holdMusicSample++;
+        const frequency = notes[Math.floor(absoluteSample / sampleRate) % notes.length];
+        const seconds = absoluteSample / sampleRate;
+        const envelope = 0.55 + 0.45 * Math.sin(Math.PI * (absoluteSample % sampleRate) / sampleRate);
+        const pcm = Math.round(
+            1800 * envelope * Math.sin(2 * Math.PI * frequency * seconds) +
+            650 * Math.sin(2 * Math.PI * (frequency / 2) * seconds)
+        );
+        frame[index] = pcmToMuLaw(pcm);
+    }
+
+    return frame.toString('base64');
+};
+
+const stopHoldMusic = () => {
+    if (holdMusicDelayTimer) clearTimeout(holdMusicDelayTimer);
+    if (holdMusicTimer) clearInterval(holdMusicTimer);
+    holdMusicDelayTimer = null;
+    holdMusicTimer = null;
+};
+
+const startHoldMusic = () => {
+    stopHoldMusic();
+    holdMusicSample = 0;
+
+    // Let Emma finish saying "one moment" before the melody begins.
+    holdMusicDelayTimer = setTimeout(() => {
+        holdMusicDelayTimer = null;
+        holdMusicTimer = setInterval(() => {
+            if (!streamSid || connection.readyState !== WebSocket.OPEN) {
+                stopHoldMusic();
+                return;
+            }
+
+            connection.send(JSON.stringify({
+                event: 'media',
+                streamSid,
+                media: { payload: makeHoldMusicFrame() }
+            }));
+        }, 20);
+    }, 1800);
+};
+
             const openAiWs = new WebSocket(
                 `wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature=${TEMPERATURE}`,
                 {
@@ -1226,6 +1294,7 @@ if (
 }
     // Instantly stop Twilio audio when the customer interrupts
                     if (response.type === 'input_audio_buffer.speech_started') {
+    stopHoldMusic();
     customerSpokeBeforeGreeting = true;
 
     if (outboundGreetingTimer) {
@@ -1285,21 +1354,33 @@ if (!knowledgeHandled) {
     });
 
     if (!technicianStatusHandled) {
-        const cancellationHandled =
-            await handleCancelBookingTool({
-            response,
-            openAiWs,
-            WebSocket,
-            customerBookings
-        });
+        const isBookingAction =
+            response.name === 'cancel_octopus_booking' ||
+            response.name === 'reschedule_octopus_booking';
 
-        if (!cancellationHandled) {
-            await handleRescheduleBookingTool({
+        if (isBookingAction) startHoldMusic();
+
+        let cancellationHandled = false;
+
+        try {
+            cancellationHandled =
+                await handleCancelBookingTool({
                 response,
                 openAiWs,
                 WebSocket,
                 customerBookings
             });
+
+            if (!cancellationHandled) {
+                await handleRescheduleBookingTool({
+                    response,
+                    openAiWs,
+                    WebSocket,
+                    customerBookings
+                });
+            }
+        } finally {
+            if (isBookingAction) stopHoldMusic();
         }
     }
 }
