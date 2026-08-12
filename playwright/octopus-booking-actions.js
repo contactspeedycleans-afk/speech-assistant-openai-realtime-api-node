@@ -7,7 +7,7 @@ const ORGANIZATION_NAME =
 
 const args = process.argv.slice(2);
 const requestedMode = args[0]?.toLowerCase();
-const mode = ["cancel", "reschedule", "capture-reschedule", "diagnose"].includes(requestedMode)
+const mode = ["cancel", "reschedule", "capture-reschedule", "diagnose", "billing"].includes(requestedMode)
   ? requestedMode
   : "inspect";
 const bookingId = mode === "inspect" ? args[0] : args[1];
@@ -174,6 +174,74 @@ async function inspectBooking(page) {
     page_title: title,
     status_control_found: await statusControl.isVisible().catch(() => false),
     ...state,
+    changed: false
+  });
+}
+
+function findLabeledAmount(lines, labels) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!labels.some((label) => line.toLowerCase().includes(label))) continue;
+
+    const nearby = [line, lines[index + 1] || "", lines[index + 2] || ""]
+      .join(" ");
+    const amount = nearby.match(/(?:USD\s*)?\$\s*([0-9,]+(?:\.\d{2})?)/i);
+    if (amount) return `$${amount[1]}`;
+  }
+
+  return null;
+}
+
+async function inspectBilling(page) {
+  const billing = await page.evaluate(() => {
+    const lines = document.body.innerText
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    const links = Array.from(document.querySelectorAll("a[href]"))
+      .map((anchor) => ({
+        text: String(anchor.innerText || anchor.textContent || "").trim(),
+        href: anchor.href
+      }))
+      .filter((link) =>
+        /^https:/i.test(link.href) &&
+        /invoice|payment|customer.?portal|card/i.test(`${link.text} ${link.href}`)
+      )
+      .slice(0, 20);
+
+    return { lines, links };
+  });
+
+  const lines = billing.lines;
+  const text = lines.join("\n");
+  const explicitNoCard = /(?:no|without)\s+(?:a\s+)?card\s+on\s+file|card\s+on\s+file\s*:\s*(?:no|false|missing)/i.test(text);
+  const explicitCard = /card\s+on\s+file\s*:\s*(?:yes|true|active|available)|(?:has|with)\s+(?:a\s+)?card\s+on\s+file/i.test(text);
+  const invoiceIdMatch = text.match(/(?:invoice(?:\s+(?:id|number|no\.?))?|INV)\s*[:#-]?\s*([A-Z]*-?\d{3,})/i);
+  const invoiceStatusMatch = text.match(/invoice\s+status\s*:?\s*(paid|partially paid|unpaid|pending|overdue|void|cancelled|canceled|draft)/i);
+  const paymentStatusMatch = text.match(/payment\s+status\s*:?\s*(paid|partially paid|unpaid|pending|overdue|failed|refunded|partially refunded)/i);
+  const safeLinks = billing.links.filter((link) => {
+    try {
+      const url = new URL(link.href);
+      return !/^admin\./i.test(url.hostname);
+    } catch {
+      return false;
+    }
+  });
+
+  logResult({
+    ok: true,
+    action: "billing",
+    booking_id: Number(bookingId),
+    read_only: true,
+    card_on_file: explicitNoCard ? false : explicitCard ? true : null,
+    card_status_verified: explicitNoCard || explicitCard,
+    invoice_id: invoiceIdMatch?.[1] || null,
+    invoice_status: invoiceStatusMatch?.[1]?.toLowerCase() || null,
+    payment_status: paymentStatusMatch?.[1]?.toLowerCase() || null,
+    invoice_total: findLabeledAmount(lines, ["invoice total", "total"]),
+    amount_paid: findLabeledAmount(lines, ["amount paid", "paid"]),
+    balance_due: findLabeledAmount(lines, ["balance due", "amount due", "balance"]),
+    customer_links: safeLinks,
     changed: false
   });
 }
@@ -1348,6 +1416,7 @@ async function main() {
     if (mode === "cancel") await cancelBooking(page);
     else if (["reschedule", "capture-reschedule"].includes(mode)) await rescheduleBooking(page);
     else if (mode === "diagnose") await diagnoseBookingPage(page);
+    else if (mode === "billing") await inspectBilling(page);
     else await inspectBooking(page);
   } catch (error) {
     console.error("Octopus booking action failed:");
