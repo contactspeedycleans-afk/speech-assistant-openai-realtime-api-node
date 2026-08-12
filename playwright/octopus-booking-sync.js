@@ -419,6 +419,12 @@ async function savePricing(bookingNumber, pricing) {
       subtotal = $4,
       final_total = $5,
       duration_minutes = $6,
+      invoice_total = $5,
+      billing_synced_at = CASE
+        WHEN customer_phone_normalized IS NOT NULL
+        THEN NOW()
+        ELSE billing_synced_at
+      END,
       pricing_synced_at = NOW(),
       pricing_sync_error = NULL
     WHERE booking_number = $1;
