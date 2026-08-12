@@ -184,38 +184,25 @@ fastify.post('/outbound-call', async (request, reply) => {
         });
     }
 
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Connect>
-<Stream url="wss://emma-development-production.up.railway.app/media-stream">            <Parameter
-                name="callerPhone"
-                value="${escapeXml(phone)}"
-            />
-            <Parameter
-                name="callMode"
-                value="OUTBOUND_CUSTOM"
-            />
-            <Parameter
-                name="customerName"
-                value="${escapeXml(customer_name)}"
-            />
-            <Parameter
-                name="customInstructions"
-                value="${escapeXml(instructions)}"
-            />
-            <Parameter
-                name="sheetRowNumber"
-                value="${escapeXml(sheet_row_number)}"
-            />
-        </Stream>
-    </Connect>
-</Response>`;
-
     try {
+        const answerUrl = new URL(
+            'https://emma-development-production.up.railway.app/outbound-custom-answer'
+        );
+        answerUrl.searchParams.set('phone', phone);
+        answerUrl.searchParams.set('customer_name', customer_name);
+        answerUrl.searchParams.set('instructions', instructions);
+        answerUrl.searchParams.set('sheet_row_number', sheet_row_number);
+
         const call = await twilioClient.calls.create({
             to: phone,
             from: process.env.TWILIO_PHONE_NUMBER,
-            twiml
+            url: answerUrl.toString(),
+            method: 'POST',
+            machineDetection: 'DetectMessageEnd',
+            machineDetectionTimeout: 30,
+            machineDetectionSpeechThreshold: 2400,
+            machineDetectionSpeechEndThreshold: 1200,
+            machineDetectionSilenceTimeout: 5000
         });
 
         console.log('Custom outbound call started:', {
@@ -245,6 +232,70 @@ fastify.post('/outbound-call', async (request, reply) => {
                 'Unable to start outbound call.'
         });
     }
+});
+
+fastify.all('/outbound-custom-answer', async (request, reply) => {
+    const phone =
+        request.query?.phone ||
+        request.body?.phone ||
+        request.body?.To ||
+        '';
+    const customerName =
+        request.query?.customer_name ||
+        request.body?.customer_name ||
+        '';
+    const instructions =
+        request.query?.instructions ||
+        request.body?.instructions ||
+        '';
+    const sheetRowNumber =
+        request.query?.sheet_row_number ||
+        request.body?.sheet_row_number ||
+        '';
+    const answeredBy = String(
+        request.body?.AnsweredBy ||
+        request.query?.AnsweredBy ||
+        'unknown'
+    ).toLowerCase();
+
+    console.log('Custom outbound answered by:', answeredBy);
+
+    const isVoicemail =
+        answeredBy.startsWith('machine') ||
+        answeredBy === 'fax';
+
+    if (isVoicemail) {
+        console.log('Leaving one Angi lead voicemail and ending call:', {
+            phone,
+            customerName,
+            answeredBy
+        });
+
+        const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>
+        Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with Speedy Solutions following up about the cleaning request you submitted through Angi. Cleaning starts at 150 dollars for the first two hours, and the cleaner brings all supplies and equipment. Please call us back at 517-777-8712, or reply to our text message. We look forward to helping you. Have a great day.
+    </Say>
+    <Hangup/>
+</Response>`;
+
+        return reply.type('text/xml').send(voicemailResponse);
+    }
+
+    const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="wss://emma-development-production.up.railway.app/media-stream">
+            <Parameter name="callerPhone" value="${escapeXml(phone)}" />
+            <Parameter name="callMode" value="OUTBOUND_CUSTOM" />
+            <Parameter name="customerName" value="${escapeXml(customerName)}" />
+            <Parameter name="customInstructions" value="${escapeXml(instructions)}" />
+            <Parameter name="sheetRowNumber" value="${escapeXml(sheetRowNumber)}" />
+        </Stream>
+    </Connect>
+</Response>`;
+
+    return reply.type('text/xml').send(twimlResponse);
 });
 fastify.all('/outbound-press1', async (request, reply) => {
     const customerPhone =
