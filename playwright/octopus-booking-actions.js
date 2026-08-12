@@ -514,26 +514,46 @@ async function getVisibleMatches(page, regex) {
 }
 
 async function scrollToScheduledAppointments(page) {
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    const headings = page.getByText("Scheduled Appointments", {
-      exact: true
-    });
+  const datePattern =
+    /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),? \d{1,2} (January|February|March|April|May|June|July|August|September|October|November|December) \d{4}$/;
+  const timePattern = /^\d{1,2}:\d{2}\s*(AM|PM)$/i;
 
-    for (let index = 0; index < (await headings.count()); index += 1) {
-      const heading = headings.nth(index);
-      if (!(await heading.isVisible().catch(() => false))) continue;
+  for (let attempt = 0; attempt < 18; attempt += 1) {
+    const inputs = page.locator("input");
+    let visibleDates = 0;
+    let visibleTimes = 0;
 
-      await heading.scrollIntoViewIfNeeded({ timeout: 5000 });
-      await page.waitForTimeout(1200);
+    for (let index = 0; index < (await inputs.count()); index += 1) {
+      const input = inputs.nth(index);
+      if (!(await input.isVisible().catch(() => false))) continue;
+      const value = (await input.inputValue().catch(() => "")).trim();
+      if (datePattern.test(value)) visibleDates += 1;
+      if (timePattern.test(value)) visibleTimes += 1;
+    }
+
+    if (visibleDates >= 2 && visibleTimes >= 2) {
+      await page.waitForTimeout(700);
       return;
     }
 
+    await page.evaluate(() => {
+      window.scrollBy(0, 700);
+      for (const element of document.querySelectorAll("*")) {
+        if (element.scrollHeight > element.clientHeight + 20) {
+          element.scrollTop = Math.min(
+            element.scrollTop + 700,
+            element.scrollHeight
+          );
+          element.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
+      }
+    });
     await page.mouse.wheel(0, 700);
-    await page.waitForTimeout(350);
+    await page.waitForTimeout(500);
   }
 
   throw new Error(
-    "Could not find the Scheduled Appointments section after scrolling."
+    "Could not find the Scheduled Appointments date/time controls after scrolling every page panel."
   );
 }
 
