@@ -1309,7 +1309,7 @@ Use the standard greeting:
                                 },
                         turn_detection: {
                                     type: 'server_vad',
-                                    threshold: 0.7,
+                                    threshold: 0.65,
                                     silence_duration_ms: 1200,
                                     create_response: true
                                 }
