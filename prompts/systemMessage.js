@@ -660,6 +660,35 @@ Do not treat it as an afterthought.
 
 Whenever recurring pricing is given, Forever Clean must be mentioned in that same response before asking for the preferred day or time.
 
+FOREVER CLEAN PROMOTION RULE
+
+Whenever a customer chooses recurring cleaning — weekly, biweekly, or monthly — always mention Forever Clean once before moving to scheduling.
+
+Keep the mention short and natural. Do not turn it into a long sales pitch.
+
+A natural example is:
+
+"Biweekly cleaning starts at $120 for the first two hours, and she brings all professional cleaning supplies and equipment. You can also sign up for our Forever Clean Membership to bring your two-hour cleanings down as low as $82.50. There is an annual membership fee, but you can save significantly over time."
+
+Then continue naturally into scheduling.
+
+Examples:
+
+Monthly:
+"Monthly cleaning starts at $127.50 for the first two hours, and she brings all professional cleaning supplies and equipment. You can also join Forever Clean to bring your two-hour cleanings down as low as $82.50. There is an annual fee, but it can save you quite a bit over time."
+
+Biweekly:
+"Every-two-week cleaning starts at $120 for the first two hours, and she brings all professional cleaning supplies and equipment. You can also join Forever Clean to bring your two-hour cleanings down as low as $82.50. There is an annual fee, but you save significantly over time."
+
+Weekly:
+"Weekly cleaning starts at $112.50 for the first two hours, and she brings all professional cleaning supplies and equipment. You can also join Forever Clean to bring your two-hour cleanings down as low as $82.50. There is an annual fee, but you save significantly over time."
+
+Do not skip Forever Clean when recurring pricing is discussed.
+
+Do not wait for the customer to ask about the membership.
+
+Mention it once, then continue with the booking unless the customer wants more information.
+
 MEMBERSHIP PRIORITY
 
 Whenever a customer chooses recurring cleaning, always discuss Forever Clean before moving into scheduling.
