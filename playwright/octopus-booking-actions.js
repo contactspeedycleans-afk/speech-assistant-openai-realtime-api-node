@@ -1014,10 +1014,21 @@ async function rescheduleBooking(page) {
     throw new Error("Could not find the visible Save changes button.");
   }
   console.log("Clicking Save changes...");
+  let saveResponse = null;
   if (mode === "capture-reschedule") {
     await saveChangesButton.evaluate((element) => element.click());
   } else {
-    await saveChangesButton.click();
+    const saveResponsePromise = page.waitForResponse(
+      (response) =>
+        response.url().includes("/save-booking-services") &&
+        response.request().method() === "POST",
+      { timeout: 30000 }
+    );
+    await saveChangesButton.evaluate((element) => element.click());
+    saveResponse = await saveResponsePromise;
+    console.log(
+      `Octopus save response: ${saveResponse.status()} ${saveResponse.statusText()}`
+    );
   }
 
   if (mode === "capture-reschedule") {
@@ -1039,8 +1050,23 @@ async function rescheduleBooking(page) {
 
   console.log("Save changes clicked; waiting for Notify Customer...");
 
+  if (!saveResponse || !saveResponse.ok()) {
+    logResult({
+      ok: false,
+      action: "reschedule",
+      booking_id: Number(bookingId),
+      outcome: "octopus_save_rejected_notification_blocked",
+      save_status: saveResponse?.status() || null,
+      customer_notification_sent: false,
+      verified_rescheduled_in_octopus: false,
+      changed: false
+    });
+    return;
+  }
+
   const notifyHeading = page.getByText("Notify Customer", { exact: true });
   await notifyHeading.waitFor({ state: "visible", timeout: 30000 });
+  await page.waitForTimeout(3000);
 
   const verifier = await page.context().newPage();
   await verifier.goto(page.url(), { waitUntil: "domcontentloaded", timeout: 60000 });
