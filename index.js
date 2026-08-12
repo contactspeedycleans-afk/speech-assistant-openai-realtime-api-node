@@ -1561,19 +1561,19 @@ recentCalls =
         callerPhone
     );
 
-if (customer) {
-    customerBookings =
-        await findCustomerBookings(
-            customer.id
-        );
-    customerBookingCount =
-        await findCustomerBookingCount(
-            customer.id
-        );
-    console.log(
-        'Bookings found:',
-        customerBookings.length
+customerBookings =
+    await findCustomerBookings(
+        customer?.id || null,
+        callerPhone
     );
+customerBookingCount = customerBookings.length;
+
+console.log(
+    'Future bookings found:',
+    customerBookingCount
+);
+
+if (customer) {
 
 
                                     console.log(
