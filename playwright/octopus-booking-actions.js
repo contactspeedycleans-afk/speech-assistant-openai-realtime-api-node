@@ -192,6 +192,124 @@ function findLabeledAmount(lines, labels) {
   return null;
 }
 
+function normalizeUsPhone(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+  return digits.length === 10 ? digits : null;
+}
+
+async function extractCustomerPhoneCandidates(page) {
+  const candidates = new Set();
+
+  const collectVisiblePhones = async () => {
+    const values = await page.evaluate(() => {
+      const results = [];
+
+      for (const anchor of document.querySelectorAll('a[href^="tel:"]')) {
+        results.push(anchor.getAttribute("href") || "");
+      }
+
+      for (const input of document.querySelectorAll("input")) {
+        const identity = [
+          input.type,
+          input.name,
+          input.id,
+          input.placeholder,
+          input.getAttribute("aria-label")
+        ]
+          .filter(Boolean)
+          .join(" ");
+        if (/phone|mobile|cell|telephone|tel/i.test(identity)) {
+          results.push(input.value || "");
+        }
+      }
+
+      const visibleDialog = Array.from(
+        document.querySelectorAll('[role="dialog"], .modal.show, .modal[style*="display: block"]')
+      ).find((element) => {
+        const style = window.getComputedStyle(element);
+        return style.display !== "none" && style.visibility !== "hidden";
+      });
+
+      if (visibleDialog) {
+        const dialogText = visibleDialog.innerText || "";
+        const labeledPhones = dialogText.match(
+          /(?:mobile|phone|telephone|cell)[^\d+]{0,30}(?:\+?1[\s().-]*)?(?:\d[\s().-]*){10}/gi
+        );
+        if (labeledPhones) results.push(...labeledPhones);
+      }
+
+      return results;
+    });
+
+    for (const value of values) {
+      const phone = normalizeUsPhone(value);
+      if (phone) candidates.add(phone);
+    }
+  };
+
+  await collectVisiblePhones();
+
+  const customerHeading = page.getByText("Customers", { exact: true }).first();
+  if (!(await customerHeading.isVisible().catch(() => false))) {
+    return [...candidates];
+  }
+
+  const regionSelector = `billing-customer-region-${Date.now()}`;
+  await customerHeading.evaluate((heading, marker) => {
+    let region = heading.parentElement;
+    while (region && region !== document.body) {
+      const text = String(region.innerText || "").trim();
+      const controls = region.querySelectorAll(
+        'button, [role="button"], a, [data-toggle], [data-bs-toggle]'
+      ).length;
+      if (controls > 0 && text.length < 1000) break;
+      region = region.parentElement;
+    }
+    (region || heading.parentElement || heading).setAttribute("data-billing-region", marker);
+  }, regionSelector);
+
+  const region = page.locator(`[data-billing-region="${regionSelector}"]`);
+
+  for (let round = 0; round < 3; round += 1) {
+    await collectVisiblePhones();
+
+    const editChoice = page
+      .locator(
+        '[role="menu"]:visible >> text=/^edit$/i, .dropdown-menu:visible >> text=/^edit$/i, button:visible >> text=/^edit$/i'
+      )
+      .first();
+    if (await editChoice.isVisible().catch(() => false)) {
+      await editChoice.click().catch(() => {});
+      await page.waitForTimeout(700);
+      await collectVisiblePhones();
+      break;
+    }
+
+    const controls = region.locator(
+      'button:visible, [role="button"]:visible, a:visible, [data-toggle]:visible, [data-bs-toggle]:visible'
+    );
+    const count = Math.min(await controls.count(), 10);
+    if (round >= count) break;
+
+    await controls.nth(round).click().catch(() => {});
+    await page.waitForTimeout(700);
+  }
+
+  await collectVisiblePhones();
+
+  const close = page
+    .locator(
+      '[role="dialog"] button[aria-label*="close" i], .modal.show button[aria-label*="close" i], .modal.show .close'
+    )
+    .first();
+  if (await close.isVisible().catch(() => false)) {
+    await close.click().catch(() => {});
+  }
+
+  return [...candidates];
+}
+
 async function inspectBilling(page) {
   const billing = await page.evaluate(() => {
     const lines = document.body.innerText
@@ -211,17 +329,13 @@ async function inspectBilling(page) {
 
     const phoneCandidates = Array.from(document.querySelectorAll('a[href^="tel:"]'))
       .map((anchor) => String(anchor.getAttribute('href') || '').replace(/^tel:/i, ''))
-      .concat(
-        lines
-          .join(' ')
-          .match(/(?:\+?1[\s().-]*)?(?:\d[\s().-]*){10}/g) || []
-      )
       .map((value) => String(value).replace(/\D/g, '').slice(-10))
       .filter((value) => value.length === 10);
 
     return { lines, links, phoneCandidates: [...new Set(phoneCandidates)] };
   });
 
+  const customerPhoneCandidates = await extractCustomerPhoneCandidates(page);
   const lines = billing.lines;
   const text = lines.join("\n");
   const explicitNoCard = /(?:no|without)\s+(?:a\s+)?card\s+on\s+file|card\s+on\s+file\s*:\s*(?:no|false|missing)/i.test(text);
@@ -252,7 +366,9 @@ async function inspectBilling(page) {
     amount_paid: findLabeledAmount(lines, ["amount paid", "paid"]),
     balance_due: findLabeledAmount(lines, ["balance due", "amount due", "balance"]),
     customer_links: safeLinks,
-    customer_phone_candidates: billing.phoneCandidates,
+    customer_phone_candidates: [
+      ...new Set([...billing.phoneCandidates, ...customerPhoneCandidates])
+    ],
     changed: false
   });
 }
