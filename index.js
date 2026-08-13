@@ -396,6 +396,7 @@ let customerBookings = [];
 let customerBookingCount = 0;
 let openAiConnected = false;
 let sessionStarted = false;
+let sessionContextReady = false;
             let outboundGreetingTimer = null;
 let customerSpokeBeforeGreeting = false;
 
@@ -480,6 +481,7 @@ const startHoldMusic = () => {
                 if (
                     !openAiConnected ||
                     !streamSid ||
+                    !sessionContextReady ||
                     sessionStarted
                 ) {
                     return;
@@ -1611,8 +1613,11 @@ if (customer) {
                                 );
 
                                 customer = null;
+                                customerBookings = [];
+                                customerBookingCount = 0;
                             }
 
+                            sessionContextReady = true;
                             initializeSession();
                             break;
                         }
