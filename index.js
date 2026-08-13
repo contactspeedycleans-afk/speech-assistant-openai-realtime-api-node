@@ -717,7 +717,7 @@ Keep the conversation friendly, natural, and conversational.
 `
 
 
-       : customer
+       : (customer || customerBookings.length > 0)
         ? `Begin the inbound returning-customer call now.
 
 Say:
