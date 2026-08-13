@@ -504,7 +504,8 @@ const sessionContext = buildSessionContext({
     customerContext,
     recentCallContext,
     bookingContext,
-    callModeContext
+    callModeContext,
+    memoryFirstContext
 } = sessionContext;
 
 const sessionUpdate = buildOpenAiSession({
@@ -514,7 +515,8 @@ const sessionUpdate = buildOpenAiSession({
     callModeContext,
     customerContext,
     recentCallContext,
-    bookingContext
+    bookingContext,
+    memoryFirstContext
 });
 
                 console.log(
