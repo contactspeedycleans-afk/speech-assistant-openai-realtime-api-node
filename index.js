@@ -379,6 +379,7 @@ let twilioNumber = '';
 let callMode = 'INBOUND_LEAD';
 
 let voicemailHangupScheduled = false;
+let voicemailTakeoverStarted = false;
 let lastAssistantTranscript = '';
 let completedAssistantTranscripts = [];
 let completedCustomerTranscripts = [];
@@ -1173,6 +1174,86 @@ const scheduleVoicemailHangup = () => {
     }, 7500);
 };
 
+const soundsLikeVoicemailSystem = (transcript) => {
+    if (!callMode.startsWith('OUTBOUND')) {
+        return false;
+    }
+
+    const text = String(transcript || '').toLowerCase();
+    const strongPhrases = [
+        'please leave a message',
+        'leave your message',
+        'leave a message after',
+        'record your message',
+        'after the tone',
+        'after the beep',
+        'at the tone',
+        'has been forwarded to voicemail',
+        'your call has been forwarded',
+        'cannot take your call',
+        "can't take your call",
+        'is not available',
+        'the person you are calling',
+        'google voice subscriber',
+        'voice mailbox',
+        'press the pound key',
+        'when you are finished recording'
+    ];
+
+    if (strongPhrases.some((phrase) => text.includes(phrase))) {
+        return true;
+    }
+
+    return (
+        (text.includes('mailbox') &&
+            (text.includes('message') ||
+                text.includes('tone') ||
+                text.includes('full'))) ||
+        (text.includes('you have reached') &&
+            (text.includes('voicemail') || text.includes('mailbox')))
+    );
+};
+
+const takeOverVoicemailCall = async (transcript) => {
+    if (
+        voicemailTakeoverStarted ||
+        !callSid ||
+        !callMode.startsWith('OUTBOUND')
+    ) {
+        return;
+    }
+
+    voicemailTakeoverStarted = true;
+    console.log(
+        'Voicemail system detected from incoming audio. Taking over call:',
+        callSid,
+        transcript
+    );
+
+    try {
+        if (openAiWs.readyState === WebSocket.OPEN) {
+            openAiWs.send(JSON.stringify({ type: 'response.cancel' }));
+        }
+
+        const voicemailTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice">Hi, this is Emma with Speedy Solutions calling about your Angi request. Please call us back at 5 1 7, 7 7 7, 8 7 1 2. Thank you.</Say>
+    <Hangup/>
+</Response>`;
+
+        await twilioClient.calls(callSid).update({
+            twiml: voicemailTwiml
+        });
+
+        console.log('Short voicemail started; OpenAI stream stopped:', callSid);
+        await sendOutboundCompletion('voicemail');
+    } catch (error) {
+        console.error('Voicemail takeover failed:', error);
+        voicemailTakeoverStarted = false;
+        scheduleVoicemailHangup();
+    }
+};
+
         const sendOutboundCompletion = async (status = 'completed') => {
     if (
         completionWebhookSent ||
@@ -1242,6 +1323,11 @@ const response = JSON.parse(
             'Completed customer transcript:',
             customerTranscript
         );
+
+        if (soundsLikeVoicemailSystem(customerTranscript)) {
+            await takeOverVoicemailCall(customerTranscript);
+            return;
+        }
     }
 }
     
