@@ -292,7 +292,7 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>
-        Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with Speedy Solutions following up about your cleaning request. Please call us back at 517-777-8712, or reply to our text message. We look forward to helping you. Have a great day.
+        Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!
     </Say>
     <Hangup/>
 </Response>`;
@@ -594,7 +594,7 @@ Always follow this exact order:
 4. Ask only the single next missing question and stop to listen.
 
 EXISTING-CUSTOMER OVERRIDE:
-- If CUSTOMER DATABASE CONTEXT or BOOKING HISTORY shows an existing customer or booking, treat this as an account-service call—not a new quote.
+- If CUSTOMER DATABASE CONTEXT or BOOKING HISTORY shows an existing customer or booking, treat this as an account-service callâ€”not a new quote.
 - Open with the specific reason for the call and the known appointment or recurring service details.
 - Never ask one-time versus recurring when their existing frequency or appointment is already known.
 - Never quote $150, pitch a first cleaning, or restart sales intake unless the customer explicitly asks to price or book a separate new cleaning.
@@ -649,7 +649,7 @@ Then ask:
 
 If they say no, end with:
 
-"Wonderful. You’re all set. Thank you for choosing Speedy Solutions. We look forward to helping you."
+"Wonderful. Youâ€™re all set. Thank you for choosing Speedy Solutions. We look forward to helping you."
 
 - Give only one final closing.
 - Do not repeat goodbye.
@@ -755,7 +755,7 @@ Say:
 
 "Thank you for calling SpeedyCleans. This is Emma. How can I help you today?"
 
-HUMAN-TRANSFER POLICY — FOLLOW EXACTLY:
+HUMAN-TRANSFER POLICY â€” FOLLOW EXACTLY:
 
 - Do not transfer the caller to a receptionist, manager, owner, dispatcher, technician, office worker, or any specifically requested person.
 - Do not claim that you are transferring the call.
@@ -846,9 +846,9 @@ Do NOT explain the weekly, biweekly, and monthly options unless the customer ask
 
 Only compare multiple recurring plans if the customer says something like:
 
-• "What are my options?"
-• "How much are they?"
-• "What's cheaper?"
+â€¢ "What are my options?"
+â€¢ "How much are they?"
+â€¢ "What's cheaper?"
 
 If the customer simply says:
 
@@ -1146,10 +1146,10 @@ Keep responses short, friendly, and conversational.`                     }
             );
 
             console.log(
-                'No customer speech detected. Starting outbound greeting after 0.3 seconds.'
+                'No customer speech detected. Starting outbound greeting immediately.'
             );
         }
-    }, 300);
+    }, 75);
 } else {
     openAiWs.send(
         JSON.stringify({
@@ -1284,6 +1284,69 @@ const takeOverVoicemailCall = async (transcript) => {
     }
 };
 
+const classifyOutboundCall = ({ status, customerText, assistantText }) => {
+    const customer = String(customerText || '').toLowerCase();
+    const assistant = String(assistantText || '').toLowerCase();
+    const combined = `${customer}\n${assistant}`;
+
+    if (status === 'voicemail') return 'voicemail';
+    if (!customer.trim()) return 'failed';
+
+    if (/not interested|stop calling|remove me|do not call|don't call/.test(customer)) {
+        return 'not_interested';
+    }
+
+    if (/call me (back )?(later|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|need to think|think about it|talk to my|check with my/.test(customer)) {
+        return 'follow_up';
+    }
+
+    const customerAccepted =
+        /yes|that works|sounds good|go ahead|book it|schedule it|let's do it|lets do it/.test(customer);
+    const assistantConfirmed =
+        /you(?:'re| are) (?:booked|scheduled|all set)|appointment (?:is|has been) (?:booked|scheduled|confirmed)|i have you scheduled/.test(assistant);
+
+    if (customerAccepted && assistantConfirmed) return 'booked';
+    if (/follow.?up|call back|callback/.test(combined)) return 'follow_up';
+    return 'completed';
+};
+
+const scoreOutboundCall = ({ customerText, assistantText, outcome }) => {
+    const customer = String(customerText || '');
+    const assistant = String(assistantText || '');
+    const lowerAssistant = assistant.toLowerCase();
+    const flags = [];
+    let score = 100;
+
+    if (!customer.trim()) {
+        score -= 50;
+        flags.push('no_customer_conversation');
+    }
+
+    const schedulingQuestions =
+        lowerAssistant.match(/what day|what date|what time|day and time/g) || [];
+    if (schedulingQuestions.length > 1) {
+        score -= 20;
+        flags.push('repeated_scheduling_question');
+    }
+
+    const identityQuestions =
+        lowerAssistant.match(/full name|email address|phone number/g) || [];
+    if (identityQuestions.length > 2) {
+        score -= 15;
+        flags.push('repeated_identity_question');
+    }
+
+    if (outcome === 'completed' && !/what day|which day|arrival window|schedule|book/.test(lowerAssistant)) {
+        score -= 10;
+        flags.push('no_booking_close_detected');
+    }
+
+    return {
+        score: Math.max(0, score),
+        flags
+    };
+};
+
         const sendOutboundCompletion = async (status = 'completed') => {
     if (
         completionWebhookSent ||
@@ -1296,12 +1359,27 @@ const takeOverVoicemailCall = async (transcript) => {
     completionWebhookSent = true;
 
     try {
+      const customerTranscript =
+        completedCustomerTranscripts.join('\n');
+      const assistantTranscript =
+        completedAssistantTranscripts.join('\n');
       const transcript =
 `CUSTOMER:
-${completedCustomerTranscripts.join('\n')}
+${customerTranscript}
 
 EMMA:
-${completedAssistantTranscripts.join('\n')}`;
+${assistantTranscript}`;
+
+      const outcome = classifyOutboundCall({
+          status,
+          customerText: customerTranscript,
+          assistantText: assistantTranscript
+      });
+      const quality = scoreOutboundCall({
+          customerText: customerTranscript,
+          assistantText: assistantTranscript,
+          outcome
+      });
 
 await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
     method: 'POST',
@@ -1314,17 +1392,20 @@ await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
     status,
     transcript,
     summary: transcript,
-    outcome: status,
-    customerTranscript:
-        completedCustomerTranscripts.join('\n'),
-    assistantTranscript:
-        completedAssistantTranscripts.join('\n')
+    outcome,
+    qualityScore: quality.score,
+    qualityFlags: quality.flags,
+    customerTranscript,
+    assistantTranscript
 })
 });
 
         console.log(
             'Outbound completion webhook sent:',
-            sheetRowNumber
+            sheetRowNumber,
+            outcome,
+            quality.score,
+            quality.flags
         );
     } catch (error) {
         console.error(
