@@ -156,24 +156,42 @@ function escapeXml(value = '') {
 }
 
 fastify.post('/outbound-call', async (request, reply) => {
-    const {
-        phone,
-        customer_name = '',
-        instructions = '',
-        sheet_row_number = ''
-    } = request.body || {};
+    const body = request.body || {};
+    const phone = body.phone || body.customer_phone || '';
+    const customer_name =
+        body.customer_name || body.customerName || body.name || '';
+    const sheet_row_number =
+        body.sheet_row_number || body.sheetRowNumber || '';
+
+    const suppliedInstructions =
+        body.instructions || body.customInstructions || '';
+    const knownLeadDetails = [
+        body.lead_source && `Lead source: ${body.lead_source}`,
+        body.service && `Requested service: ${body.service}`,
+        body.cleaning_type && `Cleaning type: ${body.cleaning_type}`,
+        body.frequency && `Frequency: ${body.frequency}`,
+        body.current_frequency && `Existing service frequency: ${body.current_frequency}`,
+        body.membership_status && `Membership status: ${body.membership_status}`,
+        body.booking_number && `Existing booking number: ${body.booking_number}`,
+        body.booking_date && `Existing booking date: ${body.booking_date}`,
+        body.arrival_window && `Existing arrival window: ${body.arrival_window}`,
+        body.customer_status && `Customer status: ${body.customer_status}`,
+        body.address && `Service address: ${body.address}`,
+        body.city && `City: ${body.city}`,
+        body.state && `State: ${body.state}`,
+        body.zip && `ZIP: ${body.zip}`,
+        body.requested_date && `Requested date: ${body.requested_date}`,
+        body.requested_time && `Requested time: ${body.requested_time}`,
+        body.notes && `Lead notes: ${body.notes}`
+    ].filter(Boolean);
+    const instructions = [suppliedInstructions, ...knownLeadDetails]
+        .filter(Boolean)
+        .join('\n');
 
     if (!phone) {
         return reply.code(400).send({
             success: false,
             error: 'Phone number is required.'
-        });
-    }
-
-    if (!instructions) {
-        return reply.code(400).send({
-            success: false,
-            error: 'Instructions are required.'
         });
     }
 
@@ -274,7 +292,7 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>
-        Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with Speedy Solutions following up about the cleaning request you submitted through Angi. Cleaning starts at 150 dollars for the first two hours, and the cleaner brings all supplies and equipment. Please call us back at 517-777-8712, or reply to our text message. We look forward to helping you. Have a great day.
+        Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with Speedy Solutions following up about your cleaning request. Please call us back at 517-777-8712, or reply to our text message. We look forward to helping you. Have a great day.
     </Say>
     <Hangup/>
 </Response>`;
@@ -572,16 +590,26 @@ Always follow this exact order:
 
 1. Greet the customer by first name if available.
 2. Explain why you are calling in one short sentence.
-3. Give the applicable starting price.
-4. Stop and wait for the customer's response.
+3. Refer naturally to the known requested service or lead notes when available.
+4. Ask only the single next missing question and stop to listen.
 
-Do not ask for the preferred day, time, arrival window, address, email, or other booking details until after the customer has heard the starting price.
-- After greeting the customer, briefly explain why you're calling in one sentence, then immediately give the applicable starting price.
-- Pricing must always come before asking for the preferred day, date, time, or arrival window.
-- Do not ask for scheduling details until the customer has heard the applicable price.
+EXISTING-CUSTOMER OVERRIDE:
+- If CUSTOMER DATABASE CONTEXT or BOOKING HISTORY shows an existing customer or booking, treat this as an account-service call—not a new quote.
+- Open with the specific reason for the call and the known appointment or recurring service details.
+- Never ask one-time versus recurring when their existing frequency or appointment is already known.
+- Never quote $150, pitch a first cleaning, or restart sales intake unless the customer explicitly asks to price or book a separate new cleaning.
+- For an existing recurring client, refer to their saved recurring service as their current plan. Do not sell it back to them as though they are a new lead.
+- If the purpose is confirming, rescheduling, cancelling, billing, follow-up, or checking an existing visit, stay entirely on that purpose.
+- Ask only what is required to complete the stated purpose, using all saved customer, call, and booking facts first.
+
+- Never quote a price before frequency is known.
+- If frequency is unknown, ask whether they want one-time or recurring service and stop.
 - If the requested service is a one-time cleaning, say: "One-time cleaning starts at $150 for the first two hours with one cleaner."
 - If the requested service is recurring cleaning, give only the price for the requested frequency.
-- If the service type or frequency is unclear, ask one short clarification question, then give the price before continuing.
+- If service type is unclear after frequency is known, ask one short clarification question and stop.
+- Never use the $150 one-time price as a generic cleaning quote or comparison for a recurring lead.
+- Weekly starts at $112.50, biweekly starts at $120, and monthly starts at $127.50.
+- For a recurring customer, recommend Forever Clean once as the best value: $250 annually and $82.50 per cleaning.
 - After giving the price, ask which day and arrival window they prefer.
 - Use the database information privately as background context.
 - Greet the customer naturally by first name when their name is available.
@@ -1480,63 +1508,69 @@ if (
                         );
                     }
                         
-const knowledgeHandled =
-    await handleKnowledgeTool({
-        response,
-        openAiWs,
-        WebSocket
-    });
+const toolsThatMayTakeTime = new Set([
+    'search_company_knowledge',
+    'record_technician_status_update',
+    'lookup_octopus_billing',
+    'cancel_octopus_booking',
+    'reschedule_octopus_booking'
+]);
 
-if (!knowledgeHandled) {
-    const technicianStatusHandled =
-        await handleTechnicianStatusTool({
-        response,
-        openAiWs,
-        WebSocket,
-        callerPhone
-    });
+const shouldUseHoldMusic =
+    response.type === 'response.function_call_arguments.done' &&
+    toolsThatMayTakeTime.has(response.name);
 
-    if (!technicianStatusHandled) {
-        const billingHandled =
-            await handleBillingLookupTool({
+if (shouldUseHoldMusic) startHoldMusic();
+
+try {
+    const knowledgeHandled =
+        await handleKnowledgeTool({
+            response,
+            openAiWs,
+            WebSocket
+        });
+
+    if (!knowledgeHandled) {
+        const technicianStatusHandled =
+            await handleTechnicianStatusTool({
                 response,
                 openAiWs,
                 WebSocket,
-                callerPhone,
-                customerBookings
+                callerPhone
             });
 
-        if (billingHandled) return;
-
-        const isBookingAction =
-            response.name === 'cancel_octopus_booking' ||
-            response.name === 'reschedule_octopus_booking';
-
-        if (isBookingAction) startHoldMusic();
-
-        let cancellationHandled = false;
-
-        try {
-            cancellationHandled =
-                await handleCancelBookingTool({
-                response,
-                openAiWs,
-                WebSocket,
-                customerBookings
-            });
-
-            if (!cancellationHandled) {
-                await handleRescheduleBookingTool({
+        if (!technicianStatusHandled) {
+            const billingHandled =
+                await handleBillingLookupTool({
                     response,
                     openAiWs,
                     WebSocket,
+                    callerPhone,
                     customerBookings
                 });
+
+            if (!billingHandled) {
+                const cancellationHandled =
+                    await handleCancelBookingTool({
+                        response,
+                        openAiWs,
+                        WebSocket,
+                        customerBookings
+                    });
+
+                if (!cancellationHandled) {
+                    await handleRescheduleBookingTool({
+                        response,
+                        openAiWs,
+                        WebSocket,
+                        customerBookings
+                    });
+                }
             }
-        } finally {
-            if (isBookingAction) stopHoldMusic();
         }
     }
+} finally {
+    if (shouldUseHoldMusic) stopHoldMusic();
 }
 
     
