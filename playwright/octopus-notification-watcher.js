@@ -24,6 +24,15 @@ const ASSIGNMENT_MAKE_WEBHOOK_URL =
 const JOB_REQUEST_SENT_WEBHOOK_URL =
   process.env.JOB_REQUEST_SENT_WEBHOOK_URL;
 
+const DISPATCH_ROUNDS = [
+  { sendNumber: 1, radiusMiles: 30, timestampColumn: "job_request_30_sent_at" },
+  { sendNumber: 2, radiusMiles: 45, timestampColumn: "job_request_45_sent_at" },
+  { sendNumber: 3, radiusMiles: 60, timestampColumn: "job_request_60_sent_at" },
+  { sendNumber: 4, radiusMiles: 75, timestampColumn: "job_request_75_sent_at" }
+];
+
+const DISPATCH_ROUND_DELAY_MINUTES = 15;
+
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME ||
   "SpeedyCleans";
@@ -1699,9 +1708,75 @@ async function readNotifications(
 }
 
 
+async function setJobRequestRadius(
+  page,
+  radiusMiles
+) {
+  console.log(
+    `Setting job-request radius to ${radiusMiles} miles...`
+  );
+
+  const radiusSelect = page
+    .locator("select")
+    .filter({
+      has: page.locator(
+        `option[value="${radiusMiles}"]`
+      )
+    })
+    .first();
+
+  if (
+    await radiusSelect
+      .isVisible()
+      .catch(() => false)
+  ) {
+    await radiusSelect.selectOption(
+      String(radiusMiles)
+    );
+
+    await page.waitForTimeout(2500);
+
+    console.log(
+      `Job-request radius set to ${radiusMiles} miles.`
+    );
+
+    return;
+  }
+
+  const radiusButton = page
+    .getByRole("button", {
+      name: new RegExp(
+        `${radiusMiles}.*mile`,
+        "i"
+      )
+    })
+    .first();
+
+  if (
+    await radiusButton
+      .isVisible()
+      .catch(() => false)
+  ) {
+    await radiusButton.click();
+    await page.waitForTimeout(2500);
+
+    console.log(
+      `Job-request radius set to ${radiusMiles} miles.`
+    );
+
+    return;
+  }
+
+  throw new Error(
+    `Could not find the Octopus radius control for ${radiusMiles} miles.`
+  );
+}
+
+
 async function openJobRequestModal(
   page,
-  bookingId
+  bookingId,
+  radiusMiles
 ) {
   const bookingUrl =
     `https://admin.octopuspro.com/booking/view/${bookingId}`;
@@ -1741,6 +1816,12 @@ async function openJobRequestModal(
 
   await availableFieldworkers
     .scrollIntoViewIfNeeded();
+
+
+  await setJobRequestRadius(
+    page,
+    radiusMiles
+  );
 
 
   console.log(
@@ -2162,27 +2243,120 @@ async function openJobRequestModal(
   await page.waitForTimeout(
     2000
   );
+
+
+  return {
+    availableFieldworkerCount:
+      Number(availabilityMatch[1]),
+
+    totalFieldworkerCount:
+      Number(availabilityMatch[2])
+  };
 }
 async function getNextDispatchBooking() {
   const result =
     await pool.query(
       `
       SELECT
-        booking_number,
-        octopus_booking_id,
-        assignment_status,
-        job_request_status
-      FROM public.booking_dispatch_state
+        dispatch.booking_number,
+        dispatch.octopus_booking_id,
+        dispatch.assignment_status,
+        dispatch.job_request_status,
+        tracking.booking_date,
+        tracking.arrival_window,
+
+        CASE
+          WHEN dispatch.job_request_30_sent_at IS NULL THEN 1
+          WHEN dispatch.job_request_45_sent_at IS NULL THEN 2
+          WHEN dispatch.job_request_60_sent_at IS NULL THEN 3
+          WHEN dispatch.job_request_75_sent_at IS NULL THEN 4
+          ELSE NULL
+        END AS send_number,
+
+        CASE
+          WHEN dispatch.job_request_30_sent_at IS NULL THEN 30
+          WHEN dispatch.job_request_45_sent_at IS NULL THEN 45
+          WHEN dispatch.job_request_60_sent_at IS NULL THEN 60
+          WHEN dispatch.job_request_75_sent_at IS NULL THEN 75
+          ELSE NULL
+        END AS radius_miles
+
+      FROM public.booking_dispatch_state AS dispatch
+
+      INNER JOIN public.booking_tracking AS tracking
+        ON tracking.booking_number = dispatch.booking_number
+
       WHERE
-        assignment_status = 'NEEDS CLEANER'
-        AND octopus_booking_id IS NOT NULL
-        AND COALESCE(
-          job_request_status,
-          'NOT_SENT'
-        ) = 'NOT_SENT'
-      ORDER BY updated_at ASC
+        dispatch.assignment_status = 'NEEDS CLEANER'
+        AND dispatch.octopus_booking_id IS NOT NULL
+
+        AND UPPER(COALESCE(tracking.status, '')) NOT IN (
+          'ASSIGNED',
+          'ON_THE_WAY',
+          'ARRIVED',
+          'STARTED',
+          'FINISHED',
+          'CANCELLED',
+          'CANCELED',
+          'DELETED'
+        )
+
+        AND (
+          (tracking.booking_date AT TIME ZONE 'America/Detroit')::date
+            > (NOW() AT TIME ZONE 'America/Detroit')::date
+
+          OR (
+            (tracking.booking_date AT TIME ZONE 'America/Detroit')::date
+              = (NOW() AT TIME ZONE 'America/Detroit')::date
+
+            AND tracking.arrival_window IS NOT NULL
+
+            AND split_part(tracking.arrival_window, ' - ', 1)
+              ~* '^\\d{1,2}:\\d{2}\\s*(am|pm)$'
+
+            AND (
+              (
+                (tracking.booking_date AT TIME ZONE 'America/Detroit')::date::text
+                || ' '
+                || split_part(tracking.arrival_window, ' - ', 1)
+              )::timestamp
+              > (NOW() AT TIME ZONE 'America/Detroit')
+            )
+          )
+        )
+
+        AND (
+          dispatch.job_request_30_sent_at IS NULL
+
+          OR (
+            dispatch.job_request_45_sent_at IS NULL
+            AND dispatch.job_request_30_sent_at
+              <= NOW() - ($1 * INTERVAL '1 minute')
+          )
+
+          OR (
+            dispatch.job_request_60_sent_at IS NULL
+            AND dispatch.job_request_45_sent_at
+              <= NOW() - ($1 * INTERVAL '1 minute')
+          )
+
+          OR (
+            dispatch.job_request_75_sent_at IS NULL
+            AND dispatch.job_request_60_sent_at
+              <= NOW() - ($1 * INTERVAL '1 minute')
+          )
+        )
+
+        AND (
+          dispatch.last_dispatch_attempt_at IS NULL
+          OR dispatch.last_dispatch_attempt_at
+            <= NOW() - INTERVAL '5 minutes'
+        )
+
+      ORDER BY dispatch.updated_at ASC
       LIMIT 1;
-      `
+      `,
+      [DISPATCH_ROUND_DELAY_MINUTES]
     );
 
   return result.rows[0] || null;
@@ -2190,20 +2364,42 @@ async function getNextDispatchBooking() {
 
 
 async function markDispatchSent(
-  bookingNumber
+  bookingNumber,
+  sendNumber
 ) {
+  const dispatchRound =
+    DISPATCH_ROUNDS.find(
+      (round) =>
+        round.sendNumber === sendNumber
+    );
+
+  if (!dispatchRound) {
+    throw new Error(
+      `Unsupported dispatch send number: ${sendNumber}`
+    );
+  }
+
+  const timestampColumn =
+    dispatchRound.timestampColumn;
+
   await pool.query(
     `
     UPDATE public.booking_dispatch_state
     SET
-      job_request_status = 'SENT',
+      job_request_status = $2,
+      ${timestampColumn} = NOW(),
       dispatch_attempts =
         COALESCE(dispatch_attempts, 0) + 1,
       last_dispatch_attempt_at = NOW(),
       updated_at = NOW()
     WHERE booking_number = $1;
     `,
-    [bookingNumber]
+    [
+      bookingNumber,
+      sendNumber === 4
+        ? "ALL_ROUNDS_SENT"
+        : `SEND_${sendNumber}_SENT`
+    ]
   );
 }
 
@@ -2217,6 +2413,7 @@ async function markDispatchFailed(
     UPDATE public.booking_dispatch_state
     SET
       job_request_status = 'FAILED',
+      last_dispatch_attempt_at = NOW(),
       last_notification_text = $2,
       updated_at = NOW()
     WHERE booking_number = $1;
@@ -2233,7 +2430,12 @@ async function markDispatchFailed(
 
 async function sendJobRequestSentToMake({
   bookingNumber,
-  octopusBookingId
+  octopusBookingId,
+  bookingDate,
+  radiusMiles,
+  sendNumber,
+  availableFieldworkerCount,
+  totalFieldworkerCount
 }) {
   const sentAt =
     new Date().toISOString();
@@ -2259,6 +2461,21 @@ async function sendJobRequestSentToMake({
           job_request_status:
             "SENT",
 
+          booking_date:
+            bookingDate,
+
+          radius_miles:
+            radiusMiles,
+
+          send_number:
+            sendNumber,
+
+          available_fieldworker_count:
+            availableFieldworkerCount,
+
+          total_fieldworker_count:
+            totalFieldworkerCount,
+
           sent_at:
             sentAt
         })
@@ -2275,7 +2492,7 @@ async function sendJobRequestSentToMake({
   }
 
   console.log(
-    `Job request sent webhook delivered for ${bookingNumber} at ${sentAt}.`
+    `Job request Send ${sendNumber} (${radiusMiles} miles) webhook delivered for ${bookingNumber} at ${sentAt}.`
   );
 }
 
@@ -2295,17 +2512,20 @@ async function dispatchNextBooking(
   }
 
   console.log(
-    `Dispatching ${booking.booking_number} using Octopus ID ${booking.octopus_booking_id}...`
+    `Dispatching Send ${booking.send_number} for ${booking.booking_number} at ${booking.radius_miles} miles using Octopus ID ${booking.octopus_booking_id}...`
   );
 
   try {
-    await openJobRequestModal(
+    const sendResult =
+      await openJobRequestModal(
       page,
-      booking.octopus_booking_id
-    );
+      booking.octopus_booking_id,
+      Number(booking.radius_miles)
+      );
 
     await markDispatchSent(
-      booking.booking_number
+      booking.booking_number,
+      Number(booking.send_number)
     );
 
     await sendJobRequestSentToMake({
@@ -2313,11 +2533,26 @@ async function dispatchNextBooking(
         booking.booking_number,
 
       octopusBookingId:
-        booking.octopus_booking_id
+        booking.octopus_booking_id,
+
+      bookingDate:
+        booking.booking_date,
+
+      radiusMiles:
+        Number(booking.radius_miles),
+
+      sendNumber:
+        Number(booking.send_number),
+
+      availableFieldworkerCount:
+        sendResult.availableFieldworkerCount,
+
+      totalFieldworkerCount:
+        sendResult.totalFieldworkerCount
     });
 
     console.log(
-      `Dispatch completed and recorded for ${booking.booking_number}.`
+      `Dispatch Send ${booking.send_number} completed and recorded for ${booking.booking_number} at ${booking.radius_miles} miles.`
     );
   } catch (error) {
     await markDispatchFailed(
