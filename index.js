@@ -416,8 +416,50 @@ let customerBookingCount = 0;
 let openAiConnected = false;
 let sessionStarted = false;
 let sessionContextReady = false;
-            let outboundGreetingTimer = null;
+let outboundGreetingTimer = null;
 let customerSpokeBeforeGreeting = false;
+let callerSilenceTimer = null;
+let silenceFollowUpInProgress = false;
+
+const clearCallerSilenceTimer = () => {
+    if (callerSilenceTimer) clearTimeout(callerSilenceTimer);
+    callerSilenceTimer = null;
+};
+
+const assistantIsWaitingForAnswer = (transcript = '') => {
+    const text = String(transcript).trim().toLowerCase();
+
+    return (
+        text.endsWith('?') ||
+        /\b(let(?:'|’)s lock that in|does that work|sound good|are you still there|which (?:day|time)|what (?:day|time)|would you like|can i|may i)\b/.test(text)
+    );
+};
+
+const scheduleCallerSilenceFollowUp = () => {
+    clearCallerSilenceTimer();
+
+    callerSilenceTimer = setTimeout(() => {
+        callerSilenceTimer = null;
+
+        if (
+            openAiWs.readyState !== WebSocket.OPEN ||
+            silenceFollowUpInProgress
+        ) {
+            return;
+        }
+
+        silenceFollowUpInProgress = true;
+        openAiWs.send(JSON.stringify({
+            type: 'response.create',
+            response: {
+                instructions:
+                    'The caller has been silent for 8 seconds after your question. Say only: "No rush — are you still there?" Then stop and listen.'
+            }
+        }));
+
+        console.log('Caller silent for 8 seconds - Emma checked in.');
+    }, 8000);
+};
 
 // Quiet hold melody for slow OctopusPro actions. Twilio expects 8 kHz mu-law.
 let holdMusicTimer = null;
@@ -1423,6 +1465,8 @@ const response = JSON.parse(
     response.type ===
     'conversation.item.input_audio_transcription.completed'
 ) {
+    clearCallerSilenceTimer();
+    silenceFollowUpInProgress = false;
     const customerTranscript = String(
         response.transcript || ''
     ).trim();
@@ -1471,6 +1515,15 @@ if (completedTranscript) {
     completedAssistantTranscripts.push(
         completedTranscript
     );
+}
+
+if (silenceFollowUpInProgress) {
+    // Do not create a repeating check-in loop if the caller remains silent.
+    silenceFollowUpInProgress = false;
+} else if (assistantIsWaitingForAnswer(completedTranscript)) {
+    scheduleCallerSilenceFollowUp();
+} else {
+    clearCallerSilenceTimer();
 }
 const voicemailPhrases = [
     'reached your voicemail',
@@ -1546,6 +1599,8 @@ if (
 }
     // Instantly stop Twilio audio when the customer interrupts
                     if (response.type === 'input_audio_buffer.speech_started') {
+    clearCallerSilenceTimer();
+    silenceFollowUpInProgress = false;
     stopHoldMusic();
     customerSpokeBeforeGreeting = true;
 
@@ -1848,6 +1903,7 @@ if (customer) {
                         }
 
                      case 'stop': {
+    clearCallerSilenceTimer();
     console.log(
         'Twilio stream stopped.',
         'Stream SID:',
