@@ -278,23 +278,37 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
 
     console.log('Custom outbound answered by:', answeredBy);
 
-    const isVoicemail =
-        answeredBy.startsWith('machine') ||
-        answeredBy === 'fax';
+    const isFax = answeredBy === 'fax';
+    const isVoicemail = answeredBy.startsWith('machine');
+
+    if (isFax) {
+        return reply
+            .type('text/xml')
+            .send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
+    }
 
     if (isVoicemail) {
-        console.log('Leaving one Angi lead voicemail and ending call:', {
+        console.log('Routing voicemail to Emma Realtime voice:', {
             phone,
             customerName,
             answeredBy
         });
 
+        const voicemailMessage =
+            `Hi${customerName ? ` ${String(customerName).split(/\s+/)[0]}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Please call us back at 517-777-8712 or reply to our text. We look forward to helping you!`;
+
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>
-        Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!
-    </Say>
-    <Hangup/>
+    <Connect>
+        <Stream url="wss://emma-development-production.up.railway.app/media-stream">
+            <Parameter name="callerPhone" value="${escapeXml(phone)}" />
+            <Parameter name="callMode" value="OUTBOUND_VOICEMAIL" />
+            <Parameter name="voicemailMode" value="true" />
+            <Parameter name="voicemailMessage" value="${escapeXml(voicemailMessage)}" />
+            <Parameter name="customerName" value="${escapeXml(customerName)}" />
+            <Parameter name="sheetRowNumber" value="${escapeXml(sheetRowNumber)}" />
+        </Stream>
+    </Connect>
 </Response>`;
 
         return reply.type('text/xml').send(voicemailResponse);
@@ -338,23 +352,33 @@ fastify.all('/outbound-press1', async (request, reply) => {
         answeredBy
     );
 
+    const isFax = answeredBy === 'fax';
     const isVoicemail =
         answeredBy === 'machine_start' ||
         answeredBy === 'machine_end_beep' ||
         answeredBy === 'machine_end_silence' ||
-        answeredBy === 'machine_end_other' ||
-        answeredBy === 'fax';
+        answeredBy === 'machine_end_other';
+
+    if (isFax) {
+        return reply
+            .type('text/xml')
+            .send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
+    }
 
     if (isVoicemail) {
+        const voicemailMessage =
+            'Hi, this is Emma with SpeedyCleans calling about the house cleaning quote you requested. Please call us back at 517-777-8712, or reply to our text. We look forward to speaking with you!';
+
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>
-        Hi, this is Emma calling from Speedy Solutions about the house cleaning quote you requested.
-        We would love to help you get your cleaning scheduled.
-        Please call us back at 517-777-8712, or simply reply to the text message we send you.
-        We look forward to speaking with you. Have a wonderful day.
-    </Say>
-    <Hangup/>
+    <Connect>
+        <Stream url="wss://emma-development-production.up.railway.app/media-stream">
+            <Parameter name="callerPhone" value="${escapeXml(customerPhone)}" />
+            <Parameter name="callMode" value="OUTBOUND_VOICEMAIL" />
+            <Parameter name="voicemailMode" value="true" />
+            <Parameter name="voicemailMessage" value="${escapeXml(voicemailMessage)}" />
+        </Stream>
+    </Connect>
 </Response>`;
 
         return reply
@@ -408,16 +432,8 @@ let completedCustomerTranscripts = [];
 let outboundCustomerName = '';
 let customInstructions = '';
 let sheetRowNumber = '';
-
-let customer = null;
-let recentCalls = [];
-let customerBookings = [];
-let customerBookingCount = 0;
-let openAiConnected = false;
-let sessionStarted = false;
-let sessionContextReady = false;
-let outboundGreetingTimer = null;
-let customerSpokeBeforeGreeting = false;
+let voicemailMode = false;
+let voicemailMessage = '';
 let callerSilenceTimer = null;
 let silenceFollowUpInProgress = false;
 
@@ -443,7 +459,9 @@ const scheduleCallerSilenceFollowUp = () => {
 
         if (
             openAiWs.readyState !== WebSocket.OPEN ||
-            silenceFollowUpInProgress
+            silenceFollowUpInProgress ||
+            voicemailMode ||
+            voicemailTakeoverStarted
         ) {
             return;
         }
@@ -456,10 +474,18 @@ const scheduleCallerSilenceFollowUp = () => {
                     'The caller has been silent for 8 seconds after your question. Say only: "No rush — are you still there?" Then stop and listen.'
             }
         }));
-
-        console.log('Caller silent for 8 seconds - Emma checked in.');
     }, 8000);
 };
+
+let customer = null;
+let recentCalls = [];
+let customerBookings = [];
+let customerBookingCount = 0;
+let openAiConnected = false;
+let sessionStarted = false;
+let sessionContextReady = false;
+            let outboundGreetingTimer = null;
+let customerSpokeBeforeGreeting = false;
 
 // Quiet hold melody for slow OctopusPro actions. Twilio expects 8 kHz mu-law.
 let holdMusicTimer = null;
@@ -1171,7 +1197,25 @@ Keep responses short, friendly, and conversational.`                     }
                 );
 
                
-              if (callMode.startsWith('OUTBOUND')) {
+              if (voicemailMode) {
+    customerSpokeBeforeGreeting = false;
+
+    outboundGreetingTimer = setTimeout(() => {
+        outboundGreetingTimer = null;
+
+        if (openAiWs.readyState === WebSocket.OPEN) {
+            openAiWs.send(JSON.stringify({
+                type: 'response.create',
+                response: {
+                    instructions:
+                        `You are leaving a voicemail. In your normal Emma voice, warmly say exactly this message and nothing else: ${voicemailMessage}`
+                }
+            }));
+
+            console.log('Emma Realtime voicemail started.');
+        }
+    }, 75);
+} else if (callMode.startsWith('OUTBOUND')) {
     customerSpokeBeforeGreeting = false;
 
     outboundGreetingTimer = setTimeout(() => {
@@ -1307,18 +1351,27 @@ const takeOverVoicemailCall = async (transcript) => {
             openAiWs.send(JSON.stringify({ type: 'response.cancel' }));
         }
 
-        const voicemailTwiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="alice">Hi, this is Emma with Speedy Solutions calling about your Angi request. Please call us back at 5 1 7, 7 7 7, 8 7 1 2. Thank you.</Say>
-    <Hangup/>
-</Response>`;
+        if (connection.readyState === WebSocket.OPEN) {
+            connection.send(JSON.stringify({
+                event: 'clear',
+                streamSid
+            }));
+        }
 
-        await twilioClient.calls(callSid).update({
-            twiml: voicemailTwiml
-        });
+        const fallbackVoicemailMessage =
+            'Hi, this is Emma with SpeedyCleans calling about your cleaning request. Please call us back at 517-777-8712 or reply to our text. Thank you!';
 
-        console.log('Short voicemail started; OpenAI stream stopped:', callSid);
-        await sendOutboundCompletion('voicemail');
+        if (openAiWs.readyState === WebSocket.OPEN) {
+            openAiWs.send(JSON.stringify({
+                type: 'response.create',
+                response: {
+                    instructions:
+                        `You detected voicemail. In your normal Emma voice, warmly say exactly this message and nothing else: ${fallbackVoicemailMessage}`
+                }
+            }));
+        }
+
+        console.log('Fallback voicemail continuing in Emma Realtime voice:', callSid);
     } catch (error) {
         console.error('Voicemail takeover failed:', error);
         voicemailTakeoverStarted = false;
@@ -1518,9 +1571,12 @@ if (completedTranscript) {
 }
 
 if (silenceFollowUpInProgress) {
-    // Do not create a repeating check-in loop if the caller remains silent.
     silenceFollowUpInProgress = false;
-} else if (assistantIsWaitingForAnswer(completedTranscript)) {
+} else if (
+    !voicemailMode &&
+    !voicemailTakeoverStarted &&
+    assistantIsWaitingForAnswer(completedTranscript)
+) {
     scheduleCallerSilenceFollowUp();
 } else {
     clearCallerSilenceTimer();
@@ -1778,6 +1834,13 @@ customInstructions =
 
 sheetRowNumber =
     customParameters.sheetRowNumber || '';
+
+voicemailMode =
+    String(customParameters.voicemailMode || '').toLowerCase() === 'true';
+
+voicemailMessage =
+    customParameters.voicemailMessage ||
+    'Hi, this is Emma with SpeedyCleans calling about your cleaning request. Please call us back at 517-777-8712 or reply to our text. Thank you!';
 console.log(
     'Outbound customer name:',
     outboundCustomerName || 'not provided'
@@ -1913,7 +1976,9 @@ if (customer) {
     );
 
     await sendOutboundCompletion(
-        'completed'
+        voicemailMode || voicemailTakeoverStarted
+            ? 'voicemail'
+            : 'completed'
     );
 
     break;
