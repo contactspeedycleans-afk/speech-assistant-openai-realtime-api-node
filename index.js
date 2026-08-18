@@ -252,6 +252,198 @@ fastify.post('/outbound-call', async (request, reply) => {
     }
 });
 
+// Recovery endpoint used by the Make.com "missing AI summary" scenario.
+// It never places a call. It only recovers an existing Twilio recording by
+// Call SID, transcribes it, and returns structured fields for the Sheet CRM.
+fastify.post('/recover-outbound-call', async (request, reply) => {
+    const callSid = String(
+        request.body?.call_sid || request.body?.callSid || ''
+    ).trim();
+
+    if (!/^CA[0-9a-f]{32}$/i.test(callSid)) {
+        return reply.code(400).send({
+            success: false,
+            retryable: false,
+            error: 'A valid Twilio Call SID is required.'
+        });
+    }
+
+    try {
+        const call = await twilioClient.calls(callSid).fetch();
+        const terminalStatuses = new Set([
+            'completed',
+            'busy',
+            'failed',
+            'no-answer',
+            'canceled'
+        ]);
+
+        if (!terminalStatuses.has(call.status)) {
+            return reply.code(202).send({
+                success: false,
+                retryable: true,
+                call_sid: callSid,
+                status: call.status,
+                error: 'Call is not finished yet.'
+            });
+        }
+
+        const recordings = await twilioClient.recordings.list({
+            callSid,
+            limit: 10
+        });
+        const recording = recordings
+            .filter((item) => item.status === 'completed')
+            .sort(
+                (a, b) =>
+                    new Date(b.dateCreated || 0) -
+                    new Date(a.dateCreated || 0)
+            )[0];
+
+        if (!recording) {
+            return reply.code(202).send({
+                success: false,
+                retryable: true,
+                call_sid: callSid,
+                status: call.status,
+                error: 'Twilio recording is not ready yet.'
+            });
+        }
+
+        const recordingUrl =
+            `https://api.twilio.com/2010-04-01/Accounts/` +
+            `${process.env.TWILIO_ACCT_SID}/Recordings/${recording.sid}.mp3`;
+        const audioResponse = await fetch(recordingUrl, {
+            headers: {
+                Authorization:
+                    `Basic ${Buffer.from(
+                        `${process.env.TWILIO_ACCT_SID}:` +
+                        process.env.TWILIO_AUTH_TOKEN
+                    ).toString('base64')}`
+            }
+        });
+
+        if (!audioResponse.ok) {
+            throw new Error(
+                `Twilio recording download failed (${audioResponse.status}).`
+            );
+        }
+
+        const audioBytes = await audioResponse.arrayBuffer();
+        const transcriptionForm = new FormData();
+        transcriptionForm.append(
+            'file',
+            new Blob([audioBytes], { type: 'audio/mpeg' }),
+            `${recording.sid}.mp3`
+        );
+        transcriptionForm.append('model', 'gpt-4o-mini-transcribe');
+        transcriptionForm.append('response_format', 'json');
+
+        const transcriptionResponse = await fetch(
+            'https://api.openai.com/v1/audio/transcriptions',
+            {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${OPENAI_API_KEY}`
+                },
+                body: transcriptionForm
+            }
+        );
+
+        if (!transcriptionResponse.ok) {
+            throw new Error(
+                `OpenAI transcription failed (${transcriptionResponse.status}): ` +
+                (await transcriptionResponse.text()).slice(0, 500)
+            );
+        }
+
+        const transcription = await transcriptionResponse.json();
+        const transcript = String(transcription.text || '').trim();
+
+        if (!transcript) {
+            return reply.code(202).send({
+                success: false,
+                retryable: true,
+                call_sid: callSid,
+                status: call.status,
+                error: 'The recording produced an empty transcript.'
+            });
+        }
+
+        const summaryResponse = await fetch(
+            'https://api.openai.com/v1/chat/completions',
+            {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${OPENAI_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4.1-mini',
+                    temperature: 0.1,
+                    response_format: { type: 'json_object' },
+                    messages: [
+                        {
+                            role: 'system',
+                            content:
+                                'Analyze a Speedy Solutions outbound call. ' +
+                                'Return JSON only with keys summary, outcome, ' +
+                                'offer_accepted, scheduled, callback_requested, ' +
+                                'followup_needed, sentiment, next_action. ' +
+                                'Boolean fields must be Yes, No, or Unclear. ' +
+                                'Outcome should be completed, follow_up, voicemail, ' +
+                                'no_answer, not_interested, or unclear. Keep the ' +
+                                'summary factual and under 45 words.'
+                        },
+                        {
+                            role: 'user',
+                            content: transcript
+                        }
+                    ]
+                })
+            }
+        );
+
+        if (!summaryResponse.ok) {
+            throw new Error(
+                `OpenAI summary failed (${summaryResponse.status}): ` +
+                (await summaryResponse.text()).slice(0, 500)
+            );
+        }
+
+        const summaryPayload = await summaryResponse.json();
+        const analysis = JSON.parse(
+            summaryPayload.choices?.[0]?.message?.content || '{}'
+        );
+
+        return reply.send({
+            success: true,
+            retryable: false,
+            call_sid: callSid,
+            recording_sid: recording.sid,
+            status: call.status,
+            transcript,
+            summary: analysis.summary || transcript.slice(0, 500),
+            outcome: analysis.outcome || 'unclear',
+            offer_accepted: analysis.offer_accepted || 'Unclear',
+            scheduled: analysis.scheduled || 'Unclear',
+            callback_requested: analysis.callback_requested || 'Unclear',
+            followup_needed: analysis.followup_needed || 'Unclear',
+            sentiment: analysis.sentiment || 'Neutral',
+            next_action: analysis.next_action || 'Review call',
+            completed_at: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Outbound recovery failed:', callSid, error);
+        return reply.code(500).send({
+            success: false,
+            retryable: true,
+            call_sid: callSid,
+            error: error?.message || 'Unable to recover outbound call.'
+        });
+    }
+});
+
 fastify.all('/outbound-custom-answer', async (request, reply) => {
     const phone =
         request.query?.phone ||
@@ -278,37 +470,23 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
 
     console.log('Custom outbound answered by:', answeredBy);
 
-    const isFax = answeredBy === 'fax';
-    const isVoicemail = answeredBy.startsWith('machine');
-
-    if (isFax) {
-        return reply
-            .type('text/xml')
-            .send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
-    }
+    const isVoicemail =
+        answeredBy.startsWith('machine') ||
+        answeredBy === 'fax';
 
     if (isVoicemail) {
-        console.log('Routing voicemail to Emma Realtime voice:', {
+        console.log('Leaving one Angi lead voicemail and ending call:', {
             phone,
             customerName,
             answeredBy
         });
 
-        const voicemailMessage =
-            `Hi${customerName ? ` ${String(customerName).split(/\s+/)[0]}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Please call us back at 517-777-8712 or reply to our text. We look forward to helping you!`;
-
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Connect>
-        <Stream url="wss://emma-development-production.up.railway.app/media-stream">
-            <Parameter name="callerPhone" value="${escapeXml(phone)}" />
-            <Parameter name="callMode" value="OUTBOUND_VOICEMAIL" />
-            <Parameter name="voicemailMode" value="true" />
-            <Parameter name="voicemailMessage" value="${escapeXml(voicemailMessage)}" />
-            <Parameter name="customerName" value="${escapeXml(customerName)}" />
-            <Parameter name="sheetRowNumber" value="${escapeXml(sheetRowNumber)}" />
-        </Stream>
-    </Connect>
+    <Say>
+        Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!
+    </Say>
+    <Hangup/>
 </Response>`;
 
         return reply.type('text/xml').send(voicemailResponse);
@@ -352,33 +530,23 @@ fastify.all('/outbound-press1', async (request, reply) => {
         answeredBy
     );
 
-    const isFax = answeredBy === 'fax';
     const isVoicemail =
         answeredBy === 'machine_start' ||
         answeredBy === 'machine_end_beep' ||
         answeredBy === 'machine_end_silence' ||
-        answeredBy === 'machine_end_other';
-
-    if (isFax) {
-        return reply
-            .type('text/xml')
-            .send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
-    }
+        answeredBy === 'machine_end_other' ||
+        answeredBy === 'fax';
 
     if (isVoicemail) {
-        const voicemailMessage =
-            'Hi, this is Emma with SpeedyCleans calling about the house cleaning quote you requested. Please call us back at 517-777-8712, or reply to our text. We look forward to speaking with you!';
-
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Connect>
-        <Stream url="wss://emma-development-production.up.railway.app/media-stream">
-            <Parameter name="callerPhone" value="${escapeXml(customerPhone)}" />
-            <Parameter name="callMode" value="OUTBOUND_VOICEMAIL" />
-            <Parameter name="voicemailMode" value="true" />
-            <Parameter name="voicemailMessage" value="${escapeXml(voicemailMessage)}" />
-        </Stream>
-    </Connect>
+    <Say>
+        Hi, this is Emma calling from Speedy Solutions about the house cleaning quote you requested.
+        We would love to help you get your cleaning scheduled.
+        Please call us back at 517-777-8712, or simply reply to the text message we send you.
+        We look forward to speaking with you. Have a wonderful day.
+    </Say>
+    <Hangup/>
 </Response>`;
 
         return reply
@@ -432,50 +600,6 @@ let completedCustomerTranscripts = [];
 let outboundCustomerName = '';
 let customInstructions = '';
 let sheetRowNumber = '';
-let voicemailMode = false;
-let voicemailMessage = '';
-let callerSilenceTimer = null;
-let silenceFollowUpInProgress = false;
-
-const clearCallerSilenceTimer = () => {
-    if (callerSilenceTimer) clearTimeout(callerSilenceTimer);
-    callerSilenceTimer = null;
-};
-
-const assistantIsWaitingForAnswer = (transcript = '') => {
-    const text = String(transcript).trim().toLowerCase();
-
-    return (
-        text.endsWith('?') ||
-        /\b(let(?:'|’)s lock that in|does that work|sound good|are you still there|which (?:day|time)|what (?:day|time)|would you like|can i|may i)\b/.test(text)
-    );
-};
-
-const scheduleCallerSilenceFollowUp = () => {
-    clearCallerSilenceTimer();
-
-    callerSilenceTimer = setTimeout(() => {
-        callerSilenceTimer = null;
-
-        if (
-            openAiWs.readyState !== WebSocket.OPEN ||
-            silenceFollowUpInProgress ||
-            voicemailMode ||
-            voicemailTakeoverStarted
-        ) {
-            return;
-        }
-
-        silenceFollowUpInProgress = true;
-        openAiWs.send(JSON.stringify({
-            type: 'response.create',
-            response: {
-                instructions:
-                    'The caller has been silent for 8 seconds after your question. Say only: "No rush — are you still there?" Then stop and listen.'
-            }
-        }));
-    }, 8000);
-};
 
 let customer = null;
 let recentCalls = [];
@@ -1197,25 +1321,7 @@ Keep responses short, friendly, and conversational.`                     }
                 );
 
                
-              if (voicemailMode) {
-    customerSpokeBeforeGreeting = false;
-
-    outboundGreetingTimer = setTimeout(() => {
-        outboundGreetingTimer = null;
-
-        if (openAiWs.readyState === WebSocket.OPEN) {
-            openAiWs.send(JSON.stringify({
-                type: 'response.create',
-                response: {
-                    instructions:
-                        `You are leaving a voicemail. In your normal Emma voice, warmly say exactly this message and nothing else: ${voicemailMessage}`
-                }
-            }));
-
-            console.log('Emma Realtime voicemail started.');
-        }
-    }, 75);
-} else if (callMode.startsWith('OUTBOUND')) {
+              if (callMode.startsWith('OUTBOUND')) {
     customerSpokeBeforeGreeting = false;
 
     outboundGreetingTimer = setTimeout(() => {
@@ -1351,27 +1457,18 @@ const takeOverVoicemailCall = async (transcript) => {
             openAiWs.send(JSON.stringify({ type: 'response.cancel' }));
         }
 
-        if (connection.readyState === WebSocket.OPEN) {
-            connection.send(JSON.stringify({
-                event: 'clear',
-                streamSid
-            }));
-        }
+        const voicemailTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice">Hi, this is Emma with Speedy Solutions calling about your Angi request. Please call us back at 5 1 7, 7 7 7, 8 7 1 2. Thank you.</Say>
+    <Hangup/>
+</Response>`;
 
-        const fallbackVoicemailMessage =
-            'Hi, this is Emma with SpeedyCleans calling about your cleaning request. Please call us back at 517-777-8712 or reply to our text. Thank you!';
+        await twilioClient.calls(callSid).update({
+            twiml: voicemailTwiml
+        });
 
-        if (openAiWs.readyState === WebSocket.OPEN) {
-            openAiWs.send(JSON.stringify({
-                type: 'response.create',
-                response: {
-                    instructions:
-                        `You detected voicemail. In your normal Emma voice, warmly say exactly this message and nothing else: ${fallbackVoicemailMessage}`
-                }
-            }));
-        }
-
-        console.log('Fallback voicemail continuing in Emma Realtime voice:', callSid);
+        console.log('Short voicemail started; OpenAI stream stopped:', callSid);
+        await sendOutboundCompletion('voicemail');
     } catch (error) {
         console.error('Voicemail takeover failed:', error);
         voicemailTakeoverStarted = false;
@@ -1518,8 +1615,6 @@ const response = JSON.parse(
     response.type ===
     'conversation.item.input_audio_transcription.completed'
 ) {
-    clearCallerSilenceTimer();
-    silenceFollowUpInProgress = false;
     const customerTranscript = String(
         response.transcript || ''
     ).trim();
@@ -1568,18 +1663,6 @@ if (completedTranscript) {
     completedAssistantTranscripts.push(
         completedTranscript
     );
-}
-
-if (silenceFollowUpInProgress) {
-    silenceFollowUpInProgress = false;
-} else if (
-    !voicemailMode &&
-    !voicemailTakeoverStarted &&
-    assistantIsWaitingForAnswer(completedTranscript)
-) {
-    scheduleCallerSilenceFollowUp();
-} else {
-    clearCallerSilenceTimer();
 }
 const voicemailPhrases = [
     'reached your voicemail',
@@ -1655,8 +1738,6 @@ if (
 }
     // Instantly stop Twilio audio when the customer interrupts
                     if (response.type === 'input_audio_buffer.speech_started') {
-    clearCallerSilenceTimer();
-    silenceFollowUpInProgress = false;
     stopHoldMusic();
     customerSpokeBeforeGreeting = true;
 
@@ -1834,13 +1915,6 @@ customInstructions =
 
 sheetRowNumber =
     customParameters.sheetRowNumber || '';
-
-voicemailMode =
-    String(customParameters.voicemailMode || '').toLowerCase() === 'true';
-
-voicemailMessage =
-    customParameters.voicemailMessage ||
-    'Hi, this is Emma with SpeedyCleans calling about your cleaning request. Please call us back at 517-777-8712 or reply to our text. Thank you!';
 console.log(
     'Outbound customer name:',
     outboundCustomerName || 'not provided'
@@ -1966,7 +2040,6 @@ if (customer) {
                         }
 
                      case 'stop': {
-    clearCallerSilenceTimer();
     console.log(
         'Twilio stream stopped.',
         'Stream SID:',
@@ -1976,9 +2049,7 @@ if (customer) {
     );
 
     await sendOutboundCompletion(
-        voicemailMode || voicemailTakeoverStarted
-            ? 'voicemail'
-            : 'completed'
+        'completed'
     );
 
     break;
