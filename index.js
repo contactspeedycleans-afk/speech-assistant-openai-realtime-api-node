@@ -100,6 +100,9 @@ const PORT = process.env.PORT || 8080;
 const AI_CALL_COMPLETED_WEBHOOK_URL =
     process.env.AI_CALL_COMPLETED_WEBHOOK_URL ||
     'https://hook.us2.make.com/qthdxcyfrr5shx59z5gfhkuoigblw2i4';
+const NEXT_DAY_CONFIRMATION_WEBHOOK_URL =
+    process.env.NEXT_DAY_CONFIRMATION_WEBHOOK_URL ||
+    AI_CALL_COMPLETED_WEBHOOK_URL;
 
 const LOG_EVENT_TYPES = [
     'error',
@@ -162,6 +165,10 @@ fastify.post('/outbound-call', async (request, reply) => {
         body.customer_name || body.customerName || body.name || '';
     const sheet_row_number =
         body.sheet_row_number || body.sheetRowNumber || '';
+    const call_purpose =
+        body.call_purpose || body.callPurpose || '';
+    const customer_email =
+        body.customer_email || body.customerEmail || '';
 
     const suppliedInstructions =
         body.instructions || body.customInstructions || '';
@@ -210,6 +217,8 @@ fastify.post('/outbound-call', async (request, reply) => {
         answerUrl.searchParams.set('customer_name', customer_name);
         answerUrl.searchParams.set('instructions', instructions);
         answerUrl.searchParams.set('sheet_row_number', sheet_row_number);
+        answerUrl.searchParams.set('call_purpose', call_purpose);
+        answerUrl.searchParams.set('customer_email', customer_email);
 
         const call = await twilioClient.calls.create({
             to: phone,
@@ -516,6 +525,14 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
         request.query?.sheet_row_number ||
         request.body?.sheet_row_number ||
         '';
+    const callPurpose =
+        request.query?.call_purpose ||
+        request.body?.call_purpose ||
+        '';
+    const customerEmail =
+        request.query?.customer_email ||
+        request.body?.customer_email ||
+        '';
     const answeredBy = String(
         request.body?.AnsweredBy ||
         request.query?.AnsweredBy ||
@@ -529,17 +546,19 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
         answeredBy === 'fax';
 
     if (isVoicemail) {
-        console.log('Leaving one Angi lead voicemail and ending call:', {
+        console.log('Leaving outbound voicemail and ending call:', {
             phone,
             customerName,
             answeredBy
         });
 
+        const voicemailMessage = callPurpose === 'NEXT_DAY_CONFIRMATION'
+            ? `Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with SpeedyCleans. I was calling to confirm your cleaning tomorrow. Please reply to our text or call us back at 517-777-8712 to confirm or cancel. Thank you!`
+            : `Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!`;
+
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>
-        Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!
-    </Say>
+    <Say>${voicemailMessage}</Say>
     <Hangup/>
 </Response>`;
 
@@ -555,6 +574,8 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
             <Parameter name="customerName" value="${escapeXml(customerName)}" />
             <Parameter name="customInstructions" value="${escapeXml(instructions)}" />
             <Parameter name="sheetRowNumber" value="${escapeXml(sheetRowNumber)}" />
+            <Parameter name="callPurpose" value="${escapeXml(callPurpose)}" />
+            <Parameter name="customerEmail" value="${escapeXml(customerEmail)}" />
         </Stream>
     </Connect>
 </Response>`;
@@ -655,6 +676,8 @@ let completedCustomerTranscripts = [];
 let outboundCustomerName = '';
 let customInstructions = '';
 let sheetRowNumber = '';
+let callPurpose = '';
+let outboundCustomerEmail = '';
 
 let customer = null;
 let recentCalls = [];
@@ -1634,6 +1657,25 @@ ${assistantTranscript}`;
           outcome
       });
 
+      const lowerCustomer = customerTranscript.toLowerCase();
+      const lowerAssistantForResult = assistantTranscript.toLowerCase();
+      const nextDayResult = callPurpose === 'NEXT_DAY_CONFIRMATION'
+          ? {
+              answered: customerTranscript.trim().length > 0,
+              confirmationStatus: /\b(cancel|cancelled|canceled|do not want|don't want|cannot make|can't make)\b/.test(lowerCustomer)
+                  ? 'cancel_requested'
+                  : /\b(yes|yeah|yep|correct|confirm|confirmed|still works|that works|sounds good|okay|ok)\b/.test(lowerCustomer)
+                      ? 'confirmed'
+                      : customerTranscript.trim().length > 0
+                          ? 'unclear'
+                          : 'no_answer',
+              securePhonePaymentRequested: /\b(card|credit card|debit card|pay by phone|over the phone)\b/.test(lowerCustomer),
+              formDeliveryRequested: /\b(text|email|link|form)\b/.test(lowerCustomer),
+              cancellationVerified: /\b(cancelled|canceled)\b/.test(lowerAssistantForResult) &&
+                  !/\b(could not|couldn't|unable|not cancelled|not canceled|staff review|office.*review)\b/.test(lowerAssistantForResult)
+          }
+          : null;
+
 const completionPayload = {
     callSid,
     sheetRowNumber,
@@ -1644,7 +1686,11 @@ const completionPayload = {
     qualityScore: quality.score,
     qualityFlags: quality.flags,
     customerTranscript,
-    assistantTranscript
+    assistantTranscript,
+    callPurpose,
+    customerPhone: callerPhone,
+    customerEmail: outboundCustomerEmail,
+    ...(nextDayResult || {})
 };
 
 const retryDelaysMs = [0, 1500, 3000, 6000, 12000, 24000];
@@ -1657,8 +1703,11 @@ for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
     }
 
     try {
+        const completionWebhookUrl = callPurpose === 'NEXT_DAY_CONFIRMATION'
+            ? NEXT_DAY_CONFIRMATION_WEBHOOK_URL
+            : AI_CALL_COMPLETED_WEBHOOK_URL;
         const webhookResponse = await fetch(
-            AI_CALL_COMPLETED_WEBHOOK_URL,
+            completionWebhookUrl,
             {
                 method: 'POST',
                 headers: {
@@ -2026,6 +2075,8 @@ customInstructions =
 
 sheetRowNumber =
     customParameters.sheetRowNumber || '';
+callPurpose = customParameters.callPurpose || '';
+outboundCustomerEmail = customParameters.customerEmail || '';
 console.log(
     'Outbound customer name:',
     outboundCustomerName || 'not provided'
