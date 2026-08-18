@@ -301,6 +301,59 @@ fastify.post('/recover-outbound-call', async (request, reply) => {
             )[0];
 
         if (!recording) {
+            const noRecordingFinalStatuses = new Set([
+                'busy',
+                'failed',
+                'no-answer',
+                'canceled'
+            ]);
+            const endedAt = call.endTime || call.dateUpdated || null;
+            const endedAgeMs = endedAt
+                ? Date.now() - new Date(endedAt).getTime()
+                : 0;
+            const recordingGraceExpired =
+                call.status === 'completed' &&
+                endedAgeMs >= 10 * 60 * 1000;
+
+            if (
+                noRecordingFinalStatuses.has(call.status) ||
+                recordingGraceExpired
+            ) {
+                const outcome =
+                    call.status === 'no-answer'
+                        ? 'no_answer'
+                        : call.status === 'completed'
+                            ? 'completed_no_recording'
+                            : call.status.replace('-', '_');
+                const summary =
+                    call.status === 'completed'
+                        ? 'Call completed, but no Twilio recording became available after the recovery window.'
+                        : `No conversation recording was created. Twilio final status: ${call.status}.`;
+
+                return reply.send({
+                    success: true,
+                    retryable: false,
+                    call_sid: callSid,
+                    recording_sid: '',
+                    recording_url: '',
+                    status: call.status,
+                    transcript: summary,
+                    summary,
+                    outcome,
+                    offer_accepted: 'No',
+                    scheduled: 'No',
+                    callback_requested: 'No',
+                    followup_needed:
+                        call.status === 'completed' ? 'Yes' : 'No',
+                    sentiment: 'Unclear',
+                    next_action:
+                        call.status === 'completed'
+                            ? 'Review missing Twilio recording'
+                            : 'No conversation occurred',
+                    completed_at: new Date().toISOString()
+                });
+            }
+
             return reply.code(202).send({
                 success: false,
                 retryable: true,
@@ -421,6 +474,7 @@ fastify.post('/recover-outbound-call', async (request, reply) => {
             retryable: false,
             call_sid: callSid,
             recording_sid: recording.sid,
+            recording_url: recordingUrl,
             status: call.status,
             transcript,
             summary: analysis.summary || transcript.slice(0, 500),
@@ -594,6 +648,7 @@ let lastAssistantTranscript = '';
 let completedAssistantTranscripts = [];
 let completedCustomerTranscripts = [];
             let completionWebhookSent = false;
+            let completionWebhookSending = false;
 
 
             
@@ -1547,13 +1602,14 @@ const scoreOutboundCall = ({ customerText, assistantText, outcome }) => {
         const sendOutboundCompletion = async (status = 'completed') => {
     if (
         completionWebhookSent ||
+        completionWebhookSending ||
         !callMode.startsWith('OUTBOUND') ||
         !sheetRowNumber
     ) {
         return;
     }
 
-    completionWebhookSent = true;
+    completionWebhookSending = true;
 
     try {
       const customerTranscript =
@@ -1578,12 +1634,7 @@ ${assistantTranscript}`;
           outcome
       });
 
-await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json'
-    },
- body: JSON.stringify({
+const completionPayload = {
     callSid,
     sheetRowNumber,
     status,
@@ -1594,8 +1645,61 @@ await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
     qualityFlags: quality.flags,
     customerTranscript,
     assistantTranscript
-})
-});
+};
+
+const retryDelaysMs = [0, 1500, 3000, 6000, 12000, 24000];
+let lastWebhookError = null;
+
+for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
+    const delayMs = retryDelaysMs[attempt];
+    if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    try {
+        const webhookResponse = await fetch(
+            AI_CALL_COMPLETED_WEBHOOK_URL,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(completionPayload),
+                signal: AbortSignal.timeout(15000)
+            }
+        );
+
+        if (!webhookResponse.ok) {
+            throw new Error(
+                `Completion webhook returned HTTP ${webhookResponse.status}.`
+            );
+        }
+
+        completionWebhookSent = true;
+        lastWebhookError = null;
+
+        console.log(
+            'Outbound completion webhook delivered:',
+            sheetRowNumber,
+            `attempt ${attempt + 1}`
+        );
+        break;
+    } catch (error) {
+        lastWebhookError = error;
+        console.error(
+            'Outbound completion webhook attempt failed:',
+            sheetRowNumber,
+            `attempt ${attempt + 1}`,
+            error?.message || error
+        );
+    }
+}
+
+if (!completionWebhookSent) {
+    throw lastWebhookError || new Error(
+        'Completion webhook failed after all retry attempts.'
+    );
+}
 
         console.log(
             'Outbound completion webhook sent:',
@@ -1609,6 +1713,8 @@ await fetch(AI_CALL_COMPLETED_WEBHOOK_URL, {
             'Outbound completion webhook failed:',
             error
         );
+    } finally {
+        completionWebhookSending = false;
     }
 };    
 openAiWs.on('message', async (data) => {
