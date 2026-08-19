@@ -1,0 +1,340 @@
+const SMS_TOOLS = [
+    {
+        type: 'function',
+        function: {
+            name: 'search_company_knowledge',
+            description: 'Search SpeedyCleans company knowledge when the answer is not already in the SMS instructions or account context.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    query: { type: 'string' }
+                },
+                required: ['query'],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'create_octopus_booking',
+            description: 'Create one new OctopusPro booking only after the customer explicitly confirms the complete service, address, date, arrival window, duration and pricing.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    customerName: { type: 'string' },
+                    customerPhone: { type: 'string' },
+                    customerEmail: { type: 'string' },
+                    serviceAddress: { type: 'string' },
+                    serviceType: { type: 'string' },
+                    requestedDate: { type: 'string', description: 'YYYY-MM-DD' },
+                    arrivalWindow: { type: 'string' },
+                    durationMinutes: { type: 'integer', minimum: 120 },
+                    recurringFrequency: { type: 'string', enum: ['one_time', 'weekly', 'biweekly', 'triweekly', 'monthly'] },
+                    quotedPrice: { type: 'number' },
+                    specialRequests: { type: 'string' },
+                    customerConfirmed: { type: 'boolean' }
+                },
+                required: ['customerName', 'customerPhone', 'serviceAddress', 'serviceType', 'requestedDate', 'arrivalWindow', 'durationMinutes', 'recurringFrequency', 'quotedPrice', 'customerConfirmed'],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'cancel_octopus_booking',
+            description: 'Cancel one exact future OctopusPro visit only after explicit customer confirmation. Never cancel an entire recurring series.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    bookingId: { type: 'string' },
+                    cancellationReason: { type: 'string' },
+                    customerConfirmed: { type: 'boolean' },
+                    cancellationScope: { type: 'string', enum: ['single_visit', 'recurring_series'] }
+                },
+                required: ['bookingId', 'cancellationReason', 'customerConfirmed', 'cancellationScope'],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'reschedule_octopus_booking',
+            description: 'Move one exact future OctopusPro visit after the customer explicitly confirms the exact new date and time.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    bookingId: { type: 'string' },
+                    requestedDate: { type: 'string', description: 'YYYY-MM-DD' },
+                    requestedStartTime: { type: 'string', description: '24-hour HH:MM' },
+                    customerConfirmed: { type: 'boolean' },
+                    rescheduleScope: { type: 'string', enum: ['single_visit', 'recurring_series'] }
+                },
+                required: ['bookingId', 'requestedDate', 'requestedStartTime', 'customerConfirmed', 'rescheduleScope'],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_octopus_billing',
+            description: 'Read verified billing and card-on-file status for one recognized customer booking. Never collect full card details by SMS.',
+            parameters: {
+                type: 'object',
+                properties: { bookingId: { type: 'string' } },
+                required: ['bookingId'],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'record_technician_status_update',
+            description: 'For a recognized cleaner only: record their own en-route, arrived, started, completed, running-late or lockout update.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    bookingNumber: { type: 'string' },
+                    status: { type: 'string' },
+                    note: { type: 'string' }
+                },
+                required: ['status'],
+                additionalProperties: false
+            }
+        }
+    }
+];
+
+function safeJson(value) {
+    try {
+        return JSON.parse(value || '{}');
+    } catch {
+        return {};
+    }
+}
+
+function summarizeBookings(bookings = []) {
+    return bookings.map((booking) => ({
+        bookingId: booking.booking_number || booking.octopus_booking_id || booking.id,
+        octopusBookingId: booking.octopus_booking_id || null,
+        date: booking.booking_date || null,
+        arrivalWindow: booking.arrival_window || null,
+        status: booking.status || null,
+        serviceType: booking.service_type || null,
+        total: booking.final_total || booking.estimated_total || null
+    }));
+}
+
+async function runRealtimeHandler(handler, name, args, context = {}) {
+    let output = null;
+    const socket = {
+        readyState: 1,
+        send(raw) {
+            const event = safeJson(raw);
+            if (event.type === 'conversation.item.create' && event.item?.type === 'function_call_output') {
+                output = safeJson(event.item.output);
+            }
+        }
+    };
+
+    await handler({
+        response: {
+            type: 'response.function_call_arguments.done',
+            name,
+            call_id: `sms-${Date.now()}`,
+            arguments: JSON.stringify(args || {})
+        },
+        openAiWs: socket,
+        WebSocket: { OPEN: 1 },
+        ...context
+    });
+
+    return output || { success: false, error: 'The requested action returned no result.' };
+}
+
+async function createOctopusBooking(args, customerPhone) {
+    if (args.customerConfirmed !== true) {
+        return { success: false, outcome: 'confirmation_required', error: 'The customer must explicitly confirm the complete booking first.' };
+    }
+
+    const required = ['customerName', 'serviceAddress', 'serviceType', 'requestedDate', 'arrivalWindow'];
+    const missing = required.filter((key) => !String(args[key] || '').trim());
+    if (missing.length || Number(args.durationMinutes) < 120 || !Number.isFinite(Number(args.quotedPrice))) {
+        return { success: false, outcome: 'missing_booking_details', missing };
+    }
+
+    const url = String(process.env.OCTOPUS_CREATE_BOOKING_WEBHOOK_URL || '').trim();
+    if (!url) {
+        return {
+            success: false,
+            outcome: 'connector_not_configured',
+            staff_review_required: true,
+            error: 'The OctopusPro create-booking connector is not configured. No booking was created.'
+        };
+    }
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...(process.env.OCTOPUS_CREATE_BOOKING_SECRET
+                ? { 'X-Emma-Secret': process.env.OCTOPUS_CREATE_BOOKING_SECRET }
+                : {})
+        },
+        body: JSON.stringify({
+            ...args,
+            customerPhone: args.customerPhone || customerPhone,
+            source: 'EMMA_SMS'
+        }),
+        signal: AbortSignal.timeout(45000)
+    });
+
+    const text = await response.text();
+    const result = safeJson(text);
+    const bookingId = result.bookingId || result.booking_id || result.octopusBookingId || result.octopus_booking_id;
+    const bookingNumber = result.bookingNumber || result.booking_number || result.bokNumber;
+    const verified = response.ok && result.success === true && Boolean(bookingId || bookingNumber);
+
+    return {
+        ...result,
+        success: verified,
+        verified_created_in_octopus: verified,
+        bookingId: bookingId || null,
+        bookingNumber: bookingNumber || null,
+        ...(verified ? {} : {
+            outcome: result.outcome || 'verification_failed',
+            error: result.error || 'OctopusPro did not return a verified booking ID. No booking was promised.'
+        })
+    };
+}
+
+export async function runSmsReceptionist({
+    openAiApiKey,
+    model,
+    systemMessage,
+    history,
+    customer,
+    technician,
+    customerBookings,
+    customerPhone,
+    searchCompanyKnowledge,
+    handlers
+}) {
+    const identity = technician
+        ? { role: 'technician', id: technician.id, name: technician.full_name || `${technician.first_name || ''} ${technician.last_name || ''}`.trim() }
+        : customer
+            ? { role: 'customer', id: customer.id, name: `${customer.first_name || ''} ${customer.last_name || ''}`.trim(), email: customer.email || '' }
+            : { role: 'unknown', name: '' };
+
+    const contextMessage = [
+        'LIVE VERIFIED ACCOUNT CONTEXT:',
+        JSON.stringify({ identity, futureBookings: summarizeBookings(customerBookings) }),
+        'Use only these verified records. Never expose private details before appropriate verification.',
+        'Never say created, cancelled, rescheduled, paid, or completed unless the corresponding tool returns success true and a verification field when applicable.',
+        technician
+            ? 'This sender is a recognized cleaner. Cleaner operational updates are allowed; customer booking cancellation and customer billing disclosure are not.'
+            : 'This sender is not a recognized cleaner. Never record a cleaner status update for them.'
+    ].join('\n');
+
+    const messages = [
+        { role: 'system', content: systemMessage },
+        { role: 'system', content: contextMessage },
+        ...history
+    ];
+
+    let action = 'conversation';
+    let actionResult = null;
+
+    for (let round = 0; round < 5; round += 1) {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${openAiApiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model,
+                temperature: 0.35,
+                messages,
+                tools: SMS_TOOLS,
+                tool_choice: 'auto'
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`OpenAI SMS response failed (${response.status}): ${(await response.text()).slice(0, 500)}`);
+        }
+
+        const data = await response.json();
+        const message = data.choices?.[0]?.message;
+        if (!message) throw new Error('Emma generated no SMS response.');
+
+        messages.push(message);
+        const calls = message.tool_calls || [];
+        if (!calls.length) {
+            return {
+                reply: String(message.content || '').trim(),
+                identity,
+                action,
+                actionResult,
+                futureBookings: summarizeBookings(customerBookings)
+            };
+        }
+
+        for (const call of calls) {
+            const name = call.function?.name;
+            const args = safeJson(call.function?.arguments);
+            let result;
+            action = name || 'unknown_tool';
+
+            if (name === 'search_company_knowledge') {
+                try {
+                    result = { success: true, results: await searchCompanyKnowledge(args.query || '') };
+                } catch (error) {
+                    result = { success: false, error: error.message };
+                }
+            } else if (name === 'create_octopus_booking') {
+                result = await createOctopusBooking(args, customerPhone);
+            } else if (name === 'cancel_octopus_booking') {
+                if (technician) {
+                    result = { success: false, error: 'Cleaner identities cannot cancel customer bookings through SMS.' };
+                } else {
+                    result = await runRealtimeHandler(handlers.handleCancelBookingTool, name, args, { customerBookings });
+                }
+            } else if (name === 'reschedule_octopus_booking') {
+                if (technician) {
+                    result = { success: false, error: 'Cleaner identities cannot reschedule customer bookings through SMS.' };
+                } else {
+                    result = await runRealtimeHandler(handlers.handleRescheduleBookingTool, name, args, { customerBookings });
+                }
+            } else if (name === 'lookup_octopus_billing') {
+                if (technician) {
+                    result = { success: false, error: 'Cleaner identities cannot access customer billing through SMS.' };
+                } else {
+                    result = await runRealtimeHandler(handlers.handleBillingLookupTool, name, args, { callerPhone: customerPhone, customerBookings });
+                }
+            } else if (name === 'record_technician_status_update') {
+                if (!technician) {
+                    result = { success: false, error: 'This phone number is not matched to a recognized cleaner.' };
+                } else {
+                    result = await runRealtimeHandler(handlers.handleTechnicianStatusTool, name, args, { callerPhone: customerPhone });
+                }
+            } else {
+                result = { success: false, error: 'Unsupported tool.' };
+            }
+
+            actionResult = result;
+            messages.push({
+                role: 'tool',
+                tool_call_id: call.id,
+                content: JSON.stringify(result)
+            });
+        }
+    }
+
+    throw new Error('Emma used too many SMS tool steps without completing a response.');
+}
