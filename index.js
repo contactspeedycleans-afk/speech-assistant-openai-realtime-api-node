@@ -17,6 +17,7 @@ import { createOpenAiToolHandlers } from './lib/openAiToolHandlers.js';
 import { buildSessionContext } from './lib/sessionContextBuilder.js';
 import { buildOpenAiSession } from './lib/openAiSessionBuilder.js';
 import { createTechnicianSearch } from './lib/technicianSearch.js';
+import { runSmsReceptionist } from './lib/smsReceptionist.js';
 
 
 dotenv.config();
@@ -78,6 +79,13 @@ const {
     recordTechnicianStatusUpdate,
     db
 });
+
+const smsToolHandlers = {
+    handleTechnicianStatusTool,
+    handleBillingLookupTool,
+    handleCancelBookingTool,
+    handleRescheduleBookingTool
+};
 
 
 console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
@@ -317,6 +325,16 @@ fastify.post('/sms-message', async (request, reply) => {
     );
 
     const smsCustomer = await findCustomerByPhone(customerPhone);
+    const technicianResult = await db.query(
+        `SELECT *
+         FROM public.technicians
+         WHERE RIGHT(REGEXP_REPLACE(COALESCE(phone_number, ''), '[^0-9]', '', 'g'), 10)
+             = RIGHT(REGEXP_REPLACE($1, '[^0-9]', '', 'g'), 10)
+         ORDER BY id DESC
+         LIMIT 1`,
+        [customerPhone]
+    );
+    const smsTechnician = technicianResult.rows[0] || null;
     const customerName = [
         smsCustomer?.first_name,
         smsCustomer?.last_name
@@ -336,42 +354,23 @@ fastify.post('/sms-message', async (request, reply) => {
         content: row.message
     }));
 
-    const openAiResponse = await fetch(
-        'https://api.openai.com/v1/chat/completions',
-        {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${OPENAI_API_KEY}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: process.env.SMS_OPENAI_MODEL || 'gpt-4.1-mini',
-                temperature: 0.45,
-                messages: [
-                    { role: 'system', content: SMS_SYSTEM_MESSAGE },
-                    {
-                        role: 'system',
-                        content: customerName
-                            ? `This is a recognized returning customer named ${customerName}. Use their first name naturally when helpful, but do not repeatedly greet them or expose private account details.`
-                            : 'This phone number is not matched to a known customer. Ask for their first name naturally when needed.'
-                    },
-                    ...history
-                ]
-            })
-        }
-    );
+    const customerBookings = smsCustomer
+        ? await findCustomerBookings(smsCustomer.id, customerPhone)
+        : await findCustomerBookings(null, customerPhone);
 
-    if (!openAiResponse.ok) {
-        throw new Error(
-            `OpenAI SMS response failed (${openAiResponse.status}): ` +
-            (await openAiResponse.text()).slice(0, 500)
-        );
-    }
-
-    const openAiData = await openAiResponse.json();
-    const smsReply = String(
-        openAiData.choices?.[0]?.message?.content || ''
-    ).trim();
+    const smsResult = await runSmsReceptionist({
+        openAiApiKey: OPENAI_API_KEY,
+        model: process.env.SMS_OPENAI_MODEL || 'gpt-4.1-mini',
+        systemMessage: SMS_SYSTEM_MESSAGE,
+        history,
+        customer: smsCustomer,
+        technician: smsTechnician,
+        customerBookings,
+        customerPhone,
+        searchCompanyKnowledge,
+        handlers: smsToolHandlers
+    });
+    const smsReply = String(smsResult.reply || '').trim();
 
     if (!smsReply) {
         throw new Error('Emma generated an empty SMS reply.');
@@ -389,11 +388,17 @@ fastify.post('/sms-message', async (request, reply) => {
         shouldReply: true,
         customerPhone,
         customerName,
+        senderRole: smsResult.identity?.role || 'unknown',
+        senderName: smsResult.identity?.name || customerName,
         twilioNumber,
         incomingMessage: customerMessage,
         reply: smsReply,
         messageSid,
-        receivedAt: new Date().toISOString()
+        receivedAt: new Date().toISOString(),
+        action: smsResult.action,
+        actionSuccess: smsResult.actionResult?.success === true,
+        actionResult: smsResult.actionResult,
+        futureBookings: smsResult.futureBookings
     });
 });
 
