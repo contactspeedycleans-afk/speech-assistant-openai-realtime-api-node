@@ -316,6 +316,12 @@ fastify.post('/sms-message', async (request, reply) => {
         [customerPhone, twilioNumber, customerMessage, messageSid || null]
     );
 
+    const smsCustomer = await findCustomerByPhone(customerPhone);
+    const customerName = [
+        smsCustomer?.first_name,
+        smsCustomer?.last_name
+    ].filter(Boolean).join(' ').trim();
+
     const historyResult = await db.query(
         `SELECT direction, message
          FROM emma_sms_messages
@@ -343,6 +349,12 @@ fastify.post('/sms-message', async (request, reply) => {
                 temperature: 0.45,
                 messages: [
                     { role: 'system', content: SMS_SYSTEM_MESSAGE },
+                    {
+                        role: 'system',
+                        content: customerName
+                            ? `This is a recognized returning customer named ${customerName}. Use their first name naturally when helpful, but do not repeatedly greet them or expose private account details.`
+                            : 'This phone number is not matched to a known customer. Ask for their first name naturally when needed.'
+                    },
                     ...history
                 ]
             })
@@ -376,6 +388,7 @@ fastify.post('/sms-message', async (request, reply) => {
         success: true,
         shouldReply: true,
         customerPhone,
+        customerName,
         twilioNumber,
         incomingMessage: customerMessage,
         reply: smsReply,
