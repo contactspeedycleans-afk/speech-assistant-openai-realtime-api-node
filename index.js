@@ -6,6 +6,7 @@ import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import twilio from 'twilio';
 import SYSTEM_MESSAGE from './prompts/systemMessage.js';
+import SMS_SYSTEM_MESSAGE from './prompts/smsSystemMessage.js';
 import { createCustomerLookup } from './lib/customerLookup.js';
 import { createBookingLookup } from './lib/bookingLookup.js';
 import { createTechnicianStatus } from './lib/technicianStatus.js';
@@ -259,6 +260,128 @@ fastify.post('/outbound-call', async (request, reply) => {
                 'Unable to start outbound call.'
         });
     }
+});
+
+fastify.post('/sms-message', async (request, reply) => {
+    const configuredSecret = process.env.SMS_WEBHOOK_SECRET || '';
+    const suppliedSecret = String(request.headers['x-emma-secret'] || '');
+
+    if (configuredSecret && suppliedSecret !== configuredSecret) {
+        return reply.code(401).send({ success: false, error: 'Unauthorized.' });
+    }
+
+    const body = request.body || {};
+    const customerPhone = String(body.from || body.From || '').trim();
+    const twilioNumber = String(body.to || body.To || '').trim();
+    const customerMessage = String(body.message || body.Body || '').trim();
+    const messageSid = String(body.message_sid || body.MessageSid || '').trim();
+
+    if (!customerPhone || !twilioNumber || !customerMessage) {
+        return reply.code(400).send({
+            success: false,
+            error: 'from, to, and message are required.'
+        });
+    }
+
+    const optOutWords = new Set([
+        'stop', 'stopall', 'unsubscribe', 'cancel', 'end', 'quit'
+    ]);
+    if (optOutWords.has(customerMessage.toLowerCase())) {
+        return reply.send({
+            success: true,
+            shouldReply: false,
+            optedOut: true,
+            customerPhone,
+            twilioNumber,
+            messageSid
+        });
+    }
+
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS emma_sms_messages (
+            id BIGSERIAL PRIMARY KEY,
+            customer_phone TEXT NOT NULL,
+            twilio_number TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            message TEXT NOT NULL,
+            message_sid TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
+
+    await db.query(
+        `INSERT INTO emma_sms_messages
+            (customer_phone, twilio_number, direction, message, message_sid)
+         VALUES ($1, $2, 'inbound', $3, $4)`,
+        [customerPhone, twilioNumber, customerMessage, messageSid || null]
+    );
+
+    const historyResult = await db.query(
+        `SELECT direction, message
+         FROM emma_sms_messages
+         WHERE customer_phone = $1 AND twilio_number = $2
+         ORDER BY created_at DESC, id DESC
+         LIMIT 20`,
+        [customerPhone, twilioNumber]
+    );
+
+    const history = historyResult.rows.reverse().map((row) => ({
+        role: row.direction === 'outbound' ? 'assistant' : 'user',
+        content: row.message
+    }));
+
+    const openAiResponse = await fetch(
+        'https://api.openai.com/v1/chat/completions',
+        {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${OPENAI_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: process.env.SMS_OPENAI_MODEL || 'gpt-4.1-mini',
+                temperature: 0.45,
+                messages: [
+                    { role: 'system', content: SMS_SYSTEM_MESSAGE },
+                    ...history
+                ]
+            })
+        }
+    );
+
+    if (!openAiResponse.ok) {
+        throw new Error(
+            `OpenAI SMS response failed (${openAiResponse.status}): ` +
+            (await openAiResponse.text()).slice(0, 500)
+        );
+    }
+
+    const openAiData = await openAiResponse.json();
+    const smsReply = String(
+        openAiData.choices?.[0]?.message?.content || ''
+    ).trim();
+
+    if (!smsReply) {
+        throw new Error('Emma generated an empty SMS reply.');
+    }
+
+    await db.query(
+        `INSERT INTO emma_sms_messages
+            (customer_phone, twilio_number, direction, message)
+         VALUES ($1, $2, 'outbound', $3)`,
+        [customerPhone, twilioNumber, smsReply]
+    );
+
+    return reply.send({
+        success: true,
+        shouldReply: true,
+        customerPhone,
+        twilioNumber,
+        incomingMessage: customerMessage,
+        reply: smsReply,
+        messageSid,
+        receivedAt: new Date().toISOString()
+    });
 });
 
 // Recovery endpoint used by the Make.com "missing AI summary" scenario.
