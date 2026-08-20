@@ -179,6 +179,28 @@ fastify.post('/outbound-call', async (request, reply) => {
     const customer_email =
         body.customer_email || body.customerEmail || '';
 
+    // Keep Angi/lead booking fields structured for the entire call. Previously
+    // these values were flattened into customInstructions and disappeared from
+    // the completion webhook, leaving Make without a usable booking address.
+    const leadBookingData = {
+        leadSource: body.lead_source || body.leadSource || '',
+        serviceType:
+            body.service_type || body.serviceType || body.service || body.cleaning_type || '',
+        recurringFrequency:
+            body.recurring_frequency || body.recurringFrequency || body.frequency || '',
+        address: body.address || body.service_address || body.serviceAddress || '',
+        streetNumber: body.street_number || body.streetNumber || '',
+        street: body.street || body.street_address || body.streetAddress || '',
+        city: body.city || body.suburb || '',
+        state: body.state || '',
+        zip: body.zip || body.postcode || body.postal_code || '',
+        requestedDate: body.requested_date || body.requestedDate || '',
+        requestedStartTime:
+            body.requested_start_time || body.requestedStartTime || body.requested_time || '',
+        arrivalWindow: body.arrival_window || body.arrivalWindow || '',
+        durationMinutes: body.duration_minutes || body.durationMinutes || ''
+    };
+
     const suppliedInstructions =
         body.instructions || body.customInstructions || '';
     const knownLeadDetails = [
@@ -717,6 +739,19 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
             <Parameter name="sheetRowNumber" value="${escapeXml(sheetRowNumber)}" />
             <Parameter name="callPurpose" value="${escapeXml(callPurpose)}" />
             <Parameter name="customerEmail" value="${escapeXml(customerEmail)}" />
+            <Parameter name="leadSource" value="${escapeXml(leadBookingData.leadSource)}" />
+            <Parameter name="serviceType" value="${escapeXml(leadBookingData.serviceType)}" />
+            <Parameter name="recurringFrequency" value="${escapeXml(leadBookingData.recurringFrequency)}" />
+            <Parameter name="customerAddress" value="${escapeXml(leadBookingData.address)}" />
+            <Parameter name="streetNumber" value="${escapeXml(leadBookingData.streetNumber)}" />
+            <Parameter name="street" value="${escapeXml(leadBookingData.street)}" />
+            <Parameter name="city" value="${escapeXml(leadBookingData.city)}" />
+            <Parameter name="state" value="${escapeXml(leadBookingData.state)}" />
+            <Parameter name="zip" value="${escapeXml(leadBookingData.zip)}" />
+            <Parameter name="requestedDate" value="${escapeXml(leadBookingData.requestedDate)}" />
+            <Parameter name="requestedStartTime" value="${escapeXml(leadBookingData.requestedStartTime)}" />
+            <Parameter name="arrivalWindow" value="${escapeXml(leadBookingData.arrivalWindow)}" />
+            <Parameter name="durationMinutes" value="${escapeXml(leadBookingData.durationMinutes)}" />
         </Stream>
     </Connect>
 </Response>`;
@@ -819,6 +854,19 @@ let customInstructions = '';
 let sheetRowNumber = '';
 let callPurpose = '';
 let outboundCustomerEmail = '';
+let outboundLeadSource = '';
+let outboundServiceType = '';
+let outboundRecurringFrequency = '';
+let outboundCustomerAddress = '';
+let outboundStreetNumber = '';
+let outboundStreet = '';
+let outboundCity = '';
+let outboundState = '';
+let outboundZip = '';
+let outboundRequestedDate = '';
+let outboundRequestedStartTime = '';
+let outboundArrivalWindow = '';
+let outboundDurationMinutes = '';
 
 let customer = null;
 let recentCalls = [];
@@ -924,6 +972,14 @@ const sessionContext = buildSessionContext({
     customerBookings,
     callMode,
     outboundCustomerName,
+    outboundLead: {
+        address: outboundCustomerAddress,
+        streetNumber: outboundStreetNumber,
+        street: outboundStreet,
+        city: outboundCity,
+        state: outboundState,
+        zip: outboundZip
+    },
     customInstructions,
     callerPhone
 });
@@ -1831,6 +1887,20 @@ const completionPayload = {
     callPurpose,
     customerPhone: callerPhone,
     customerEmail: outboundCustomerEmail,
+    customerName: outboundCustomerName || [customer?.first_name, customer?.last_name].filter(Boolean).join(' '),
+    leadSource: outboundLeadSource,
+    serviceType: outboundServiceType,
+    recurringFrequency: outboundRecurringFrequency,
+    address: outboundCustomerAddress || customer?.address || '',
+    streetNumber: outboundStreetNumber || customer?.street_number || '',
+    street: outboundStreet || customer?.street || customer?.street_address || '',
+    city: outboundCity || customer?.city || customer?.suburb || '',
+    state: outboundState || customer?.state || '',
+    zip: outboundZip || customer?.zip || customer?.postcode || '',
+    requestedDate: outboundRequestedDate,
+    requestedStartTime: outboundRequestedStartTime,
+    arrivalWindow: outboundArrivalWindow,
+    durationMinutes: outboundDurationMinutes,
     ...(nextDayResult || {})
 };
 
@@ -2218,6 +2288,19 @@ sheetRowNumber =
     customParameters.sheetRowNumber || '';
 callPurpose = customParameters.callPurpose || '';
 outboundCustomerEmail = customParameters.customerEmail || '';
+outboundLeadSource = customParameters.leadSource || '';
+outboundServiceType = customParameters.serviceType || '';
+outboundRecurringFrequency = customParameters.recurringFrequency || '';
+outboundCustomerAddress = customParameters.customerAddress || '';
+outboundStreetNumber = customParameters.streetNumber || '';
+outboundStreet = customParameters.street || '';
+outboundCity = customParameters.city || '';
+outboundState = customParameters.state || '';
+outboundZip = customParameters.zip || '';
+outboundRequestedDate = customParameters.requestedDate || '';
+outboundRequestedStartTime = customParameters.requestedStartTime || '';
+outboundArrivalWindow = customParameters.arrivalWindow || '';
+outboundDurationMinutes = customParameters.durationMinutes || '';
 console.log(
     'Outbound customer name:',
     outboundCustomerName || 'not provided'
