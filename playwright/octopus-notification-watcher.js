@@ -2320,6 +2320,7 @@ async function setJobRequestRadius(
 
 
   const perPage = 20;
+  const maxRecipientsPerRound = 100;
 
   let pageNumber = 1;
   let loadedCount = 0;
@@ -2329,6 +2330,7 @@ async function setJobRequestRadius(
   let pagesLoaded = 0;
   let lastPageWithWithinRadius = 0;
   const fieldworkerIdsWithinRadius = [];
+  const fieldworkersWithinRadius = [];
 
 
   while (
@@ -2501,6 +2503,10 @@ async function setJobRequestRadius(
           fieldworkerIdsWithinRadius.push(
             String(id)
           );
+          fieldworkersWithinRadius.push({
+            id: String(id),
+            distance
+          });
         }
       }
     }
@@ -2549,6 +2555,46 @@ async function setJobRequestRadius(
     console.log(
       `Octopus API page ${pageNumber}: loaded ${contractors.length} fieldworkers; cumulative ${loadedCount}${totalCount !== null ? ` of ${totalCount}` : ""}; sane distance range ${pageMinDistance ?? "unknown"}-${pageMaxDistance ?? "unknown"} miles; ${withinRadiusOnPage} on this page are within ${radiusMiles} miles.`
     );
+
+
+    /*
+     * Production cap: only contact the closest 100 eligible fieldworkers in
+     * each radius round. Octopus returns this endpoint in nearest-first order,
+     * so once at least 100 in-radius workers have been collected we can stop
+     * pagination immediately instead of scanning hundreds of distant workers.
+     */
+    if (
+      fieldworkersWithinRadius.length >= maxRecipientsPerRound
+    ) {
+      fieldworkersWithinRadius.sort(
+        (a, b) => a.distance - b.distance
+      );
+
+      const closest =
+        fieldworkersWithinRadius.slice(
+          0,
+          maxRecipientsPerRound
+        );
+
+      fieldworkerIdsWithinRadius.splice(
+        0,
+        fieldworkerIdsWithinRadius.length,
+        ...closest.map((worker) => worker.id)
+      );
+
+      lastPageWithWithinRadius =
+        Math.ceil(
+          maxRecipientsPerRound / perPage
+        );
+
+      targetReached = true;
+
+      console.log(
+        `Closest-${maxRecipientsPerRound} cap reached after API page ${pageNumber}; stopping pagination early. Farthest selected cleaner is ${closest[closest.length - 1]?.distance ?? "unknown"} miles away.`
+      );
+
+      break;
+    }
 
 
     /*
@@ -2611,7 +2657,7 @@ async function setJobRequestRadius(
 
 
   console.log(
-    `Fieldworker radius calculation is ready for ${radiusMiles} miles: ${fieldworkerIdsWithinRadius.length} fieldworkers are within radius; ${loadedCount} candidates inspected; farthest inspected distance ${farthestDistance ?? "unknown"} miles.`
+    `Fieldworker radius calculation is ready for ${radiusMiles} miles: selecting up to ${maxRecipientsPerRound} closest fieldworkers; ${fieldworkerIdsWithinRadius.length} selected; ${loadedCount} candidates inspected; farthest inspected distance ${farthestDistance ?? "unknown"} miles.`
   );
 
 
@@ -2722,7 +2768,7 @@ async function setJobRequestRadius(
        * control is absent; continue to the popup's Send action.
        */
       console.warn(
-        `Octopus calculated ${fieldworkerIdsWithinRadius.length} eligible fieldworkers within ${radiusMiles} miles, but the popup has no visible Load More control. Continuing to Send using Octopus's current server-managed recipient list.`
+        `Octopus selected ${fieldworkerIdsWithinRadius.length} closest eligible fieldworkers within ${radiusMiles} miles, but the popup has no visible Load More control. Continuing to Send using Octopus's current server-managed recipient list.`
       );
 
       break;
