@@ -3272,29 +3272,60 @@ async function openJobRequestModal(
     );
 
 
-  // Octopus renders the final Send button at the bottom of the real
-  // Send Job Request dialog. In the current UI that button is not reliably
-  // classed as .save-btn and can be portaled outside our detected container.
-  // Find an actually visible button whose accessible/text value is exactly Send.
-  let finalSendButton = null;
+  // Octopus renders the final Send control at the bottom-right of the
+  // Send Job Request dialog. Depending on the Octopus build it may be a
+  // <button>, <a>, [role="button"], or submit input. Scroll the real dialog
+  // to the bottom first, then search both inside the dialog and globally.
+  await jobRequestDialog
+    .evaluate((root) => {
+      const nodes = [root, ...root.querySelectorAll("*")];
 
-  for (
-    let attempt = 1;
-    attempt <= 12;
-    attempt += 1
-  ) {
-    const candidates = [
-      page.getByRole("button", {
-        name: /^\s*Send\s*$/i,
-        exact: true
-      }),
-      page.locator("button").filter({
-        hasText: /^\s*Send\s*$/i
-      }),
-      page.locator("input[type='submit'][value='Send']")
+      for (const node of nodes) {
+        if (!(node instanceof HTMLElement)) {
+          continue;
+        }
+
+        if (node.scrollHeight > node.clientHeight) {
+          node.scrollTop = node.scrollHeight;
+        }
+      }
+    })
+    .catch(() => {});
+
+  await page.waitForTimeout(750);
+
+  let finalSendButton = null;
+  const finalSendWaitStartedAt = Date.now();
+  let finalSendAttempt = 0;
+
+  while (Date.now() - finalSendWaitStartedAt < 45000) {
+    finalSendAttempt += 1;
+    const attempt = finalSendAttempt;
+    const candidateSets = [
+      jobRequestDialog
+        .locator("button, a, [role='button']")
+        .filter({
+          hasText: /^\s*Send\s*$/i
+        }),
+
+      page
+        .locator("button, a, [role='button']")
+        .filter({
+          hasText: /^\s*Send\s*$/i
+        }),
+
+      jobRequestDialog
+        .locator("input[type='submit'], input[type='button']")
+        .filter({
+          has: page.locator("xpath=.")
+        }),
+
+      page.locator(
+        "input[type='submit'][value='Send'], input[type='button'][value='Send']"
+      )
     ];
 
-    for (const candidateSet of candidates) {
+    for (const candidateSet of candidateSets) {
       const candidateCount =
         await candidateSet
           .count()
@@ -3308,11 +3339,36 @@ async function openJobRequestModal(
         const candidate =
           candidateSet.nth(index);
 
-        if (
+        const text =
+          await candidate
+            .evaluate((element) =>
+              String(
+                element.innerText ||
+                element.textContent ||
+                element.getAttribute("value") ||
+                element.getAttribute("aria-label") ||
+                ""
+              )
+                .replace(/\s+/g, " ")
+                .trim()
+            )
+            .catch(() => "");
+
+        if (!/^Send$/i.test(text)) {
+          continue;
+        }
+
+        const visible =
           await candidate
             .isVisible()
-            .catch(() => false)
-        ) {
+            .catch(() => false);
+
+        const enabled =
+          await candidate
+            .isEnabled()
+            .catch(() => false);
+
+        if (visible && enabled) {
           finalSendButton = candidate;
           break;
         }
@@ -3323,36 +3379,100 @@ async function openJobRequestModal(
       }
     }
 
+    // Last-resort: find exact visible "Send" text and climb to its clickable ancestor.
+    if (!finalSendButton) {
+      const sendTexts =
+        page.getByText(
+          /^\s*Send\s*$/i,
+          { exact: true }
+        );
+
+      const textCount =
+        await sendTexts
+          .count()
+          .catch(() => 0);
+
+      for (
+        let index = textCount - 1;
+        index >= 0;
+        index -= 1
+      ) {
+        const textNode = sendTexts.nth(index);
+
+        if (
+          !(await textNode
+            .isVisible()
+            .catch(() => false))
+        ) {
+          continue;
+        }
+
+        const clickable =
+          textNode.locator(
+            "xpath=ancestor-or-self::*[self::button or self::a or @role='button'][1]"
+          );
+
+        if (
+          (await clickable.count().catch(() => 0)) > 0 &&
+          await clickable.isVisible().catch(() => false) &&
+          await clickable.isEnabled().catch(() => false)
+        ) {
+          finalSendButton = clickable;
+          break;
+        }
+      }
+    }
+
     if (finalSendButton) {
       console.log(
-        `Visible final Send button found for ${bookingId} on attempt ${attempt}/12.`
+        `Visible and enabled final Send control found for ${bookingId} after ${Date.now() - finalSendWaitStartedAt} ms (attempt ${attempt}).`
       );
       break;
     }
 
     console.log(
-      `Still waiting for visible final Send button — attempt ${attempt}/12 for ${bookingId}.`
+      `Still waiting for final Send control to become visible and enabled — ${Math.round((Date.now() - finalSendWaitStartedAt) / 1000)}s elapsed for ${bookingId}.`
     );
 
-    await page.waitForTimeout(
-      2500
-    );
+    // Octopus can rerender the popup after Load More. Re-scroll every attempt.
+    await jobRequestDialog
+      .evaluate((root) => {
+        const nodes = [root, ...root.querySelectorAll("*")];
+
+        for (const node of nodes) {
+          if (
+            node instanceof HTMLElement &&
+            node.scrollHeight > node.clientHeight
+          ) {
+            node.scrollTop = node.scrollHeight;
+          }
+        }
+      })
+      .catch(() => {});
+
+    await page.waitForTimeout(2500);
   }
 
 
   if (!finalSendButton) {
-    const visibleSendLikeButtons =
+    const visibleClickableTexts =
       await page
-        .locator("button")
+        .locator(
+          "button, a, [role='button'], input[type='button'], input[type='submit']"
+        )
         .evaluateAll(
-          (buttons) =>
-            buttons
-              .filter((button) => {
+          (elements) =>
+            elements
+              .filter((element) => {
+                if (!(element instanceof HTMLElement)) {
+                  return false;
+                }
+
                 const rect =
-                  button.getBoundingClientRect();
+                  element.getBoundingClientRect();
 
                 const style =
-                  window.getComputedStyle(button);
+                  window.getComputedStyle(element);
 
                 return (
                   rect.width > 0 &&
@@ -3361,28 +3481,36 @@ async function openJobRequestModal(
                   style.visibility !== "hidden"
                 );
               })
-              .map((button) =>
-                String(
-                  button.innerText ||
-                  button.textContent ||
+              .map((element) => ({
+                tag: element.tagName.toLowerCase(),
+                text: String(
+                  element.innerText ||
+                  element.textContent ||
+                  element.getAttribute("value") ||
+                  element.getAttribute("aria-label") ||
                   ""
                 )
                   .replace(/\s+/g, " ")
-                  .trim()
-              )
-              .filter(Boolean)
+                  .trim(),
+                id: element.id || "",
+                className:
+                  typeof element.className === "string"
+                    ? element.className
+                    : ""
+              }))
+              .filter((item) => item.text)
         )
         .catch(() => []);
 
     console.log(
-      "VISIBLE BUTTON TEXTS WHEN FINAL SEND FAILED:",
+      "VISIBLE CLICKABLES WHEN FINAL SEND FAILED:",
       JSON.stringify(
-        visibleSendLikeButtons
+        visibleClickableTexts
       )
     );
 
     throw new Error(
-      `Visible final Send button never appeared for ${bookingId}.`
+      `Final Send control did not become visible and enabled within 45 seconds for ${bookingId}.`
     );
   }
 
@@ -3398,9 +3526,8 @@ async function openJobRequestModal(
 
 
   console.log(
-    `Clicked FINAL Send button for ${bookingId} after loading through the ${radiusMiles}-mile marker.`
+    `Clicked FINAL Send control for ${bookingId} after loading through the ${radiusMiles}-mile marker.`
   );
-
 
   console.log(
     `Waiting for Octopus send-success confirmation for ${bookingId}...`
