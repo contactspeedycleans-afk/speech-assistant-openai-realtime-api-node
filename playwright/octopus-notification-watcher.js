@@ -33,6 +33,8 @@ const DISPATCH_ROUNDS = [
 
 const DISPATCH_ROUND_DELAY_MINUTES = 15;
 
+const MAX_JOB_REQUEST_RECIPIENTS = 100;
+
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME ||
   "SpeedyCleans";
@@ -2137,93 +2139,135 @@ async function getJobRequestContainer(
   page
 ) {
   /*
-   * OctopusPro's Send Job Request button targets #JOB_REQUEST_POPUP.
-   * With a real Playwright click, wait for that popup first. If Octopus changes
-   * the wrapper again, fall back to visible popup text.
+   * Never manufacture #JOB_REQUEST_POPUP. Octopus owns the job-request UI.
+   * A valid dialog must be visible AND contain real controls/content.
    */
-  const directPopup =
-    page.locator(
-      "#JOB_REQUEST_POPUP"
-    );
-
-
-  const directStartedAt =
-    Date.now();
-
+  const startedAt = Date.now();
 
   while (
-    Date.now() - directStartedAt <
-    30000
+    Date.now() - startedAt < 60000
   ) {
+    const directPopup =
+      page.locator("#JOB_REQUEST_POPUP");
+
     if (
       await directPopup
         .isVisible()
         .catch(() => false)
     ) {
-      console.log(
-        "Open Send Job Request popup found using #JOB_REQUEST_POPUP."
-      );
+      const directText =
+        await directPopup
+          .innerText()
+          .catch(() => "");
 
-      return directPopup;
+      const directControlCount =
+        await directPopup
+          .locator(
+            "button, input, select, [role='button']"
+          )
+          .count()
+          .catch(() => 0);
+
+      if (
+        directText.trim().length > 0 ||
+        directControlCount > 0
+      ) {
+        console.log(
+          "Real Send Job Request popup found using #JOB_REQUEST_POPUP."
+        );
+
+        return directPopup;
+      }
+
+      console.log(
+        "#JOB_REQUEST_POPUP exists but is empty; waiting for Octopus to render real content."
+      );
     }
 
+    const visibleDialogs =
+      page.locator(
+        ".modal.show, .modal[style*='display: block'], [role='dialog'], .modal-content"
+      );
 
-    await page.waitForTimeout(
-      500
-    );
-  }
+    const dialogCount =
+      await visibleDialogs
+        .count()
+        .catch(() => 0);
 
+    for (
+      let index = 0;
+      index < dialogCount;
+      index += 1
+    ) {
+      const candidate =
+        visibleDialogs.nth(index);
 
-  const startedAt =
-    Date.now();
+      if (
+        !(
+          await candidate
+            .isVisible()
+            .catch(() => false)
+        )
+      ) {
+        continue;
+      }
 
+      const text =
+        await candidate
+          .innerText()
+          .catch(() => "");
 
-  while (
-    Date.now() - startedAt <
-    90000
-  ) {
-    const anchors = [
-      page.getByText(
-        "Send Job Request",
-        { exact: true }
-      ),
+      if (
+        /(load\s+more|showing\s+\d+|available|fieldworker|send\s+job\s+request)/i.test(
+          text
+        ) &&
+        /\bsend\b/i.test(text)
+      ) {
+        console.log(
+          "Real Send Job Request container found from visible Octopus dialog content."
+        );
 
-      page.getByText(
-        /(\d+)\s+of\s+(\d+)\s+available/i
-      ),
+        return candidate;
+      }
+    }
 
+    /*
+     * Some Octopus builds portal the job-request controls without a traditional
+     * Bootstrap wrapper. Anchor on the recipient controls, not the page-level
+     * 'Send job request' trigger button.
+     */
+    const contentAnchors = [
       page.getByText(
         /Showing\s+\d+(?:\s+of\s+\d+)?\s+matches/i
       ),
-
+      page.getByText(
+        /(\d+)\s+of\s+(\d+)\s+available/i
+      ),
       page.getByText(
         "Load More",
         { exact: true }
       )
     ];
 
-
     for (
-      const locator of anchors
+      const locator of contentAnchors
     ) {
       const count =
         await locator
           .count()
           .catch(() => 0);
 
-
       for (
         let index = 0;
         index < count;
         index += 1
       ) {
-        const candidate =
+        const anchor =
           locator.nth(index);
-
 
         if (
           !(
-            await candidate
+            await anchor
               .isVisible()
               .catch(() => false)
           )
@@ -2231,32 +2275,10 @@ async function getJobRequestContainer(
           continue;
         }
 
-
-        let container =
-          candidate.locator(
-            "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal-content ')][1]"
+        const container =
+          anchor.locator(
+            "xpath=ancestor::*[.//*[self::button or self::a][normalize-space()='Send']][1]"
           );
-
-
-        if (
-          (await container.count().catch(() => 0)) === 0
-        ) {
-          container =
-            candidate.locator(
-              "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')][1]"
-            );
-        }
-
-
-        if (
-          (await container.count().catch(() => 0)) === 0
-        ) {
-          container =
-            candidate.locator(
-              "xpath=ancestor::*[.//*[normalize-space()='Send'] and .//*[normalize-space()='Close']][1]"
-            );
-        }
-
 
         if (
           (await container.count().catch(() => 0)) > 0 &&
@@ -2265,7 +2287,7 @@ async function getJobRequestContainer(
             .catch(() => false)
         ) {
           console.log(
-            "Open Send Job Request container found from visible popup content."
+            "Real Send Job Request container found from recipient controls."
           );
 
           return container;
@@ -2273,12 +2295,10 @@ async function getJobRequestContainer(
       }
     }
 
-
     await page.waitForTimeout(
-      1000
+      750
     );
   }
-
 
   const bodyText =
     await page
@@ -2286,27 +2306,25 @@ async function getJobRequestContainer(
       .innerText()
       .catch(() => "");
 
-
   throw new Error(
-    `Send Job Request was clicked with Playwright, but the popup still did not become visible. Page tail: ${bodyText.slice(-1500)}`
+    `Octopus did not render a usable Send Job Request UI after the real click. Page tail: ${bodyText.slice(-1800)}`
   );
 }
 
 
 async function setJobRequestRadius(
   page,
-  radiusMiles
+  radiusMiles,
+  jobRequestDialog
 ) {
   console.log(
-    `API-loading Octopus fieldworkers until the list reaches ${radiusMiles} miles...`
+    `Loading the closest ${MAX_JOB_REQUEST_RECIPIENTS} Octopus fieldworkers within ${radiusMiles} miles...`
   );
-
 
   const bookingMatch =
     page.url().match(
       /\/booking\/view\/(\d+)/
     );
-
 
   if (!bookingMatch) {
     throw new Error(
@@ -2314,22 +2332,19 @@ async function setJobRequestRadius(
     );
   }
 
-
   const bookingId =
     bookingMatch[1];
 
-
   const perPage = 20;
-
   let pageNumber = 1;
   let loadedCount = 0;
   let totalCount = null;
   let farthestDistance = null;
   let targetReached = false;
   let pagesLoaded = 0;
-  let lastPageWithWithinRadius = 0;
-  const fieldworkerIdsWithinRadius = [];
 
+  const eligibleById =
+    new Map();
 
   while (
     pageNumber <= 100
@@ -2354,10 +2369,8 @@ async function setJobRequestRadius(
               }
             );
 
-
           const responseText =
             await response.text();
-
 
           let payload;
 
@@ -2372,13 +2385,11 @@ async function setJobRequestRadius(
             );
           }
 
-
           if (!response.ok) {
             throw new Error(
               `Octopus fieldworker page ${pageNumber} failed with HTTP ${response.status}: ${responseText.slice(0, 500)}`
             );
           }
-
 
           return payload;
         },
@@ -2389,14 +2400,12 @@ async function setJobRequestRadius(
         }
       );
 
-
     const contractors =
       Array.isArray(
         apiResult?.contractors
       )
         ? apiResult.contractors
         : [];
-
 
     if (
       totalCount === null
@@ -2409,7 +2418,6 @@ async function setJobRequestRadius(
         apiResult?.meta?.total,
         apiResult?.data?.total
       ];
-
 
       for (
         const value of possibleTotals
@@ -2427,7 +2435,6 @@ async function setJobRequestRadius(
       }
     }
 
-
     if (
       contractors.length === 0
     ) {
@@ -2438,14 +2445,12 @@ async function setJobRequestRadius(
       break;
     }
 
-
     pagesLoaded += 1;
     loadedCount +=
       contractors.length;
 
-
-    const pageDistances = [];
-
+    const sanePageDistances = [];
+    let withinRadiusOnPage = 0;
 
     for (
       const contractor of contractors
@@ -2456,10 +2461,7 @@ async function setJobRequestRadius(
         contractor?.distance_value;
 
       const distance =
-        Number(
-          rawDistance
-        );
-
+        Number(rawDistance);
 
       if (
         !Number.isFinite(distance)
@@ -2467,53 +2469,62 @@ async function setJobRequestRadius(
         continue;
       }
 
-
-      pageDistances.push(
-        distance
-      );
-
-
       if (
         farthestDistance === null ||
         distance > farthestDistance
       ) {
-        farthestDistance =
-          distance;
+        farthestDistance = distance;
       }
-
 
       if (
-        distance <= radiusMiles
+        distance >= 0 &&
+        distance <= 500
       ) {
-        const id =
-          contractor?.user_id ??
-          contractor?.id ??
-          contractor?.contractor_id;
+        sanePageDistances.push(
+          distance
+        );
+      }
 
+      if (
+        distance < 0 ||
+        distance > radiusMiles
+      ) {
+        continue;
+      }
 
-        if (
-          id !== undefined &&
-          id !== null &&
-          !fieldworkerIdsWithinRadius.includes(
-            String(id)
-          )
-        ) {
-          fieldworkerIdsWithinRadius.push(
-            String(id)
-          );
-        }
+      withinRadiusOnPage += 1;
+
+      const id =
+        contractor?.user_id ??
+        contractor?.id ??
+        contractor?.contractor_id;
+
+      if (
+        id === undefined ||
+        id === null
+      ) {
+        continue;
+      }
+
+      const key =
+        String(id);
+
+      const existing =
+        eligibleById.get(key);
+
+      if (
+        !existing ||
+        distance < existing.distance
+      ) {
+        eligibleById.set(
+          key,
+          {
+            id: key,
+            distance
+          }
+        );
       }
     }
-
-
-    const sanePageDistances =
-      pageDistances.filter(
-        (distance) =>
-          Number.isFinite(distance) &&
-          distance >= 0 &&
-          distance <= 500
-      );
-
 
     const pageMinDistance =
       sanePageDistances.length > 0
@@ -2522,7 +2533,6 @@ async function setJobRequestRadius(
           )
         : null;
 
-
     const pageMaxDistance =
       sanePageDistances.length > 0
         ? Math.max(
@@ -2530,35 +2540,26 @@ async function setJobRequestRadius(
           )
         : null;
 
-
-    const withinRadiusOnPage =
-      sanePageDistances.filter(
-        (distance) =>
-          distance <= radiusMiles
-      ).length;
-
-
-    if (
-      withinRadiusOnPage > 0
-    ) {
-      lastPageWithWithinRadius =
-        pageNumber;
-    }
-
-
     console.log(
-      `Octopus API page ${pageNumber}: loaded ${contractors.length} fieldworkers; cumulative ${loadedCount}${totalCount !== null ? ` of ${totalCount}` : ""}; sane distance range ${pageMinDistance ?? "unknown"}-${pageMaxDistance ?? "unknown"} miles; ${withinRadiusOnPage} on this page are within ${radiusMiles} miles.`
+      `Octopus API page ${pageNumber}: loaded ${contractors.length}; cumulative ${loadedCount}${totalCount !== null ? ` of ${totalCount}` : ""}; sane distance range ${pageMinDistance ?? "unknown"}-${pageMaxDistance ?? "unknown"} miles; ${withinRadiusOnPage} within ${radiusMiles} miles; ${eligibleById.size} eligible collected.`
     );
 
-
     /*
-     * Do NOT stop because of one absurd distance outlier.
-     * Octopus occasionally returns bad coordinates (for example 10,218 miles)
-     * mixed into an otherwise-nearby page.
-     *
-     * We only know we are safely past the radius once a whole API page has
-     * no sane fieldworker distances within the requested radius.
+     * Octopus returns this endpoint in nearest-first order on the booking page.
+     * Once 100 eligible workers have been collected, stop immediately instead
+     * of scanning hundreds of additional workers.
      */
+    if (
+      eligibleById.size >=
+      MAX_JOB_REQUEST_RECIPIENTS
+    ) {
+      console.log(
+        `Closest-${MAX_JOB_REQUEST_RECIPIENTS} cap reached after API page ${pageNumber}; stopping pagination early.`
+      );
+
+      break;
+    }
+
     if (
       sanePageDistances.length > 0 &&
       withinRadiusOnPage === 0 &&
@@ -2567,24 +2568,22 @@ async function setJobRequestRadius(
       targetReached = true;
 
       console.log(
-        `Reached the ${radiusMiles}-mile boundary after API page ${pageNumber}; no fieldworkers on this page are within radius.`
+        `Reached the ${radiusMiles}-mile boundary after API page ${pageNumber}.`
       );
 
       break;
     }
-
 
     if (
       totalCount !== null &&
       loadedCount >= totalCount
     ) {
       console.log(
-        `All ${totalCount} available fieldworkers were API-loaded before reaching ${radiusMiles} miles.`
+        `Reached the end of Octopus's ${totalCount} available fieldworkers.`
       );
 
       break;
     }
-
 
     if (
       contractors.length < perPage
@@ -2596,10 +2595,8 @@ async function setJobRequestRadius(
       break;
     }
 
-
     pageNumber += 1;
   }
-
 
   if (
     pagesLoaded >= 100
@@ -2609,25 +2606,50 @@ async function setJobRequestRadius(
     );
   }
 
+  const selectedFieldworkers =
+    Array.from(
+      eligibleById.values()
+    )
+      .sort(
+        (a, b) =>
+          a.distance - b.distance
+      )
+      .slice(
+        0,
+        MAX_JOB_REQUEST_RECIPIENTS
+      );
+
+  const fieldworkerIdsWithinRadius =
+    selectedFieldworkers.map(
+      (worker) =>
+        worker.id
+    );
 
   console.log(
-    `Fieldworker radius calculation is ready for ${radiusMiles} miles: ${fieldworkerIdsWithinRadius.length} fieldworkers are within radius; ${loadedCount} candidates inspected; farthest inspected distance ${farthestDistance ?? "unknown"} miles.`
+    `Closest-${MAX_JOB_REQUEST_RECIPIENTS} selection ready for ${radiusMiles} miles: ${fieldworkerIdsWithinRadius.length} selected; ${loadedCount} API candidates inspected.`
   );
 
+  if (
+    fieldworkerIdsWithinRadius.length === 0
+  ) {
+    throw new Error(
+      `No eligible fieldworkers were found within ${radiusMiles} miles for booking ${bookingId}.`
+    );
+  }
 
   /*
-   * IMPORTANT: API pagination tells us how many result pages are required,
-   * but Octopus only sends to fieldworkers that have actually been loaded into
-   * the Send Job Request popup. Mirror the required API pages into the popup by
-   * clicking Load More exactly pagesLoaded - 1 times. This keeps the reliable
-   * working-test behavior without blindly clicking up to 50 times.
+   * Octopus's recipient list is displayed in the same nearest-first ordering.
+   * Load only enough 20-worker UI pages to expose the selected pool, capped at
+   * 100 recipients. This is the part that prevents the old 442-worker crawl.
    */
   const recipientPagesNeeded =
     Math.max(
       1,
-      lastPageWithWithinRadius || 1
+      Math.ceil(
+        fieldworkerIdsWithinRadius.length /
+        perPage
+      )
     );
-
 
   const uiLoadMoreClicksNeeded =
     Math.max(
@@ -2635,11 +2657,9 @@ async function setJobRequestRadius(
       recipientPagesNeeded - 1
     );
 
-
   console.log(
-    `Synchronizing Octopus popup with API result: ${uiLoadMoreClicksNeeded} Load More click(s) required to include every fieldworker within ${radiusMiles} miles.`
+    `Synchronizing real Octopus job-request UI for ${fieldworkerIdsWithinRadius.length} recipients: ${uiLoadMoreClicksNeeded} Load More click(s).`
   );
-
 
   for (
     let clickNumber = 1;
@@ -2647,16 +2667,12 @@ async function setJobRequestRadius(
     clickNumber += 1
   ) {
     let loadMore =
-      page
+      jobRequestDialog
         .getByText(
           /load more/i,
           { exact: false }
         )
-        .filter({
-          visible: true
-        })
         .first();
-
 
     if (
       !(
@@ -2665,47 +2681,35 @@ async function setJobRequestRadius(
           .catch(() => false)
       )
     ) {
-      /*
-       * Playwright versions differ on Locator.filter({ visible: true }).
-       * Fall back to scanning all matching text nodes and choose the first
-       * visible one, exactly like the known-good test behavior.
-       */
-      const candidates =
+      const globalCandidates =
         page.getByText(
           /load more/i,
           { exact: false }
         );
 
-      const candidateCount =
-        await candidates
+      const count =
+        await globalCandidates
           .count()
           .catch(() => 0);
 
-      let visibleCandidate = null;
-
       for (
         let index = 0;
-        index < candidateCount;
+        index < count;
         index += 1
       ) {
         const candidate =
-          candidates.nth(index);
+          globalCandidates.nth(index);
 
         if (
           await candidate
             .isVisible()
             .catch(() => false)
         ) {
-          visibleCandidate = candidate;
+          loadMore = candidate;
           break;
         }
       }
-
-      if (visibleCandidate) {
-        loadMore = visibleCandidate;
-      }
     }
-
 
     if (
       !(
@@ -2714,47 +2718,29 @@ async function setJobRequestRadius(
           .catch(() => false)
       )
     ) {
-      /*
-       * OctopusPro's current popup can manage the recipient list server-side
-       * or use a virtual/infinite list without rendering the old Load More
-       * control. The API calculation above already verified the eligible
-       * fieldworkers. Do not kill the dispatch merely because that legacy UI
-       * control is absent; continue to the popup's Send action.
-       */
-      console.warn(
-        `Octopus calculated ${fieldworkerIdsWithinRadius.length} eligible fieldworkers within ${radiusMiles} miles, but the popup has no visible Load More control. Continuing to Send using Octopus's current server-managed recipient list.`
+      console.log(
+        `No visible Load More control after ${clickNumber - 1} click(s); Octopus may already have the recipient list loaded server-side.`
       );
 
       break;
     }
 
-
     console.log(
-      `Clicking popup Load More ${clickNumber}/${uiLoadMoreClicksNeeded} for ${radiusMiles} miles.`
+      `Clicking real popup Load More ${clickNumber}/${uiLoadMoreClicksNeeded}.`
     );
-
 
     await loadMore
       .scrollIntoViewIfNeeded()
       .catch(() => {});
 
-
     await loadMore.click({
-      force: true,
       timeout: 30000
     });
 
-
     await page.waitForTimeout(
-      1800
+      1200
     );
   }
-
-
-  console.log(
-    `Octopus popup is synchronized through recipient page ${recipientPagesNeeded} for the ${radiusMiles}-mile round.`
-  );
-
 
   return {
     availableFieldworkerCount:
@@ -2775,7 +2761,6 @@ async function setJobRequestRadius(
     fieldworkerIdsWithinRadius
   };
 }
-
 
 
 function attachJobRequestTracing(
@@ -3153,47 +3138,18 @@ async function openJobRequestModal(
 
 
   /*
-   * OctopusPro currently renders a Send Job Request trigger whose
-   * data-target is #JOB_REQUEST_POPUP, but on some booking pages that target
-   * is missing from the DOM. Bootstrap cannot open/populate a modal target
-   * that does not exist, even though Octopus may still fire the fieldworker
-   * request. Create the missing Bootstrap modal shell BEFORE the real click.
-   * Octopus can then populate/show the target it already references.
+   * IMPORTANT: do not create #JOB_REQUEST_POPUP ourselves. The old workaround
+   * produced an empty Bootstrap shell and prevented us from finding Octopus's
+   * real recipient controls. Click the real button and let Octopus render its
+   * own Vue/Bootstrap/portal UI.
    */
-  const repairedMissingJobRequestTarget =
-    await page.evaluate(() => {
-      if (document.querySelector("#JOB_REQUEST_POPUP")) {
-        return false;
-      }
-
-      const shell = document.createElement("div");
-      shell.id = "JOB_REQUEST_POPUP";
-      shell.className = "modal fade";
-      shell.setAttribute("tabindex", "-1");
-      shell.setAttribute("role", "dialog");
-      shell.setAttribute("aria-hidden", "true");
-
-      shell.innerHTML = `
-        <div class="modal-dialog" role="document">
-          <div class="modal-content"></div>
-        </div>
-      `;
-
-      document.body.appendChild(shell);
-      return true;
-    });
-
-  if (repairedMissingJobRequestTarget) {
-    console.log(
-      `[JOB REQUEST TRACE ${bookingId}] #JOB_REQUEST_POPUP was missing; inserted Bootstrap modal shell before click.`
-    );
-  }
-
-  // Use a real Playwright pointer click after the target is guaranteed to exist.
   await sendJobRequestButton.click({
     timeout: 30000
   });
 
+  await page.waitForTimeout(
+    1500
+  );
 
   const clickedJobRequest =
     true;
@@ -3310,7 +3266,8 @@ async function openJobRequestModal(
   const radiusResult =
     await setJobRequestRadius(
       page,
-      radiusMiles
+      radiusMiles,
+      jobRequestDialog
     );
 
 
@@ -3319,8 +3276,8 @@ async function openJobRequestModal(
   // Do NOT scope this to the guessed popup container because Octopus sometimes
   // portals the job-request UI without #JOB_REQUEST_POPUP in the DOM.
   let finalSendButton =
-    page
-      .locator("button.save-btn")
+    jobRequestDialog
+      .locator("button.save-btn, button, input[type='submit']")
       .filter({
         hasText:
           /^\s*Send\s*$/i
@@ -3358,13 +3315,30 @@ async function openJobRequestModal(
 
 
     finalSendButton =
-      page
-        .locator("button.save-btn")
+      jobRequestDialog
+        .locator("button.save-btn, button, input[type='submit']")
         .filter({
           hasText:
             /^\s*Send\s*$/i
         })
         .last();
+
+    if (
+      !(
+        await finalSendButton
+          .isVisible()
+          .catch(() => false)
+      )
+    ) {
+      finalSendButton =
+        page
+          .locator("button.save-btn")
+          .filter({
+            hasText:
+              /^\s*Send\s*$/i
+          })
+          .last();
+    }
   }
 
 
@@ -3835,56 +3809,121 @@ async function main() {
       }
     });
 
-  const page =
+  /*
+   * Critical architecture: notification tracking and automatic dispatch use
+   * separate Playwright pages and separate locks. A slow Octopus recipient
+   * search can no longer block En Route / Arrived / Finished / assignment
+   * Make.com webhooks.
+   */
+  const notificationPage =
     await context.newPage();
 
-  page.setDefaultTimeout(
-    30000
-  );
+  const dispatchPage =
+    await context.newPage();
 
-  page.setDefaultNavigationTimeout(
-    60000
-  );
+  for (
+    const page of [
+      notificationPage,
+      dispatchPage
+    ]
+  ) {
+    page.setDefaultTimeout(
+      30000
+    );
+
+    page.setDefaultNavigationTimeout(
+      60000
+    );
+  }
 
   await readNotifications(
-    page
+    notificationPage
   );
 
   console.log(
-    "Automatic dispatch temporarily disabled; notification watcher remains active."
+    "Notification watcher active on dedicated page."
   );
 
-  let checkRunning =
+  let notificationCheckRunning =
     false;
 
   setInterval(
     async () => {
-      if (checkRunning) {
+      if (
+        notificationCheckRunning
+      ) {
         console.log(
-          "Previous notification check is still running. Skipping this cycle."
+          "Previous notification check is still running. Skipping notification cycle."
         );
 
         return;
       }
 
-      checkRunning = true;
+      notificationCheckRunning =
+        true;
 
       try {
         await readNotifications(
-          page
+          notificationPage
         );
-
-        // Automatic dispatch temporarily disabled so notification webhooks
-        // cannot be blocked by the long-running Octopus job-request flow.
       } catch (error) {
         console.error(
-          "Notification or dispatch check failed:",
+          "Notification check failed:",
           error
         );
       } finally {
-        checkRunning = false;
+        notificationCheckRunning =
+          false;
       }
     },
+    60000
+  );
+
+  let dispatchCheckRunning =
+    false;
+
+  const runDispatchCheck =
+    async () => {
+      if (
+        dispatchCheckRunning
+      ) {
+        console.log(
+          "Previous dispatch check is still running. Skipping dispatch cycle."
+        );
+
+        return;
+      }
+
+      dispatchCheckRunning =
+        true;
+
+      try {
+        await dispatchNextBooking(
+          dispatchPage
+        );
+      } catch (error) {
+        console.error(
+          "Automatic dispatch check failed:",
+          error
+        );
+      } finally {
+        dispatchCheckRunning =
+          false;
+      }
+    };
+
+  console.log(
+    `Automatic dispatch enabled on dedicated page with a closest-${MAX_JOB_REQUEST_RECIPIENTS} recipient cap.`
+  );
+
+  /* Give the notification page first priority during startup. */
+  setTimeout(
+    runDispatchCheck,
+    10000
+  );
+
+  setInterval(
+    runDispatchCheck,
     60000
   );
 
