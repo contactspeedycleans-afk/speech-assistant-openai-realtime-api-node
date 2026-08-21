@@ -250,6 +250,19 @@ fastify.post('/outbound-call', async (request, reply) => {
         answerUrl.searchParams.set('sheet_row_number', sheet_row_number);
         answerUrl.searchParams.set('call_purpose', call_purpose);
         answerUrl.searchParams.set('customer_email', customer_email);
+        answerUrl.searchParams.set('lead_source', leadBookingData.leadSource);
+        answerUrl.searchParams.set('service_type', leadBookingData.serviceType);
+        answerUrl.searchParams.set('recurring_frequency', leadBookingData.recurringFrequency);
+        answerUrl.searchParams.set('address', leadBookingData.address);
+        answerUrl.searchParams.set('street_number', leadBookingData.streetNumber);
+        answerUrl.searchParams.set('street', leadBookingData.street);
+        answerUrl.searchParams.set('city', leadBookingData.city);
+        answerUrl.searchParams.set('state', leadBookingData.state);
+        answerUrl.searchParams.set('zip', leadBookingData.zip);
+        answerUrl.searchParams.set('requested_date', leadBookingData.requestedDate);
+        answerUrl.searchParams.set('requested_start_time', leadBookingData.requestedStartTime);
+        answerUrl.searchParams.set('arrival_window', leadBookingData.arrivalWindow);
+        answerUrl.searchParams.set('duration_minutes', leadBookingData.durationMinutes);
 
         console.log('Outbound Twilio answer route prepared:', {
             origin: answerUrl.origin,
@@ -707,6 +720,34 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
         request.query?.customer_email ||
         request.body?.customer_email ||
         '';
+    const leadBookingData = {
+        leadSource:
+            request.query?.lead_source || request.body?.lead_source || '',
+        serviceType:
+            request.query?.service_type || request.body?.service_type || '',
+        recurringFrequency:
+            request.query?.recurring_frequency || request.body?.recurring_frequency || '',
+        address:
+            request.query?.address || request.body?.address || '',
+        streetNumber:
+            request.query?.street_number || request.body?.street_number || '',
+        street:
+            request.query?.street || request.body?.street || '',
+        city:
+            request.query?.city || request.body?.city || '',
+        state:
+            request.query?.state || request.body?.state || '',
+        zip:
+            request.query?.zip || request.body?.zip || '',
+        requestedDate:
+            request.query?.requested_date || request.body?.requested_date || '',
+        requestedStartTime:
+            request.query?.requested_start_time || request.body?.requested_start_time || '',
+        arrivalWindow:
+            request.query?.arrival_window || request.body?.arrival_window || '',
+        durationMinutes:
+            request.query?.duration_minutes || request.body?.duration_minutes || ''
+    };
     const answeredBy = String(
         request.body?.AnsweredBy ||
         request.query?.AnsweredBy ||
