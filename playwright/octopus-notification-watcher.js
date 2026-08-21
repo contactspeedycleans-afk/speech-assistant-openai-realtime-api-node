@@ -2136,6 +2136,88 @@ async function diagnoseJobRequestUi(
 }
 
 
+async function waitForJobRequestRecipientUi(page, jobRequestDialog, bookingId) {
+  /*
+   * Octopus opens #JOB_REQUEST_POPUP before Vue finishes rendering the
+   * recipient table. Do not begin radius/paging work against the empty shell.
+   * Wait for the real recipient UI that a human sees: "Showing X of Y matches"
+   * and/or the Load More control inside the visible job-request dialog.
+   */
+  const startedAt = Date.now();
+  let lastStateLogAt = 0;
+
+  while (Date.now() - startedAt < 75000) {
+    const popup = page.locator("#JOB_REQUEST_POPUP");
+    const popupVisible = await popup.isVisible().catch(() => false);
+
+    const modalContent = popup.locator(".modal-content").first();
+    const modalText = popupVisible
+      ? await modalContent.innerText().catch(() => "")
+      : "";
+
+    const showingMatches = popup.getByText(
+      /Showing\s+\d+\s+of\s+\d+\s+matches/i
+    ).first();
+
+    const loadMore = popup.getByText(
+      /Load\s+More/i,
+      { exact: false }
+    ).first();
+
+    const fieldworkerHeader = popup.getByText(
+      /Fieldworker/i,
+      { exact: false }
+    ).first();
+
+    const showingVisible = await showingMatches.isVisible().catch(() => false);
+    const loadMoreVisible = await loadMore.isVisible().catch(() => false);
+    const fieldworkerVisible = await fieldworkerHeader.isVisible().catch(() => false);
+
+    const ready =
+      popupVisible &&
+      modalText.trim().length > 0 &&
+      (showingVisible || loadMoreVisible || fieldworkerVisible);
+
+    if (ready) {
+      console.log(
+        `Job Request recipient UI is fully rendered for ${bookingId} after ${Date.now() - startedAt} ms.`
+      );
+      return popup;
+    }
+
+    if (Date.now() - lastStateLogAt >= 5000) {
+      lastStateLogAt = Date.now();
+      console.log(
+        `Waiting for Octopus recipient UI for ${bookingId}: popupVisible=${popupVisible}, modalTextLength=${modalText.trim().length}, showingMatches=${showingVisible}, loadMore=${loadMoreVisible}, fieldworker=${fieldworkerVisible}.`
+      );
+    }
+
+    await page.waitForTimeout(1000);
+  }
+
+  const snapshot = await page.evaluate(() => {
+    const popup = document.querySelector("#JOB_REQUEST_POPUP");
+    const content = popup?.querySelector(".modal-content");
+    return {
+      popupExists: Boolean(popup),
+      popupClass: popup?.className || "",
+      popupStyle: popup?.getAttribute("style") || "",
+      modalContentLength: (content?.innerText || "").trim().length,
+      modalHtmlPreview: content?.outerHTML?.slice(0, 4000) || ""
+    };
+  }).catch(() => ({}));
+
+  console.log(
+    `JOB REQUEST NOT READY SNAPSHOT ${bookingId}:`,
+    JSON.stringify(snapshot)
+  );
+
+  throw new Error(
+    `Octopus opened the Send Job Request popup for ${bookingId}, but the recipient UI did not finish rendering within 75 seconds.`
+  );
+}
+
+
 async function getJobRequestContainer(
   page
 ) {
@@ -3250,14 +3332,25 @@ async function openJobRequestModal(
   );
 
 
-  const jobRequestDialog =
+  let jobRequestDialog =
     await getJobRequestContainer(
       page
     );
 
 
+  // The Bootstrap shell can be visible before Octopus/Vue has rendered
+  // the actual recipient table. Wait for the real recipient UI before
+  // changing radius or paging cleaners.
+  jobRequestDialog =
+    await waitForJobRequestRecipientUi(
+      page,
+      jobRequestDialog,
+      bookingId
+    );
+
+
   console.log(
-    `Send Job Request modal opened for ${bookingId}.`
+    `Send Job Request modal and recipient UI are ready for ${bookingId}.`
   );
 
 
@@ -3298,7 +3391,7 @@ async function openJobRequestModal(
   const finalSendWaitStartedAt = Date.now();
   let finalSendAttempt = 0;
 
-  while (Date.now() - finalSendWaitStartedAt < 45000) {
+  while (Date.now() - finalSendWaitStartedAt < 60000) {
     finalSendAttempt += 1;
     const attempt = finalSendAttempt;
     const candidateSets = [
@@ -3510,7 +3603,7 @@ async function openJobRequestModal(
     );
 
     throw new Error(
-      `Final Send control did not become visible and enabled within 45 seconds for ${bookingId}.`
+      `Final Send control did not become visible and enabled within 60 seconds for ${bookingId}.`
     );
   }
 
