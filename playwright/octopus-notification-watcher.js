@@ -1711,34 +1711,53 @@ async function readNotifications(
 async function getJobRequestContainer(
   page
 ) {
-  const heading = page
-    .getByText(
-      "Send Job Request",
-      {
-        exact: true
-      }
+  const visibleModal = page
+    .locator(
+      ".modal:visible, .modal.show:visible"
     )
+    .filter({
+      hasText: "Send Job Request"
+    })
+    .filter({
+      has: page.getByRole(
+        "button",
+        {
+          name: /^\s*Send\s*$/i
+        }
+      )
+    })
     .last();
 
 
-  await heading.waitFor({
+  await visibleModal.waitFor({
     state: "visible",
     timeout: 120000
   });
 
 
-  const container = heading.locator(
-    "xpath=ancestor::*[.//button[normalize-space()='Send'] and .//button[normalize-space()='Close']][1]"
+  const modalText =
+    await visibleModal
+      .innerText()
+      .catch(() => "");
+
+
+  if (
+    !/Send Job Request/i.test(
+      modalText
+    )
+  ) {
+    throw new Error(
+      "Visible Octopus modal did not contain Send Job Request."
+    );
+  }
+
+
+  console.log(
+    "Visible Send Job Request modal found."
   );
 
 
-  await container.waitFor({
-    state: "visible",
-    timeout: 30000
-  });
-
-
-  return container;
+  return visibleModal;
 }
 
 
