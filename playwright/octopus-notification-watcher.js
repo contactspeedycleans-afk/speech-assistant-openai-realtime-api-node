@@ -2177,11 +2177,75 @@ async function getJobRequestContainer(
   const startedAt =
     Date.now();
 
+  const findModernPopup =
+    async () => {
+      const popupSelectors = [
+        "[role='dialog']:visible",
+        ".modal.show:visible",
+        ".modal-content:visible",
+        ".v-dialog:visible",
+        ".v-overlay--active:visible",
+        "[class*='dialog']:visible",
+        "[class*='drawer']:visible"
+      ];
+
+      for (const selector of popupSelectors) {
+        const shells = page.locator(selector);
+        const shellCount = await shells.count().catch(() => 0);
+
+        for (let index = shellCount - 1; index >= 0; index -= 1) {
+          const shell = shells.nth(index);
+          const text = await shell.innerText().catch(() => "");
+          const hasSend = await shell
+            .getByRole("button", { name: /^send$/i })
+            .count()
+            .catch(() => 0);
+
+          if (
+            hasSend > 0 ||
+            /send\s+job\s+request|load\s+more|\d+\s+of\s+\d+\s+(?:matches|available)|fieldworkers?/i.test(text)
+          ) {
+            console.log(
+              `Open Send Job Request container found using modern popup selector ${selector}.`
+            );
+            return shell;
+          }
+        }
+      }
+
+      const sendActions = page.getByRole("button", { name: /^send$/i });
+      const sendCount = await sendActions.count().catch(() => 0);
+
+      for (let index = sendCount - 1; index >= 0; index -= 1) {
+        const sendAction = sendActions.nth(index);
+        if (!(await sendAction.isVisible().catch(() => false))) continue;
+
+        const shell = sendAction.locator(
+          "xpath=ancestor::*[@role='dialog' or contains(@class,'modal') or contains(@class,'dialog') or contains(@class,'drawer') or .//*[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'load more')] or .//*[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fieldworker')]][1]"
+        );
+
+        if (
+          (await shell.count().catch(() => 0)) > 0 &&
+          await shell.isVisible().catch(() => false)
+        ) {
+          console.log(
+            "Open Send Job Request container found from its visible Send action."
+          );
+          return shell;
+        }
+      }
+
+      return null;
+    };
+
 
   while (
     Date.now() - startedAt <
     90000
   ) {
+    const modernPopup = await findModernPopup();
+    if (modernPopup) return modernPopup;
+
     const anchors = [
       page.getByText(
         "Send Job Request",
@@ -2298,423 +2362,355 @@ async function setJobRequestRadius(
   radiusMiles
 ) {
   console.log(
-    `API-loading Octopus fieldworkers until the list reaches ${radiusMiles} miles...`
+    `Loading fieldworkers until the list reaches ${radiusMiles} miles...`
   );
 
 
-  const bookingMatch =
-    page.url().match(
-      /\/booking\/view\/(\d+)/
-    );
-
-
-  if (!bookingMatch) {
-    throw new Error(
-      `Could not determine Octopus booking ID from ${page.url()}.`
-    );
-  }
-
-
-  const bookingId =
-    bookingMatch[1];
-
-
-  const perPage = 20;
-
-  let pageNumber = 1;
-  let loadedCount = 0;
-  let totalCount = null;
-  let farthestDistance = null;
-  let targetReached = false;
-  let pagesLoaded = 0;
-  const fieldworkerIdsWithinRadius = [];
-
-
-  while (
-    pageNumber <= 100
-  ) {
-    const apiResult =
-      await page.evaluate(
-        async ({
-          bookingId,
-          pageNumber,
-          perPage
-        }) => {
-          const response =
-            await fetch(
-              `/get-available-fieldworkers?item_type=booking&item_id=${encodeURIComponent(bookingId)}&page=${pageNumber}&per_page=${perPage}&include_extra_data=1`,
-              {
-                method: "GET",
-                credentials: "include",
-                headers: {
-                  Accept:
-                    "application/json, text/plain, */*"
-                }
-              }
-            );
-
-
-          const responseText =
-            await response.text();
-
-
-          let payload;
-
-          try {
-            payload =
-              JSON.parse(
-                responseText
-              );
-          } catch {
-            throw new Error(
-              `Octopus fieldworker page ${pageNumber} did not return JSON. HTTP ${response.status}. Preview: ${responseText.slice(0, 500)}`
-            );
-          }
-
-
-          if (!response.ok) {
-            throw new Error(
-              `Octopus fieldworker page ${pageNumber} failed with HTTP ${response.status}: ${responseText.slice(0, 500)}`
-            );
-          }
-
-
-          return payload;
-        },
-        {
-          bookingId,
-          pageNumber,
-          perPage
-        }
-      );
-
-
-    const contractors =
-      Array.isArray(
-        apiResult?.contractors
-      )
-        ? apiResult.contractors
-        : [];
-
-
-    if (
-      totalCount === null
-    ) {
-      const possibleTotals = [
-        apiResult?.total,
-        apiResult?.total_count,
-        apiResult?.count,
-        apiResult?.pagination?.total,
-        apiResult?.meta?.total,
-        apiResult?.data?.total
-      ];
-
-
-      for (
-        const value of possibleTotals
-      ) {
-        const parsed =
-          Number(value);
-
-        if (
-          Number.isFinite(parsed) &&
-          parsed >= 0
-        ) {
-          totalCount = parsed;
-          break;
-        }
-      }
-    }
-
-
-    if (
-      contractors.length === 0
-    ) {
-      console.log(
-        `Octopus API returned no fieldworkers on page ${pageNumber}. Stopping pagination.`
-      );
-
-      break;
-    }
-
-
-    pagesLoaded += 1;
-    loadedCount +=
-      contractors.length;
-
-
-    const pageDistances = [];
-
-
-    for (
-      const contractor of contractors
-    ) {
-      const rawDistance =
-        contractor?.distance_local ??
-        contractor?.distance ??
-        contractor?.distance_value;
-
-      const distance =
-        Number(
-          rawDistance
-        );
-
-
-      if (
-        !Number.isFinite(distance)
-      ) {
-        continue;
-      }
-
-
-      pageDistances.push(
-        distance
-      );
-
-
-      if (
-        farthestDistance === null ||
-        distance > farthestDistance
-      ) {
-        farthestDistance =
-          distance;
-      }
-
-
-      if (
-        distance <= radiusMiles
-      ) {
-        const id =
-          contractor?.user_id ??
-          contractor?.id ??
-          contractor?.contractor_id;
-
-
-        if (
-          id !== undefined &&
-          id !== null &&
-          !fieldworkerIdsWithinRadius.includes(
-            String(id)
-          )
-        ) {
-          fieldworkerIdsWithinRadius.push(
-            String(id)
-          );
-        }
-      }
-    }
-
-
-    const pageMaxDistance =
-      pageDistances.length > 0
-        ? Math.max(
-            ...pageDistances
-          )
-        : null;
-
-
-    console.log(
-      `Octopus API page ${pageNumber}: loaded ${contractors.length} fieldworkers; cumulative ${loadedCount}${totalCount !== null ? ` of ${totalCount}` : ""}; farthest distance on page: ${pageMaxDistance ?? "unknown"} miles; cumulative farthest: ${farthestDistance ?? "unknown"} miles.`
-    );
-
-
-    if (
-      farthestDistance !== null &&
-      farthestDistance >= radiusMiles
-    ) {
-      targetReached = true;
-
-      console.log(
-        `Reached the ${radiusMiles}-mile marker through Octopus API pagination on page ${pageNumber}.`
-      );
-
-      break;
-    }
-
-
-    if (
-      totalCount !== null &&
-      loadedCount >= totalCount
-    ) {
-      console.log(
-        `All ${totalCount} available fieldworkers were API-loaded before reaching ${radiusMiles} miles.`
-      );
-
-      break;
-    }
-
-
-    if (
-      contractors.length < perPage
-    ) {
-      console.log(
-        `Octopus returned a short final page (${contractors.length}/${perPage}); stopping pagination.`
-      );
-
-      break;
-    }
-
-
-    pageNumber += 1;
-  }
-
-
-  if (
-    pagesLoaded >= 100
-  ) {
-    throw new Error(
-      `Stopped after 100 Octopus fieldworker API pages while trying to reach ${radiusMiles} miles.`
-    );
-  }
-
-
-  console.log(
-    `Fieldworker radius calculation is ready for ${radiusMiles} miles: ${fieldworkerIdsWithinRadius.length} fieldworkers are within radius; ${loadedCount} candidates inspected; farthest inspected distance ${farthestDistance ?? "unknown"} miles.`
-  );
-
-
-  /*
-   * IMPORTANT: API pagination tells us how many result pages are required,
-   * but Octopus only sends to fieldworkers that have actually been loaded into
-   * the Send Job Request popup. Mirror the required API pages into the popup by
-   * clicking Load More exactly pagesLoaded - 1 times. This keeps the reliable
-   * working-test behavior without blindly clicking up to 50 times.
-   */
-  const uiLoadMoreClicksNeeded =
-    Math.max(
-      0,
-      pagesLoaded - 1
-    );
-
-
-  console.log(
-    `Synchronizing Octopus popup with API result: ${uiLoadMoreClicksNeeded} Load More click(s) required for ${radiusMiles} miles.`
-  );
-
-
-  for (
-    let clickNumber = 1;
-    clickNumber <= uiLoadMoreClicksNeeded;
-    clickNumber += 1
-  ) {
-    let loadMore =
+  const dialog =
+    await getJobRequestContainer(
       page
-        .getByText(
-          /load more/i,
-          { exact: false }
-        )
-        .filter({
-          visible: true
-        })
-        .first();
+    );
 
 
-    if (
-      !(
-        await loadMore
-          .isVisible()
-          .catch(() => false)
-      )
-    ) {
-      /*
-       * Playwright versions differ on Locator.filter({ visible: true }).
-       * Fall back to scanning all matching text nodes and choose the first
-       * visible one, exactly like the known-good test behavior.
-       */
-      const candidates =
-        page.getByText(
-          /load more/i,
-          { exact: false }
-        );
+  const getVisibleDistanceInfo =
+    async () => {
+      const rows = dialog.locator("tr");
 
-      const candidateCount =
-        await candidates
+      const rowCount =
+        await rows
           .count()
           .catch(() => 0);
 
-      let visibleCandidate = null;
+      const distances = [];
+
 
       for (
         let index = 0;
-        index < candidateCount;
+        index < rowCount;
         index += 1
       ) {
-        const candidate =
-          candidates.nth(index);
+        const row = rows.nth(index);
 
-        if (
-          await candidate
-            .isVisible()
-            .catch(() => false)
-        ) {
-          visibleCandidate = candidate;
-          break;
+        const cells =
+          row.locator("td");
+
+        const cellCount =
+          await cells
+            .count()
+            .catch(() => 0);
+
+        if (cellCount < 2) {
+          continue;
+        }
+
+        const distanceText =
+          (
+            await cells
+              .nth(1)
+              .innerText()
+              .catch(() => "")
+          ).trim();
+
+        const distanceMatch =
+          distanceText.match(
+            /\d+(?:\.\d+)?/
+          );
+
+        if (!distanceMatch) {
+          continue;
+        }
+
+        const distance =
+          Number(distanceMatch[0]);
+
+        if (Number.isFinite(distance)) {
+          distances.push(distance);
         }
       }
 
-      if (visibleCandidate) {
-        loadMore = visibleCandidate;
+
+      const dialogText =
+        await dialog
+          .innerText()
+          .catch(() => "");
+
+      const showingMatch =
+        dialogText.match(
+          /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
+        );
+
+      const availableMatch =
+        dialogText.match(
+          /(\d+)\s+of\s+(\d+)\s+available/i
+        );
+
+      const showingSimpleMatch =
+        dialogText.match(
+          /Showing\s+(\d+)\s+matches/i
+        );
+
+
+      return {
+        distances,
+
+        maxDistance:
+          distances.length > 0
+            ? Math.max(...distances)
+            : null,
+
+        loadedCount:
+          showingMatch
+            ? Number(showingMatch[1])
+            : availableMatch
+              ? Number(availableMatch[1])
+              : showingSimpleMatch
+                ? Number(showingSimpleMatch[1])
+                : distances.length,
+
+        totalCount:
+          showingMatch
+            ? Number(showingMatch[2])
+            : availableMatch
+              ? Number(availableMatch[2])
+              : showingSimpleMatch
+                ? Number(showingSimpleMatch[1])
+                : distances.length,
+
+        dialogText
+      };
+    };
+
+
+  const waitForLoadMoreReady =
+    async () => {
+      const startedAt = Date.now();
+
+      while (
+        Date.now() - startedAt < 120000
+      ) {
+        // In Octopus this control may be a button, link, div, or Vue component.
+        // Find the visible exact text instead of requiring role=button.
+        const loadMoreCandidates =
+          dialog.getByText(
+            "Load More",
+            { exact: true }
+          );
+
+        const loadMoreCount =
+          await loadMoreCandidates
+            .count()
+            .catch(() => 0);
+
+        for (
+          let index = 0;
+          index < loadMoreCount;
+          index += 1
+        ) {
+          const candidate =
+            loadMoreCandidates.nth(index);
+
+          if (
+            await candidate
+              .isVisible()
+              .catch(() => false)
+          ) {
+            return candidate;
+          }
+        }
+
+
+        const loadingCandidates =
+          dialog.getByText(
+            /Loading/i
+          );
+
+        const loadingCount =
+          await loadingCandidates
+            .count()
+            .catch(() => 0);
+
+        let loadingVisible = false;
+
+        for (
+          let index = 0;
+          index < loadingCount;
+          index += 1
+        ) {
+          if (
+            await loadingCandidates
+              .nth(index)
+              .isVisible()
+              .catch(() => false)
+          ) {
+            loadingVisible = true;
+            break;
+          }
+        }
+
+
+        if (loadingVisible) {
+          await page.waitForTimeout(2000);
+          continue;
+        }
+
+
+        // If the match count already says every result is loaded, there may be
+        // no Load More control at all. The caller will continue with the list.
+        const currentText =
+          await dialog
+            .innerText()
+            .catch(() => "");
+
+        const countMatch =
+          currentText.match(
+            /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
+          );
+
+        if (
+          countMatch &&
+          Number(countMatch[1]) >= Number(countMatch[2])
+        ) {
+          return null;
+        }
+
+
+        await page.waitForTimeout(
+          2000
+        );
       }
-    }
+
+      return null;
+    };
 
 
+  let info =
+    await getVisibleDistanceInfo();
+
+
+  console.log(
+    `Job Request modal currently shows ${info.loadedCount} of ${info.totalCount} matches; farthest visible distance: ${info.maxDistance ?? "unknown"} miles.`
+  );
+
+
+  let loadMoreClicks = 0;
+
+
+  while (
+    info.maxDistance === null ||
+    info.maxDistance < radiusMiles
+  ) {
     if (
-      !(
-        await loadMore
-          .isVisible()
-          .catch(() => false)
-      )
+      info.totalCount > 0 &&
+      info.loadedCount >= info.totalCount
     ) {
-      throw new Error(
-        `Octopus needs ${uiLoadMoreClicksNeeded} popup page expansion(s) for ${radiusMiles} miles, but Load More was not visible before click ${clickNumber}.`
+      console.log(
+        `All ${info.totalCount} fieldworkers are loaded. Farthest available distance is ${info.maxDistance ?? "unknown"} miles, which is below the requested ${radiusMiles}-mile round.`
       );
+
+      break;
     }
 
 
-    console.log(
-      `Clicking popup Load More ${clickNumber}/${uiLoadMoreClicksNeeded} for ${radiusMiles} miles.`
-    );
+    const loadMoreButton =
+      await waitForLoadMoreReady();
 
 
-    await loadMore
+    if (!loadMoreButton) {
+      console.log(
+        `No Load More button is available. Continuing with the fieldworkers currently loaded for the ${radiusMiles}-mile round.`
+      );
+
+      break;
+    }
+
+
+    const previousLoadedCount =
+      info.loadedCount;
+
+
+    await loadMoreButton
       .scrollIntoViewIfNeeded()
       .catch(() => {});
 
 
-    await loadMore.click({
-      force: true,
-      timeout: 30000
+    await loadMoreButton.click({
+      timeout: 30000,
+      force: true
     });
 
 
-    await page.waitForTimeout(
-      1800
+    loadMoreClicks += 1;
+
+
+    console.log(
+      `Clicked Load More (${loadMoreClicks}) while building the ${radiusMiles}-mile job request.`
     );
+
+
+    const loadStartedAt = Date.now();
+
+
+    while (
+      Date.now() - loadStartedAt < 120000
+    ) {
+      await page.waitForTimeout(2000);
+
+      const nextInfo =
+        await getVisibleDistanceInfo();
+
+      if (
+        nextInfo.loadedCount >
+          previousLoadedCount ||
+        nextInfo.maxDistance !==
+          info.maxDistance
+      ) {
+        info = nextInfo;
+        break;
+      }
+
+      const loadingVisible =
+        await dialog
+          .getByRole("button", {
+            name: /Loading/i
+          })
+          .last()
+          .isVisible()
+          .catch(() => false);
+
+      if (!loadingVisible) {
+        info = nextInfo;
+        break;
+      }
+    }
+
+
+    console.log(
+      `After Load More: ${info.loadedCount} of ${info.totalCount} matches loaded; farthest visible distance: ${info.maxDistance ?? "unknown"} miles.`
+    );
+
+
+    if (loadMoreClicks >= 50) {
+      throw new Error(
+        `Stopped after 50 Load More clicks while trying to reach ${radiusMiles} miles.`
+      );
+    }
   }
 
 
   console.log(
-    `Octopus popup is synchronized through API page ${pagesLoaded} for the ${radiusMiles}-mile round.`
+    `Fieldworker list is ready for the ${radiusMiles}-mile dispatch round. Loaded ${info.loadedCount} of ${info.totalCount} matches; farthest visible distance: ${info.maxDistance ?? "unknown"} miles.`
   );
 
 
   return {
     availableFieldworkerCount:
-      fieldworkerIdsWithinRadius.length,
+      info.loadedCount,
 
     totalFieldworkerCount:
-      totalCount ?? loadedCount,
-
-    inspectedFieldworkerCount:
-      loadedCount,
+      info.totalCount,
 
     farthestVisibleDistance:
-      farthestDistance,
-
-    targetRadiusReached:
-      targetReached,
-
-    fieldworkerIdsWithinRadius
+      info.maxDistance
   };
 }
 
@@ -2835,17 +2831,22 @@ function attachJobRequestTracing(
       let bodyPreview =
         "";
 
-      try {
+      if (/credential|token|session|auth|login/i.test(url)) {
         bodyPreview =
-          (
-            await response.text()
-          ).slice(
-            0,
-            3000
-          );
-      } catch {
-        bodyPreview =
-          "";
+          "[REDACTED SENSITIVE RESPONSE]";
+      } else {
+        try {
+          bodyPreview =
+            (
+              await response.text()
+            ).slice(
+              0,
+              3000
+            );
+        } catch {
+          bodyPreview =
+            "";
+        }
       }
 
 
@@ -3221,35 +3222,16 @@ async function openJobRequestModal(
     );
 
 
-  // Mirror the known-good test: Octopus uses button.save-btn for the final
-  // popup action. Scope to the popup first so we never hit the booking page's
-  // Save changes button.
   let finalSendButton =
     jobRequestDialog
-      .locator(
-        "button.save-btn"
+      .getByRole(
+        "button",
+        {
+          name:
+            /^\s*Send\s*$/i
+        }
       )
-      .filter({
-        hasText:
-          /^\s*Send\s*$/i
-      })
       .last();
-
-
-  if (
-    (await finalSendButton.count().catch(() => 0)) === 0
-  ) {
-    finalSendButton =
-      jobRequestDialog
-        .getByRole(
-          "button",
-          {
-            name:
-              /^\s*Send\s*$/i
-          }
-        )
-        .last();
-  }
 
 
   if (
@@ -3279,30 +3261,14 @@ async function openJobRequestModal(
 
       finalSendButton =
         jobRequestDialog
-          .locator(
-            "button.save-btn"
+          .getByRole(
+            "button",
+            {
+              name:
+                /^\s*Send\s*$/i
+            }
           )
-          .filter({
-            hasText:
-              /^\s*Send\s*$/i
-          })
           .last();
-
-
-      if (
-        (await finalSendButton.count().catch(() => 0)) === 0
-      ) {
-        finalSendButton =
-          jobRequestDialog
-            .getByRole(
-              "button",
-              {
-                name:
-                  /^\s*Send\s*$/i
-              }
-            )
-            .last();
-      }
 
       if (
         await finalSendButton
@@ -3356,31 +3322,13 @@ async function openJobRequestModal(
 
 
   console.log(
-    `Waiting for Octopus to finish sending ${bookingId}...`
+    `Waiting 45 seconds for Octopus to finish sending ${bookingId}...`
   );
 
 
-  const sendWaitStartedAt =
-    Date.now();
-
-
-  while (
-    Date.now() - sendWaitStartedAt <
-      45000
-  ) {
-    const stillVisible =
-      await finalSendButton
-        .isVisible()
-        .catch(() => false);
-
-    if (!stillVisible) {
-      break;
-    }
-
-    await page.waitForTimeout(
-      1000
-    );
-  }
+  await page.waitForTimeout(
+    45000
+  );
 
 
   console.log(
