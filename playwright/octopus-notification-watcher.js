@@ -1708,6 +1708,40 @@ async function readNotifications(
 }
 
 
+async function getJobRequestContainer(
+  page
+) {
+  const heading = page
+    .getByText(
+      "Send Job Request",
+      {
+        exact: true
+      }
+    )
+    .last();
+
+
+  await heading.waitFor({
+    state: "visible",
+    timeout: 120000
+  });
+
+
+  const container = heading.locator(
+    "xpath=ancestor::*[.//button[normalize-space()='Send'] and .//button[normalize-space()='Close']][1]"
+  );
+
+
+  await container.waitFor({
+    state: "visible",
+    timeout: 30000
+  });
+
+
+  return container;
+}
+
+
 async function setJobRequestRadius(
   page,
   radiusMiles
@@ -1717,18 +1751,10 @@ async function setJobRequestRadius(
   );
 
 
-  const dialog = page
-    .getByRole("dialog")
-    .filter({
-      hasText: /Send Job Request/i
-    })
-    .last();
-
-
-  await dialog.waitFor({
-    state: "visible",
-    timeout: 120000
-  });
+  const dialog =
+    await getJobRequestContainer(
+      page
+    );
 
 
   const getVisibleDistanceInfo =
@@ -2245,18 +2271,9 @@ async function openJobRequestModal(
 
 
   const jobRequestDialog =
-    page
-      .getByRole("dialog")
-      .filter({
-        hasText: /Send Job Request/i
-      })
-      .last();
-
-
-  await jobRequestDialog.waitFor({
-    state: "visible",
-    timeout: 120000
-  });
+    await getJobRequestContainer(
+      page
+    );
 
 
   console.log(
