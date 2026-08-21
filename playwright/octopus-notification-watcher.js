@@ -2895,9 +2895,9 @@ async function openJobRequestModal(
         });
 
 
-        button.click();
-
-
+        // OctopusPro's button uses Vue/Bootstrap modal wiring. A raw DOM
+        // element.click() can log as a click without Playwright performing the
+        // full trusted pointer interaction Octopus expects.
         return true;
       }
     );
@@ -2905,14 +2905,26 @@ async function openJobRequestModal(
 
   if (!clickedJobRequest) {
     throw new Error(
-      `Could not click Send Job Request for ${bookingId}.`
+      `Could not locate Send Job Request for ${bookingId}.`
     );
   }
 
 
+  // Use Playwright's real click instead of HTMLElement.click(). This is
+  // important for OctopusPro because the control is wired to open
+  // #JOB_REQUEST_POPUP through the application's UI event handlers.
+  await sendJobRequestButton.click({
+    timeout: 30000
+  });
+
+
   console.log(
-    `Clicked Send Job Request for ${bookingId}.`
+    `Clicked Send Job Request for ${bookingId} with Playwright pointer click.`
   );
+
+
+  // Give Vue/Bootstrap a moment to mount/show the popup before diagnostics.
+  await page.waitForTimeout(1500);
 
 
   await diagnoseJobRequestUi(
