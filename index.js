@@ -251,6 +251,15 @@ fastify.post('/outbound-call', async (request, reply) => {
         answerUrl.searchParams.set('call_purpose', call_purpose);
         answerUrl.searchParams.set('customer_email', customer_email);
 
+        console.log('Outbound Twilio answer route prepared:', {
+            origin: answerUrl.origin,
+            pathname: answerUrl.pathname,
+            phone,
+            customerName: customer_name,
+            sheetRowNumber: sheet_row_number,
+            callPurpose: call_purpose
+        });
+
         const call = await twilioClient.calls.create({
             to: phone,
             from: process.env.TWILIO_PHONE_NUMBER,
@@ -275,7 +284,9 @@ fastify.post('/outbound-call', async (request, reply) => {
             call_sid: call.sid,
             status: call.status,
             phone,
-            sheet_row_number
+            sheet_row_number,
+            customer_name,
+            call_purpose
         });
     } catch (error) {
         console.error(
@@ -702,7 +713,14 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
         'unknown'
     ).toLowerCase();
 
-    console.log('Custom outbound answered by:', answeredBy);
+    console.log('Custom outbound answer route reached:', {
+        answeredBy,
+        phone,
+        customerName,
+        sheetRowNumber,
+        callPurpose,
+        method: request.method
+    });
 
     const isVoicemail =
         answeredBy.startsWith('machine') ||
