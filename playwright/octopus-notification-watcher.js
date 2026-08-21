@@ -1711,53 +1711,79 @@ async function readNotifications(
 async function getJobRequestContainer(
   page
 ) {
-  const visibleModal = page
-    .locator(
-      ".modal:visible, .modal.show:visible"
-    )
+  // Octopus keeps many hidden copies of the Send Job Request modal in the DOM.
+  // Anchor on the control that only becomes visible inside the OPEN modal.
+  const loadMoreButton = page
+    .locator("button:visible")
     .filter({
-      hasText: "Send Job Request"
-    })
-    .filter({
-      has: page.getByRole(
-        "button",
-        {
-          name: /^\s*Send\s*$/i
-        }
-      )
+      hasText: /^\s*Load More\s*$/i
     })
     .last();
 
 
-  await visibleModal.waitFor({
+  await loadMoreButton.waitFor({
     state: "visible",
     timeout: 120000
   });
 
 
-  const modalText =
-    await visibleModal
-      .innerText()
-      .catch(() => "");
+  let container = loadMoreButton.locator(
+    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal-content ')][1]"
+  );
 
 
   if (
-    !/Send Job Request/i.test(
-      modalText
-    )
+    (await container.count().catch(() => 0)) === 0
   ) {
-    throw new Error(
-      "Visible Octopus modal did not contain Send Job Request."
+    container = loadMoreButton.locator(
+      "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')][1]"
     );
   }
 
 
+  if (
+    (await container.count().catch(() => 0)) === 0
+  ) {
+    // Last-resort: use the nearest visible ancestor that contains both Load More and Send.
+    container = loadMoreButton.locator(
+      "xpath=ancestor::*[.//button[normalize-space()='Send']][1]"
+    );
+  }
+
+
+  if (
+    (await container.count().catch(() => 0)) === 0
+  ) {
+    throw new Error(
+      "Load More became visible, but the Send Job Request container could not be located."
+    );
+  }
+
+
+  await container.waitFor({
+    state: "visible",
+    timeout: 30000
+  });
+
+
+  const containerText =
+    await container
+      .innerText()
+      .catch(() => "");
+
+
   console.log(
-    "Visible Send Job Request modal found."
+    "Open Send Job Request container found using visible Load More button."
   );
 
 
-  return visibleModal;
+  console.log(
+    "Job Request container preview:",
+    containerText.slice(0, 1200)
+  );
+
+
+  return container;
 }
 
 
