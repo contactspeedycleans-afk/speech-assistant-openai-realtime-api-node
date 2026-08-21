@@ -1673,7 +1673,7 @@ const scheduleVoicemailHangup = () => {
                 error
             );
         }
-    }, 7500);
+    }, 1500);
 };
 
 const soundsLikeVoicemailSystem = (transcript) => {
