@@ -1713,63 +1713,296 @@ async function setJobRequestRadius(
   radiusMiles
 ) {
   console.log(
-    `Setting job-request radius to ${radiusMiles} miles...`
+    `Loading fieldworkers until the list reaches ${radiusMiles} miles...`
   );
 
-  const radiusSelect = page
-    .locator("select")
+
+  const dialog = page
+    .getByRole("dialog")
     .filter({
-      has: page.locator(
-        `option[value="${radiusMiles}"]`
-      )
+      hasText: /Send Job Request/i
     })
-    .first();
+    .last();
 
-  if (
-    await radiusSelect
-      .isVisible()
-      .catch(() => false)
-  ) {
-    await radiusSelect.selectOption(
-      String(radiusMiles)
-    );
 
-    await page.waitForTimeout(2500);
+  await dialog.waitFor({
+    state: "visible",
+    timeout: 120000
+  });
 
-    console.log(
-      `Job-request radius set to ${radiusMiles} miles.`
-    );
 
-    return;
-  }
+  const getVisibleDistanceInfo =
+    async () => {
+      const rows = dialog.locator("tr");
 
-  const radiusButton = page
-    .getByRole("button", {
-      name: new RegExp(
-        `${radiusMiles}.*mile`,
-        "i"
-      )
-    })
-    .first();
+      const rowCount =
+        await rows
+          .count()
+          .catch(() => 0);
 
-  if (
-    await radiusButton
-      .isVisible()
-      .catch(() => false)
-  ) {
-    await radiusButton.click();
-    await page.waitForTimeout(2500);
+      const distances = [];
 
-    console.log(
-      `Job-request radius set to ${radiusMiles} miles.`
-    );
 
-    return;
-  }
+      for (
+        let index = 0;
+        index < rowCount;
+        index += 1
+      ) {
+        const row = rows.nth(index);
 
-  throw new Error(
-    `Could not find the Octopus radius control for ${radiusMiles} miles.`
+        const cells =
+          row.locator("td");
+
+        const cellCount =
+          await cells
+            .count()
+            .catch(() => 0);
+
+        if (cellCount < 2) {
+          continue;
+        }
+
+        const distanceText =
+          (
+            await cells
+              .nth(1)
+              .innerText()
+              .catch(() => "")
+          ).trim();
+
+        const distanceMatch =
+          distanceText.match(
+            /\d+(?:\.\d+)?/
+          );
+
+        if (!distanceMatch) {
+          continue;
+        }
+
+        const distance =
+          Number(distanceMatch[0]);
+
+        if (Number.isFinite(distance)) {
+          distances.push(distance);
+        }
+      }
+
+
+      const dialogText =
+        await dialog
+          .innerText()
+          .catch(() => "");
+
+      const showingMatch =
+        dialogText.match(
+          /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
+        );
+
+      const showingSimpleMatch =
+        dialogText.match(
+          /Showing\s+(\d+)\s+matches/i
+        );
+
+
+      return {
+        distances,
+
+        maxDistance:
+          distances.length > 0
+            ? Math.max(...distances)
+            : null,
+
+        loadedCount:
+          showingMatch
+            ? Number(showingMatch[1])
+            : showingSimpleMatch
+              ? Number(showingSimpleMatch[1])
+              : distances.length,
+
+        totalCount:
+          showingMatch
+            ? Number(showingMatch[2])
+            : showingSimpleMatch
+              ? Number(showingSimpleMatch[1])
+              : distances.length,
+
+        dialogText
+      };
+    };
+
+
+  const waitForLoadMoreReady =
+    async () => {
+      const startedAt = Date.now();
+
+      while (
+        Date.now() - startedAt < 120000
+      ) {
+        const loadMoreButton = dialog
+          .getByRole("button", {
+            name: /^\s*Load More\s*$/i
+          })
+          .last();
+
+        if (
+          await loadMoreButton
+            .isVisible()
+            .catch(() => false)
+        ) {
+          return loadMoreButton;
+        }
+
+        const loadingButton = dialog
+          .getByRole("button", {
+            name: /Loading/i
+          })
+          .last();
+
+        if (
+          await loadingButton
+            .isVisible()
+            .catch(() => false)
+        ) {
+          await page.waitForTimeout(2000);
+          continue;
+        }
+
+        return null;
+      }
+
+      return null;
+    };
+
+
+  let info =
+    await getVisibleDistanceInfo();
+
+
+  console.log(
+    `Job Request modal currently shows ${info.loadedCount} of ${info.totalCount} matches; farthest visible distance: ${info.maxDistance ?? "unknown"} miles.`
   );
+
+
+  let loadMoreClicks = 0;
+
+
+  while (
+    info.maxDistance === null ||
+    info.maxDistance < radiusMiles
+  ) {
+    if (
+      info.totalCount > 0 &&
+      info.loadedCount >= info.totalCount
+    ) {
+      console.log(
+        `All ${info.totalCount} fieldworkers are loaded. Farthest available distance is ${info.maxDistance ?? "unknown"} miles, which is below the requested ${radiusMiles}-mile round.`
+      );
+
+      break;
+    }
+
+
+    const loadMoreButton =
+      await waitForLoadMoreReady();
+
+
+    if (!loadMoreButton) {
+      console.log(
+        `No Load More button is available. Continuing with the fieldworkers currently loaded for the ${radiusMiles}-mile round.`
+      );
+
+      break;
+    }
+
+
+    const previousLoadedCount =
+      info.loadedCount;
+
+
+    await loadMoreButton
+      .scrollIntoViewIfNeeded()
+      .catch(() => {});
+
+
+    await loadMoreButton.click({
+      timeout: 30000,
+      force: true
+    });
+
+
+    loadMoreClicks += 1;
+
+
+    console.log(
+      `Clicked Load More (${loadMoreClicks}) while building the ${radiusMiles}-mile job request.`
+    );
+
+
+    const loadStartedAt = Date.now();
+
+
+    while (
+      Date.now() - loadStartedAt < 120000
+    ) {
+      await page.waitForTimeout(2000);
+
+      const nextInfo =
+        await getVisibleDistanceInfo();
+
+      if (
+        nextInfo.loadedCount >
+          previousLoadedCount ||
+        nextInfo.maxDistance !==
+          info.maxDistance
+      ) {
+        info = nextInfo;
+        break;
+      }
+
+      const loadingVisible =
+        await dialog
+          .getByRole("button", {
+            name: /Loading/i
+          })
+          .last()
+          .isVisible()
+          .catch(() => false);
+
+      if (!loadingVisible) {
+        info = nextInfo;
+        break;
+      }
+    }
+
+
+    console.log(
+      `After Load More: ${info.loadedCount} of ${info.totalCount} matches loaded; farthest visible distance: ${info.maxDistance ?? "unknown"} miles.`
+    );
+
+
+    if (loadMoreClicks >= 50) {
+      throw new Error(
+        `Stopped after 50 Load More clicks while trying to reach ${radiusMiles} miles.`
+      );
+    }
+  }
+
+
+  console.log(
+    `Fieldworker list is ready for the ${radiusMiles}-mile dispatch round. Loaded ${info.loadedCount} of ${info.totalCount} matches; farthest visible distance: ${info.maxDistance ?? "unknown"} miles.`
+  );
+
+
+  return {
+    availableFieldworkerCount:
+      info.loadedCount,
+
+    totalFieldworkerCount:
+      info.totalCount,
+
+    farthestVisibleDistance:
+      info.maxDistance
+  };
 }
 
 
@@ -1818,33 +2051,22 @@ async function openJobRequestModal(
     .scrollIntoViewIfNeeded();
 
 
-  await setJobRequestRadius(
-    page,
-    radiusMiles
-  );
-
-
   console.log(
-    `Available Fieldworkers section found for ${bookingId}.`
+    `Available Fieldworkers section found for ${bookingId}. Waiting for Octopus to load the fieldworker list before opening Send Job Request...`
   );
 
 
-  console.log(
-    `Waiting for Octopus to finish calculating available fieldworkers for ${bookingId}...`
-  );
+  let initialMatchCount =
+    0;
 
 
-  let availabilityMatch =
-    null;
-
-
-  const availabilityStartedAt =
+  const fieldworkerLoadStartedAt =
     Date.now();
 
 
   while (
     Date.now() -
-      availabilityStartedAt <
+      fieldworkerLoadStartedAt <
     120000
   ) {
     const bodyText =
@@ -1852,33 +2074,56 @@ async function openJobRequestModal(
         .locator("body")
         .innerText();
 
-
-    availabilityMatch =
+    const showingMatch =
       bodyText.match(
-        /(\d+)\s+of\s+(\d+)\s+available/i
+        /Showing\s+(\d+)\s+matches/i
       );
 
+    if (
+      showingMatch &&
+      Number(showingMatch[1]) > 0
+    ) {
+      initialMatchCount =
+        Number(showingMatch[1]);
 
-    if (availabilityMatch) {
       break;
     }
 
+    const sendButtonVisible =
+      await page
+        .getByRole(
+          "button",
+          {
+            name:
+              /send job request/i
+          }
+        )
+        .first()
+        .isVisible()
+        .catch(() => false);
+
+    const zeroMatchesVisible =
+      /Showing\s+0\s+matches/i.test(
+        bodyText
+      );
+
+    if (
+      sendButtonVisible &&
+      !zeroMatchesVisible
+    ) {
+      break;
+    }
 
     await page.waitForTimeout(
-      5000
-    );
-  }
-
-
-  if (!availabilityMatch) {
-    throw new Error(
-      `Octopus never finished loading the available-fieldworker count for ${bookingId}. Job request was NOT sent.`
+      3000
     );
   }
 
 
   console.log(
-    `Octopus reports ${availabilityMatch[1]} of ${availabilityMatch[2]} fieldworkers available for ${bookingId}.`
+    initialMatchCount > 0
+      ? `Octopus loaded ${initialMatchCount} fieldworker matches for ${bookingId}.`
+      : `Fieldworker loading wait completed for ${bookingId}. Opening Send Job Request.`
   );
 
 
@@ -1999,202 +2244,114 @@ async function openJobRequestModal(
   );
 
 
+  const jobRequestDialog =
+    page
+      .getByRole("dialog")
+      .filter({
+        hasText: /Send Job Request/i
+      })
+      .last();
+
+
+  await jobRequestDialog.waitFor({
+    state: "visible",
+    timeout: 120000
+  });
+
+
   console.log(
-    `Waiting for Octopus to prepare the Job Request for ${bookingId}...`
+    `Send Job Request modal opened for ${bookingId}.`
   );
 
 
-  await page.waitForTimeout(
-    30000
-  );
+  const radiusResult =
+    await setJobRequestRadius(
+      page,
+      radiusMiles
+    );
 
 
   let finalSendButton =
-    null;
-
-
-  let finalSendLocation =
-    "";
-
-
-  const findFinalSendButton =
-    async () => {
-      const mainPageSendButtons =
-        page
-          .locator(
-            "button:visible"
-          )
-          .filter({
-            hasText:
-              /^\s*Send\s*$/i
-          });
-
-
-      if (
-        (
-          await mainPageSendButtons
-            .count()
-            .catch(() => 0)
-        ) > 0
-      ) {
-        return {
-          button:
-            mainPageSendButtons.last(),
-
-          location:
-            "main page"
-        };
-      }
-
-
-      for (
-        const frame
-        of page.frames()
-      ) {
-        if (
-          frame ===
-          page.mainFrame()
-        ) {
-          continue;
+    jobRequestDialog
+      .getByRole(
+        "button",
+        {
+          name:
+            /^\s*Send\s*$/i
         }
+      )
+      .last();
 
 
-        try {
-          const frameSendButtons =
-            frame
-              .locator(
-                "button:visible"
-              )
-              .filter({
-                hasText:
-                  /^\s*Send\s*$/i
-              });
-
-
-          if (
-            (
-              await frameSendButtons
-                .count()
-            ) > 0
-          ) {
-            return {
-              button:
-                frameSendButtons.last(),
-
-              location:
-                `iframe: ${
-                  frame.name() ||
-                  frame.url()
-                }`
-            };
-          }
-        } catch {
-          // Ignore inaccessible frames.
-        }
-      }
-
-
-      return null;
-    };
-
-
-  const firstSendResult =
-    await findFinalSendButton();
-
-
-  if (firstSendResult) {
-    finalSendButton =
-      firstSendResult.button;
-
-
-    finalSendLocation =
-      firstSendResult.location;
-  }
-
-
-  if (!finalSendButton) {
+  if (
+    !(
+      await finalSendButton
+        .isVisible()
+        .catch(() => false)
+    )
+  ) {
     console.log(
       `Final Send button is not ready yet for ${bookingId}. Waiting...`
     );
 
 
+    let foundSendButton =
+      false;
+
+
     for (
       let attempt = 1;
-      attempt <= 9;
+      attempt <= 12;
       attempt += 1
     ) {
       await page.waitForTimeout(
-        10000
+        5000
       );
 
+      finalSendButton =
+        jobRequestDialog
+          .getByRole(
+            "button",
+            {
+              name:
+                /^\s*Send\s*$/i
+            }
+          )
+          .last();
 
-      const sendResult =
-        await findFinalSendButton();
-
-
-      if (sendResult) {
-        finalSendButton =
-          sendResult.button;
-
-
-        finalSendLocation =
-          `${sendResult.location} after waiting`;
-
-
+      if (
+        await finalSendButton
+          .isVisible()
+          .catch(() => false)
+      ) {
+        foundSendButton = true;
         break;
       }
 
+      console.log(
+        `Still waiting for final Send button — attempt ${attempt}/12 for ${bookingId}.`
+      );
+    }
+
+
+    if (!foundSendButton) {
+      const dialogText =
+        await jobRequestDialog
+          .innerText()
+          .catch(() => "");
 
       console.log(
-        `Still waiting for final Send button — attempt ${attempt}/9 for ${bookingId}.`
+        "JOB REQUEST DIALOG TEXT WHEN SEND FAILED:",
+        dialogText.slice(
+          -6000
+        )
+      );
+
+      throw new Error(
+        `Final Send button never appeared for ${bookingId}.`
       );
     }
   }
-
-
-  if (!finalSendButton) {
-    const visibleButtons =
-      await page
-        .locator(
-          "button:visible"
-        )
-        .allTextContents();
-
-
-    const bodyText =
-      await page
-        .locator("body")
-        .innerText();
-
-
-    console.log(
-      "VISIBLE BUTTONS WHEN SEND FAILED:",
-      visibleButtons
-        .map(
-          (text) =>
-            text.trim()
-        )
-        .filter(Boolean)
-    );
-
-
-    console.log(
-      "JOB REQUEST PAGE TEXT WHEN SEND FAILED:",
-      bodyText.slice(
-        -6000
-      )
-    );
-
-
-    throw new Error(
-      `Final Send button never appeared for ${bookingId}.`
-    );
-  }
-
-
-  console.log(
-    `Final Send button found for ${bookingId} in ${finalSendLocation}.`
-  );
 
 
   await finalSendButton
@@ -2209,7 +2366,7 @@ async function openJobRequestModal(
 
 
   console.log(
-    `Clicked FINAL Send button for ${bookingId}.`
+    `Clicked FINAL Send button for ${bookingId} after loading through the ${radiusMiles}-mile marker.`
   );
 
 
@@ -2247,12 +2404,13 @@ async function openJobRequestModal(
 
   return {
     availableFieldworkerCount:
-      Number(availabilityMatch[1]),
+      radiusResult.availableFieldworkerCount,
 
     totalFieldworkerCount:
-      Number(availabilityMatch[2])
+      radiusResult.totalFieldworkerCount
   };
 }
+
 async function getNextDispatchBooking() {
   const result =
     await pool.query(
