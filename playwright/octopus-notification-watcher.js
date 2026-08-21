@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import http from "http";
 import pg from "pg";
 
 const { Pool } = pg;
@@ -3781,6 +3782,188 @@ async function dispatchNextBooking(
 }
 
 
+async function upsertNeedsCleanerFromHttp({
+  bookingNumber,
+  octopusBookingId,
+  octopusBookingUrl
+}) {
+  await pool.query(
+    `
+      INSERT INTO public.booking_dispatch_state (
+        booking_number,
+        assignment_status,
+        current_cleaner,
+        job_request_status,
+        last_event_type,
+        last_notification_text,
+        last_assignment_change_at,
+        octopus_booking_id,
+        octopus_booking_url,
+        job_request_30_sent_at,
+        job_request_45_sent_at,
+        job_request_60_sent_at,
+        job_request_75_sent_at,
+        last_dispatch_attempt_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        'NEEDS CLEANER',
+        NULL,
+        'NOT_SENT',
+        'NEEDS CLEANER',
+        'Triggered from Confirmations Column P',
+        NOW(),
+        $2,
+        $3,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NOW()
+      )
+      ON CONFLICT (booking_number)
+      DO UPDATE SET
+        assignment_status = 'NEEDS CLEANER',
+        current_cleaner = NULL,
+        job_request_status = 'NOT_SENT',
+        last_event_type = 'NEEDS CLEANER',
+        last_notification_text = 'Triggered from Confirmations Column P',
+        last_assignment_change_at = NOW(),
+        octopus_booking_id = EXCLUDED.octopus_booking_id,
+        octopus_booking_url = EXCLUDED.octopus_booking_url,
+        job_request_30_sent_at = NULL,
+        job_request_45_sent_at = NULL,
+        job_request_60_sent_at = NULL,
+        job_request_75_sent_at = NULL,
+        last_dispatch_attempt_at = NULL,
+        updated_at = NOW();
+    `,
+    [
+      bookingNumber,
+      octopusBookingId,
+      octopusBookingUrl
+    ]
+  );
+}
+
+function startHttpServer() {
+  const port = Number(process.env.PORT || 3000);
+
+  const server = http.createServer(async (req, res) => {
+    const sendJson = (statusCode, payload) => {
+      res.writeHead(statusCode, {
+        "Content-Type": "application/json"
+      });
+      res.end(JSON.stringify(payload));
+    };
+
+    if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
+      sendJson(200, {
+        status: "ok",
+        service: "octopus-watcher"
+      });
+      return;
+    }
+
+    if (req.method !== "POST" || req.url !== "/needs-cleaner") {
+      sendJson(404, {
+        status: "error",
+        message: "Not found"
+      });
+      return;
+    }
+
+    try {
+      let rawBody = "";
+
+      for await (const chunk of req) {
+        rawBody += chunk;
+
+        if (rawBody.length > 1024 * 1024) {
+          throw new Error("Request body too large");
+        }
+      }
+
+      const body = rawBody
+        ? JSON.parse(rawBody)
+        : {};
+
+      const bookingNumber = String(
+        body.booking_number || ""
+      ).trim().toUpperCase();
+
+      const octopusBookingId = Number(
+        body.octopus_booking_id
+      );
+
+      const octopusBookingUrl = String(
+        body.octopus_booking_url || ""
+      ).trim();
+
+      if (!/^BOK-\d+$/.test(bookingNumber)) {
+        sendJson(400, {
+          status: "error",
+          message: "booking_number must look like BOK-12345"
+        });
+        return;
+      }
+
+      if (!Number.isInteger(octopusBookingId) || octopusBookingId <= 0) {
+        sendJson(400, {
+          status: "error",
+          message: "octopus_booking_id must be a positive integer"
+        });
+        return;
+      }
+
+      const expectedBookingUrl =
+        `https://admin.octopuspro.com/booking/view/${octopusBookingId}`;
+
+      const finalBookingUrl =
+        octopusBookingUrl || expectedBookingUrl;
+
+      await upsertNeedsCleanerFromHttp({
+        bookingNumber,
+        octopusBookingId,
+        octopusBookingUrl: finalBookingUrl
+      });
+
+      console.log(
+        `NEEDS CLEANER received by HTTP endpoint: ${bookingNumber} -> Octopus ${octopusBookingId}`
+      );
+
+      sendJson(200, {
+        status: "ok",
+        booking_number: bookingNumber,
+        assignment_status: "NEEDS CLEANER",
+        octopus_booking_id: octopusBookingId,
+        octopus_booking_url: finalBookingUrl
+      });
+    } catch (error) {
+      console.error(
+        "POST /needs-cleaner failed:",
+        error
+      );
+
+      sendJson(500, {
+        status: "error",
+        message: String(error?.message || error)
+      });
+    }
+  });
+
+  server.listen(port, "0.0.0.0", () => {
+    console.log(
+      `HTTP endpoint listening on port ${port}. POST /needs-cleaner is ready.`
+    );
+  });
+
+  return server;
+}
+
+
 async function main() {
   await pool.query(
     "SELECT 1"
@@ -3789,6 +3972,8 @@ async function main() {
   console.log(
     "PostgreSQL connected successfully."
   );
+
+  startHttpServer();
 
   const browser =
     await chromium.launch({
