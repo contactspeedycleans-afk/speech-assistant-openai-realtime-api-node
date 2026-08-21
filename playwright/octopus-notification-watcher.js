@@ -1708,6 +1708,431 @@ async function readNotifications(
 }
 
 
+
+async function diagnoseJobRequestUi(
+  page,
+  bookingId
+) {
+  console.log(
+    `===== JOB REQUEST UI DIAGNOSTICS START ${bookingId} =====`
+  );
+
+  console.log(
+    "Diagnostic page URL:",
+    page.url()
+  );
+
+  await page.waitForTimeout(
+    3000
+  );
+
+
+  try {
+    const snapshot =
+      await page.evaluate(
+        () => {
+          const isVisible =
+            (element) => {
+              if (
+                !element ||
+                !(element instanceof HTMLElement)
+              ) {
+                return false;
+              }
+
+              const rect =
+                element.getBoundingClientRect();
+
+              const style =
+                window.getComputedStyle(
+                  element
+                );
+
+              return (
+                rect.width > 0 &&
+                rect.height > 0 &&
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                Number(style.opacity || "1") !== 0
+              );
+            };
+
+
+          const cleanText =
+            (value) =>
+              String(value || "")
+                .replace(/\s+/g, " ")
+                .trim();
+
+
+          const describe =
+            (element) => ({
+              tag:
+                element.tagName
+                  ?.toLowerCase() || "",
+
+              id:
+                element.id || "",
+
+              className:
+                typeof element.className ===
+                  "string"
+                  ? element.className
+                  : "",
+
+              role:
+                element.getAttribute(
+                  "role"
+                ) || "",
+
+              text:
+                cleanText(
+                  element.innerText ||
+                  element.textContent
+                ).slice(0, 500),
+
+              outerHTML:
+                element.outerHTML
+                  ?.slice(0, 1800) || ""
+            });
+
+
+          const visibleButtons =
+            Array.from(
+              document.querySelectorAll(
+                "button, a, [role='button'], input[type='button'], input[type='submit']"
+              )
+            )
+              .filter(isVisible)
+              .map(describe)
+              .filter(
+                (item) =>
+                  item.text ||
+                  /submit|button/i.test(
+                    item.outerHTML
+                  )
+              )
+              .slice(0, 120);
+
+
+          const keywordRegex =
+            /(send\s+job\s+request|load\s+more|showing\s+\d+|distance|fieldworker|matches|available\s+fieldworkers)/i;
+
+
+          const keywordElements =
+            Array.from(
+              document.querySelectorAll(
+                "body *"
+              )
+            )
+              .filter(isVisible)
+              .filter(
+                (element) => {
+                  const text =
+                    cleanText(
+                      element.innerText ||
+                      element.textContent
+                    );
+
+                  return (
+                    text &&
+                    text.length <= 1200 &&
+                    keywordRegex.test(text)
+                  );
+                }
+              )
+              .map(describe)
+              .slice(0, 120);
+
+
+          const overlayCandidates =
+            Array.from(
+              document.querySelectorAll(
+                "body *"
+              )
+            )
+              .filter(isVisible)
+              .filter(
+                (element) => {
+                  const className =
+                    typeof element.className ===
+                      "string"
+                      ? element.className
+                      : "";
+
+                  const role =
+                    element.getAttribute(
+                      "role"
+                    ) || "";
+
+                  const style =
+                    window.getComputedStyle(
+                      element
+                    );
+
+                  return (
+                    /modal|dialog|popup|overlay|drawer|offcanvas|portal/i.test(
+                      className
+                    ) ||
+                    /dialog/i.test(role) ||
+                    style.position === "fixed"
+                  );
+                }
+              )
+              .map(describe)
+              .slice(0, 80);
+
+
+          const activeElement =
+            document.activeElement
+              ? describe(
+                  document.activeElement
+                )
+              : null;
+
+
+          const iframeInfo =
+            Array.from(
+              document.querySelectorAll(
+                "iframe"
+              )
+            ).map(
+              (frame) => ({
+                src:
+                  frame.getAttribute(
+                    "src"
+                  ) || "",
+
+                name:
+                  frame.getAttribute(
+                    "name"
+                  ) || "",
+
+                id:
+                  frame.id || "",
+
+                className:
+                  typeof frame.className ===
+                    "string"
+                    ? frame.className
+                    : "",
+
+                visible:
+                  isVisible(frame)
+              })
+            );
+
+
+          return {
+            activeElement,
+            visibleButtons,
+            keywordElements,
+            overlayCandidates,
+            iframeInfo
+          };
+        }
+      );
+
+
+    console.log(
+      "JOB REQUEST ACTIVE ELEMENT:",
+      JSON.stringify(
+        snapshot.activeElement
+      )
+    );
+
+
+    console.log(
+      "JOB REQUEST VISIBLE BUTTONS/LINKS:",
+      JSON.stringify(
+        snapshot.visibleButtons
+      )
+    );
+
+
+    console.log(
+      "JOB REQUEST KEYWORD ELEMENTS:",
+      JSON.stringify(
+        snapshot.keywordElements
+      )
+    );
+
+
+    console.log(
+      "JOB REQUEST MODAL/OVERLAY CANDIDATES:",
+      JSON.stringify(
+        snapshot.overlayCandidates
+      )
+    );
+
+
+    console.log(
+      "JOB REQUEST IFRAMES:",
+      JSON.stringify(
+        snapshot.iframeInfo
+      )
+    );
+  } catch (error) {
+    console.error(
+      "Failed main-page job-request diagnostics:",
+      error
+    );
+  }
+
+
+  const frames =
+    page.frames();
+
+
+  console.log(
+    `JOB REQUEST FRAME COUNT: ${frames.length}`
+  );
+
+
+  for (
+    let index = 0;
+    index < frames.length;
+    index += 1
+  ) {
+    const frame =
+      frames[index];
+
+    try {
+      const frameUrl =
+        frame.url();
+
+      const frameName =
+        frame.name();
+
+      const frameBodyText =
+        await frame
+          .locator("body")
+          .innerText()
+          .catch(() => "");
+
+      const keywordLines =
+        frameBodyText
+          .split("\n")
+          .map(
+            (line) =>
+              line
+                .replace(/\s+/g, " ")
+                .trim()
+          )
+          .filter(Boolean)
+          .filter(
+            (line) =>
+              /(send\s+job\s+request|load\s+more|showing\s+\d+|distance|fieldworker|matches|available\s+fieldworkers)/i.test(
+                line
+              )
+          )
+          .slice(0, 80);
+
+      const frameControls =
+        await frame
+          .locator(
+            "button, a, [role='button'], input[type='button'], input[type='submit']"
+          )
+          .evaluateAll(
+            (elements) =>
+              elements
+                .filter(
+                  (element) => {
+                    if (
+                      !(element instanceof HTMLElement)
+                    ) {
+                      return false;
+                    }
+
+                    const rect =
+                      element.getBoundingClientRect();
+
+                    const style =
+                      window.getComputedStyle(
+                        element
+                      );
+
+                    return (
+                      rect.width > 0 &&
+                      rect.height > 0 &&
+                      style.display !== "none" &&
+                      style.visibility !== "hidden"
+                    );
+                  }
+                )
+                .map(
+                  (element) => ({
+                    tag:
+                      element.tagName
+                        .toLowerCase(),
+
+                    text:
+                      String(
+                        element.innerText ||
+                        element.textContent ||
+                        element.getAttribute(
+                          "value"
+                        ) ||
+                        ""
+                      )
+                        .replace(/\s+/g, " ")
+                        .trim()
+                        .slice(0, 300),
+
+                    id:
+                      element.id || "",
+
+                    className:
+                      typeof element.className ===
+                        "string"
+                        ? element.className
+                        : "",
+
+                    role:
+                      element.getAttribute(
+                        "role"
+                      ) || ""
+                  })
+                )
+                .slice(0, 100)
+          )
+          .catch(() => []);
+
+
+      console.log(
+        `JOB REQUEST FRAME ${index} NAME=${frameName || "(none)"} URL=${frameUrl}`
+      );
+
+
+      console.log(
+        `JOB REQUEST FRAME ${index} KEYWORD LINES:`,
+        JSON.stringify(
+          keywordLines
+        )
+      );
+
+
+      console.log(
+        `JOB REQUEST FRAME ${index} VISIBLE CONTROLS:`,
+        JSON.stringify(
+          frameControls
+        )
+      );
+    } catch (error) {
+      console.error(
+        `Failed diagnostics for frame ${index}:`,
+        error
+      );
+    }
+  }
+
+
+  console.log(
+    `===== JOB REQUEST UI DIAGNOSTICS END ${bookingId} =====`
+  );
+}
+
+
 async function getJobRequestContainer(
   page
 ) {
@@ -2487,6 +2912,12 @@ async function openJobRequestModal(
 
   console.log(
     `Clicked Send Job Request for ${bookingId}.`
+  );
+
+
+  await diagnoseJobRequestUi(
+    page,
+    bookingId
   );
 
 
