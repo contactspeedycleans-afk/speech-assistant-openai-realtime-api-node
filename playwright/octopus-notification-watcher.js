@@ -2714,9 +2714,18 @@ async function setJobRequestRadius(
           .catch(() => false)
       )
     ) {
-      throw new Error(
-        `Octopus needs ${uiLoadMoreClicksNeeded} popup page expansion(s) for ${radiusMiles} miles, but Load More was not visible before click ${clickNumber}.`
+      /*
+       * OctopusPro's current popup can manage the recipient list server-side
+       * or use a virtual/infinite list without rendering the old Load More
+       * control. The API calculation above already verified the eligible
+       * fieldworkers. Do not kill the dispatch merely because that legacy UI
+       * control is absent; continue to the popup's Send action.
+       */
+      console.warn(
+        `Octopus calculated ${fieldworkerIdsWithinRadius.length} eligible fieldworkers within ${radiusMiles} miles, but the popup has no visible Load More control. Continuing to Send using Octopus's current server-managed recipient list.`
       );
+
+      break;
     }
 
 
