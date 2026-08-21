@@ -278,6 +278,8 @@ fastify.post('/outbound-call', async (request, reply) => {
             from: process.env.TWILIO_PHONE_NUMBER,
             url: answerUrl.toString(),
             method: 'POST',
+            record: true,
+            recordingChannels: 'dual',
             machineDetection: 'DetectMessageEnd',
             machineDetectionTimeout: 30,
             machineDetectionSpeechThreshold: 2400,
