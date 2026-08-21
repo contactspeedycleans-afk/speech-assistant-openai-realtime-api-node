@@ -2051,7 +2051,11 @@ const voicemailClosingPhrases = [
     'reply to the text message',
     'we look forward to speaking with you',
     'have a wonderful day',
-    'have a great day'
+    'have a great day',
+    'talk soon',
+    'talk to you soon',
+    'goodbye',
+    'bye for now'
 ];
 
 const detectedVoicemail =
