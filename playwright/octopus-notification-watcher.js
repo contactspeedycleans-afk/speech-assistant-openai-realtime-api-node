@@ -2136,195 +2136,146 @@ async function diagnoseJobRequestUi(
 async function getJobRequestContainer(
   page
 ) {
-  // Octopus keeps many hidden copies of the Send Job Request modal in the DOM.
-  // Do NOT use .last() or assume Load More is a <button>. Find the copy that
-  // is actually visible, then walk up to its active modal/container.
-  const startedAt = Date.now();
-  let anchor = null;
+  /*
+   * OctopusPro's Send Job Request control explicitly targets:
+   *   data-target="#JOB_REQUEST_POPUP"
+   *
+   * The popup is opening correctly, but Octopus does not reliably expose
+   * "Send Job Request", "Load More", or "Showing X matches" as visible text.
+   * Use the popup's real DOM id as the authoritative container.
+   */
+  const popup =
+    page.locator("#JOB_REQUEST_POPUP");
 
 
-  while (
-    Date.now() - startedAt < 120000
-  ) {
-    const titleCandidates =
-      page.getByText(
-        "Send Job Request",
-        { exact: true }
-      );
-
-    const titleCount =
-      await titleCandidates
-        .count()
-        .catch(() => 0);
-
-    for (
-      let index = 0;
-      index < titleCount;
-      index += 1
-    ) {
-      const candidate =
-        titleCandidates.nth(index);
-
-      if (
-        await candidate
-          .isVisible()
-          .catch(() => false)
-      ) {
-        anchor = candidate;
-        break;
-      }
-    }
-
-
-    if (!anchor) {
-      const showingCandidates =
-        page.getByText(
-          /Showing\s+\d+(?:\s+of\s+\d+)?\s+matches/i
-        );
-
-      const showingCount =
-        await showingCandidates
-          .count()
-          .catch(() => 0);
-
-      for (
-        let index = 0;
-        index < showingCount;
-        index += 1
-      ) {
-        const candidate =
-          showingCandidates.nth(index);
-
-        if (
-          await candidate
-            .isVisible()
-            .catch(() => false)
-        ) {
-          anchor = candidate;
-          break;
-        }
-      }
-    }
-
-
-    if (!anchor) {
-      const loadMoreCandidates =
-        page.getByText(
-          "Load More",
-          { exact: true }
-        );
-
-      const loadMoreCount =
-        await loadMoreCandidates
-          .count()
-          .catch(() => 0);
-
-      for (
-        let index = 0;
-        index < loadMoreCount;
-        index += 1
-      ) {
-        const candidate =
-          loadMoreCandidates.nth(index);
-
-        if (
-          await candidate
-            .isVisible()
-            .catch(() => false)
-        ) {
-          anchor = candidate;
-          break;
-        }
-      }
-    }
-
-
-    if (anchor) {
-      break;
-    }
-
-
-    await page.waitForTimeout(
-      2000
-    );
-  }
-
-
-  if (!anchor) {
-    const bodyText =
-      await page
-        .locator("body")
-        .innerText()
-        .catch(() => "");
-
-    console.log(
-      "JOB REQUEST PAGE TEXT WHEN POPUP DETECTION FAILED:",
-      bodyText.slice(-6000)
-    );
-
-    throw new Error(
-      "Send Job Request popup opened after click, but no visible popup title, match count, or Load More control could be detected."
-    );
-  }
-
-
-  let container = anchor.locator(
-    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal-content ')][1]"
-  );
-
-
-  if (
-    (await container.count().catch(() => 0)) === 0
-  ) {
-    container = anchor.locator(
-      "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')][1]"
-    );
-  }
-
-
-  if (
-    (await container.count().catch(() => 0)) === 0
-  ) {
-    // Fallback for Octopus/Vue wrappers that are not marked up as Bootstrap modals.
-    container = anchor.locator(
-      "xpath=ancestor::*[.//*[normalize-space()='Send'] and .//*[normalize-space()='Close']][1]"
-    );
-  }
-
-
-  if (
-    (await container.count().catch(() => 0)) === 0
-  ) {
-    throw new Error(
-      "A visible Send Job Request popup anchor was found, but its container could not be located."
-    );
-  }
-
-
-  await container.waitFor({
-    state: "visible",
+  await popup.waitFor({
+    state: "attached",
     timeout: 30000
   });
 
 
-  const containerText =
-    await container
-      .innerText()
+  const startedAt =
+    Date.now();
+
+
+  while (
+    Date.now() - startedAt <
+    120000
+  ) {
+    const visible =
+      await popup
+        .isVisible()
+        .catch(() => false);
+
+
+    if (visible) {
+      const popupText =
+        await popup
+          .innerText()
+          .catch(() => "");
+
+
+      console.log(
+        "Open Send Job Request popup found using #JOB_REQUEST_POPUP."
+      );
+
+
+      console.log(
+        "Job Request popup preview:",
+        popupText.slice(
+          0,
+          1800
+        )
+      );
+
+
+      return popup;
+    }
+
+
+    /*
+     * Some Bootstrap/Vue combinations leave the modal element attached but
+     * briefly transition its classes/styles before Playwright considers it
+     * visible. Also accept a popup whose dimensions are non-zero.
+     */
+    const dimensionsVisible =
+      await popup
+        .evaluate(
+          (element) => {
+            const rect =
+              element
+                .getBoundingClientRect();
+
+            const style =
+              window
+                .getComputedStyle(
+                  element
+                );
+
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.display !== "none" &&
+              style.visibility !== "hidden"
+            );
+          }
+        )
+        .catch(() => false);
+
+
+    if (dimensionsVisible) {
+      const popupText =
+        await popup
+          .innerText()
+          .catch(() => "");
+
+
+      console.log(
+        "Open Send Job Request popup found by visible dimensions on #JOB_REQUEST_POPUP."
+      );
+
+
+      console.log(
+        "Job Request popup preview:",
+        popupText.slice(
+          0,
+          1800
+        )
+      );
+
+
+      return popup;
+    }
+
+
+    await page.waitForTimeout(
+      1000
+    );
+  }
+
+
+  const popupHtml =
+    await popup
+      .evaluate(
+        (element) =>
+          element.outerHTML
+            .slice(
+              0,
+              5000
+            )
+      )
       .catch(() => "");
 
 
   console.log(
-    "Open Send Job Request container found from a visible popup element."
+    "JOB_REQUEST_POPUP HTML WHEN VISIBILITY DETECTION FAILED:",
+    popupHtml
   );
 
 
-  console.log(
-    "Job Request container preview:",
-    containerText.slice(0, 1200)
+  throw new Error(
+    "Octopus #JOB_REQUEST_POPUP exists but did not become visible after Send Job Request was clicked."
   );
-
-
-  return container;
 }
 
 
@@ -2410,6 +2361,11 @@ async function setJobRequestRadius(
           /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
         );
 
+      const availableMatch =
+        dialogText.match(
+          /(\d+)\s+of\s+(\d+)\s+available/i
+        );
+
       const showingSimpleMatch =
         dialogText.match(
           /Showing\s+(\d+)\s+matches/i
@@ -2427,16 +2383,20 @@ async function setJobRequestRadius(
         loadedCount:
           showingMatch
             ? Number(showingMatch[1])
-            : showingSimpleMatch
-              ? Number(showingSimpleMatch[1])
-              : distances.length,
+            : availableMatch
+              ? Number(availableMatch[1])
+              : showingSimpleMatch
+                ? Number(showingSimpleMatch[1])
+                : distances.length,
 
         totalCount:
           showingMatch
             ? Number(showingMatch[2])
-            : showingSimpleMatch
-              ? Number(showingSimpleMatch[1])
-              : distances.length,
+            : availableMatch
+              ? Number(availableMatch[2])
+              : showingSimpleMatch
+                ? Number(showingSimpleMatch[1])
+                : distances.length,
 
         dialogText
       };
@@ -2453,10 +2413,12 @@ async function setJobRequestRadius(
         // In Octopus this control may be a button, link, div, or Vue component.
         // Find the visible exact text instead of requiring role=button.
         const loadMoreCandidates =
-          dialog.getByText(
-            "Load More",
-            { exact: true }
-          );
+          dialog.locator(
+            "button, a, div, span"
+          ).filter({
+            hasText:
+              /^\s*Load More\s*$/i
+          });
 
         const loadMoreCount =
           await loadMoreCandidates
@@ -2528,9 +2490,20 @@ async function setJobRequestRadius(
             /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
           );
 
+        const availableCountMatch =
+          currentText.match(
+            /(\d+)\s+of\s+(\d+)\s+available/i
+          );
+
+        const resolvedCountMatch =
+          countMatch ||
+          availableCountMatch;
+
+
         if (
-          countMatch &&
-          Number(countMatch[1]) >= Number(countMatch[2])
+          resolvedCountMatch &&
+          Number(resolvedCountMatch[1]) >=
+            Number(resolvedCountMatch[2])
         ) {
           return null;
         }
@@ -2750,12 +2723,22 @@ async function openJobRequestModal(
         /Showing\s+(\d+)\s+matches/i
       );
 
+    const availableMatch =
+      bodyText.match(
+        /(\d+)\s+of\s+(\d+)\s+available/i
+      );
+
+    const initialCountMatch =
+      showingMatch ||
+      availableMatch;
+
+
     if (
-      showingMatch &&
-      Number(showingMatch[1]) > 0
+      initialCountMatch &&
+      Number(initialCountMatch[1]) > 0
     ) {
       initialMatchCount =
-        Number(showingMatch[1]);
+        Number(initialCountMatch[1]);
 
       break;
     }
@@ -2895,9 +2878,9 @@ async function openJobRequestModal(
         });
 
 
-        // OctopusPro's button uses Vue/Bootstrap modal wiring. A raw DOM
-        // element.click() can log as a click without Playwright performing the
-        // full trusted pointer interaction Octopus expects.
+        button.click();
+
+
         return true;
       }
     );
@@ -2905,26 +2888,14 @@ async function openJobRequestModal(
 
   if (!clickedJobRequest) {
     throw new Error(
-      `Could not locate Send Job Request for ${bookingId}.`
+      `Could not click Send Job Request for ${bookingId}.`
     );
   }
 
 
-  // Use Playwright's real click instead of HTMLElement.click(). This is
-  // important for OctopusPro because the control is wired to open
-  // #JOB_REQUEST_POPUP through the application's UI event handlers.
-  await sendJobRequestButton.click({
-    timeout: 30000
-  });
-
-
   console.log(
-    `Clicked Send Job Request for ${bookingId} with Playwright pointer click.`
+    `Clicked Send Job Request for ${bookingId}.`
   );
-
-
-  // Give Vue/Bootstrap a moment to mount/show the popup before diagnostics.
-  await page.waitForTimeout(1500);
 
 
   await diagnoseJobRequestUi(
