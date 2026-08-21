@@ -1712,22 +1712,138 @@ async function getJobRequestContainer(
   page
 ) {
   // Octopus keeps many hidden copies of the Send Job Request modal in the DOM.
-  // Anchor on the control that only becomes visible inside the OPEN modal.
-  const loadMoreButton = page
-    .locator("button:visible")
-    .filter({
-      hasText: /^\s*Load More\s*$/i
-    })
-    .last();
+  // Do NOT use .last() or assume Load More is a <button>. Find the copy that
+  // is actually visible, then walk up to its active modal/container.
+  const startedAt = Date.now();
+  let anchor = null;
 
 
-  await loadMoreButton.waitFor({
-    state: "visible",
-    timeout: 120000
-  });
+  while (
+    Date.now() - startedAt < 120000
+  ) {
+    const titleCandidates =
+      page.getByText(
+        "Send Job Request",
+        { exact: true }
+      );
+
+    const titleCount =
+      await titleCandidates
+        .count()
+        .catch(() => 0);
+
+    for (
+      let index = 0;
+      index < titleCount;
+      index += 1
+    ) {
+      const candidate =
+        titleCandidates.nth(index);
+
+      if (
+        await candidate
+          .isVisible()
+          .catch(() => false)
+      ) {
+        anchor = candidate;
+        break;
+      }
+    }
 
 
-  let container = loadMoreButton.locator(
+    if (!anchor) {
+      const showingCandidates =
+        page.getByText(
+          /Showing\s+\d+(?:\s+of\s+\d+)?\s+matches/i
+        );
+
+      const showingCount =
+        await showingCandidates
+          .count()
+          .catch(() => 0);
+
+      for (
+        let index = 0;
+        index < showingCount;
+        index += 1
+      ) {
+        const candidate =
+          showingCandidates.nth(index);
+
+        if (
+          await candidate
+            .isVisible()
+            .catch(() => false)
+        ) {
+          anchor = candidate;
+          break;
+        }
+      }
+    }
+
+
+    if (!anchor) {
+      const loadMoreCandidates =
+        page.getByText(
+          "Load More",
+          { exact: true }
+        );
+
+      const loadMoreCount =
+        await loadMoreCandidates
+          .count()
+          .catch(() => 0);
+
+      for (
+        let index = 0;
+        index < loadMoreCount;
+        index += 1
+      ) {
+        const candidate =
+          loadMoreCandidates.nth(index);
+
+        if (
+          await candidate
+            .isVisible()
+            .catch(() => false)
+        ) {
+          anchor = candidate;
+          break;
+        }
+      }
+    }
+
+
+    if (anchor) {
+      break;
+    }
+
+
+    await page.waitForTimeout(
+      2000
+    );
+  }
+
+
+  if (!anchor) {
+    const bodyText =
+      await page
+        .locator("body")
+        .innerText()
+        .catch(() => "");
+
+    console.log(
+      "JOB REQUEST PAGE TEXT WHEN POPUP DETECTION FAILED:",
+      bodyText.slice(-6000)
+    );
+
+    throw new Error(
+      "Send Job Request popup opened after click, but no visible popup title, match count, or Load More control could be detected."
+    );
+  }
+
+
+  let container = anchor.locator(
     "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal-content ')][1]"
   );
 
@@ -1735,7 +1851,7 @@ async function getJobRequestContainer(
   if (
     (await container.count().catch(() => 0)) === 0
   ) {
-    container = loadMoreButton.locator(
+    container = anchor.locator(
       "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')][1]"
     );
   }
@@ -1744,9 +1860,9 @@ async function getJobRequestContainer(
   if (
     (await container.count().catch(() => 0)) === 0
   ) {
-    // Last-resort: use the nearest visible ancestor that contains both Load More and Send.
-    container = loadMoreButton.locator(
-      "xpath=ancestor::*[.//button[normalize-space()='Send']][1]"
+    // Fallback for Octopus/Vue wrappers that are not marked up as Bootstrap modals.
+    container = anchor.locator(
+      "xpath=ancestor::*[.//*[normalize-space()='Send'] and .//*[normalize-space()='Close']][1]"
     );
   }
 
@@ -1755,7 +1871,7 @@ async function getJobRequestContainer(
     (await container.count().catch(() => 0)) === 0
   ) {
     throw new Error(
-      "Load More became visible, but the Send Job Request container could not be located."
+      "A visible Send Job Request popup anchor was found, but its container could not be located."
     );
   }
 
@@ -1773,7 +1889,7 @@ async function getJobRequestContainer(
 
 
   console.log(
-    "Open Send Job Request container found using visible Load More button."
+    "Open Send Job Request container found from a visible popup element."
   );
 
 
@@ -1909,36 +2025,95 @@ async function setJobRequestRadius(
       while (
         Date.now() - startedAt < 120000
       ) {
-        const loadMoreButton = dialog
-          .getByRole("button", {
-            name: /^\s*Load More\s*$/i
-          })
-          .last();
+        // In Octopus this control may be a button, link, div, or Vue component.
+        // Find the visible exact text instead of requiring role=button.
+        const loadMoreCandidates =
+          dialog.getByText(
+            "Load More",
+            { exact: true }
+          );
 
-        if (
-          await loadMoreButton
-            .isVisible()
-            .catch(() => false)
+        const loadMoreCount =
+          await loadMoreCandidates
+            .count()
+            .catch(() => 0);
+
+        for (
+          let index = 0;
+          index < loadMoreCount;
+          index += 1
         ) {
-          return loadMoreButton;
+          const candidate =
+            loadMoreCandidates.nth(index);
+
+          if (
+            await candidate
+              .isVisible()
+              .catch(() => false)
+          ) {
+            return candidate;
+          }
         }
 
-        const loadingButton = dialog
-          .getByRole("button", {
-            name: /Loading/i
-          })
-          .last();
 
-        if (
-          await loadingButton
-            .isVisible()
-            .catch(() => false)
+        const loadingCandidates =
+          dialog.getByText(
+            /Loading/i
+          );
+
+        const loadingCount =
+          await loadingCandidates
+            .count()
+            .catch(() => 0);
+
+        let loadingVisible = false;
+
+        for (
+          let index = 0;
+          index < loadingCount;
+          index += 1
         ) {
+          if (
+            await loadingCandidates
+              .nth(index)
+              .isVisible()
+              .catch(() => false)
+          ) {
+            loadingVisible = true;
+            break;
+          }
+        }
+
+
+        if (loadingVisible) {
           await page.waitForTimeout(2000);
           continue;
         }
 
-        return null;
+
+        // If the match count already says every result is loaded, there may be
+        // no Load More control at all. The caller will continue with the list.
+        const currentText =
+          await dialog
+            .innerText()
+            .catch(() => "");
+
+        const countMatch =
+          currentText.match(
+            /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
+          );
+
+        if (
+          countMatch &&
+          Number(countMatch[1]) >= Number(countMatch[2])
+        ) {
+          return null;
+        }
+
+
+        await page.waitForTimeout(
+          2000
+        );
       }
 
       return null;
