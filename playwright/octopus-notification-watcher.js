@@ -2283,26 +2283,56 @@ async function getNextDispatchBooking() {
 
       FROM public.booking_dispatch_state AS dispatch
 
-      INNER JOIN public.booking_tracking AS tracking
+      /*
+       * booking_dispatch_state is the authoritative dispatch state.
+       * Keep booking_tracking joined for date/window metadata, but do not
+       * require a tracking row to exist because Sheet/Make can explicitly
+       * reset a booking to NEEDS CLEANER before tracking is refreshed.
+       */
+      LEFT JOIN public.booking_tracking AS tracking
         ON tracking.booking_number = dispatch.booking_number
 
       WHERE
         dispatch.assignment_status = 'NEEDS CLEANER'
         AND dispatch.octopus_booking_id IS NOT NULL
 
+        /*
+         * Never dispatch bookings that tracking explicitly says were
+         * cancelled/deleted. Operational tracking states can be stale after
+         * a manual NEEDS CLEANER reset, so a freshly updated dispatch row is
+         * allowed to override ASSIGNED/ON_THE_WAY/ARRIVED/STARTED/FINISHED.
+         * A real new ASSIGNED event still stops dispatch because it updates
+         * dispatch.assignment_status away from NEEDS CLEANER.
+         */
         AND UPPER(COALESCE(tracking.status, '')) NOT IN (
-          'ASSIGNED',
-          'ON_THE_WAY',
-          'ARRIVED',
-          'STARTED',
-          'FINISHED',
           'CANCELLED',
           'CANCELED',
           'DELETED'
         )
 
         AND (
-          (tracking.booking_date AT TIME ZONE 'America/Detroit')::date
+          UPPER(COALESCE(tracking.status, '')) NOT IN (
+            'ASSIGNED',
+            'ON_THE_WAY',
+            'ARRIVED',
+            'STARTED',
+            'FINISHED'
+          )
+          OR dispatch.updated_at >= NOW() - INTERVAL '1 day'
+        )
+
+        /*
+         * Preserve the existing future/today arrival-window protection.
+         * Also allow a freshly reset dispatch row through when booking_tracking
+         * still contains an old booking date/window (the exact failure seen
+         * with re-used/rescheduled booking numbers such as BOK-26701).
+         */
+        AND (
+          dispatch.updated_at >= NOW() - INTERVAL '1 day'
+
+          OR tracking.booking_date IS NULL
+
+          OR (tracking.booking_date AT TIME ZONE 'America/Detroit')::date
             > (NOW() AT TIME ZONE 'America/Detroit')::date
 
           OR (
