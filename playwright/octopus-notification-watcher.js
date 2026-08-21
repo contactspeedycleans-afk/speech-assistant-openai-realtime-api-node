@@ -2136,146 +2136,195 @@ async function diagnoseJobRequestUi(
 async function getJobRequestContainer(
   page
 ) {
-  /*
-   * OctopusPro's Send Job Request control explicitly targets:
-   *   data-target="#JOB_REQUEST_POPUP"
-   *
-   * The popup is opening correctly, but Octopus does not reliably expose
-   * "Send Job Request", "Load More", or "Showing X matches" as visible text.
-   * Use the popup's real DOM id as the authoritative container.
-   */
-  const popup =
-    page.locator("#JOB_REQUEST_POPUP");
-
-
-  await popup.waitFor({
-    state: "attached",
-    timeout: 30000
-  });
-
-
-  const startedAt =
-    Date.now();
+  // Octopus keeps many hidden copies of the Send Job Request modal in the DOM.
+  // Do NOT use .last() or assume Load More is a <button>. Find the copy that
+  // is actually visible, then walk up to its active modal/container.
+  const startedAt = Date.now();
+  let anchor = null;
 
 
   while (
-    Date.now() - startedAt <
-    120000
+    Date.now() - startedAt < 120000
   ) {
-    const visible =
-      await popup
-        .isVisible()
-        .catch(() => false);
-
-
-    if (visible) {
-      const popupText =
-        await popup
-          .innerText()
-          .catch(() => "");
-
-
-      console.log(
-        "Open Send Job Request popup found using #JOB_REQUEST_POPUP."
+    const titleCandidates =
+      page.getByText(
+        "Send Job Request",
+        { exact: true }
       );
 
+    const titleCount =
+      await titleCandidates
+        .count()
+        .catch(() => 0);
 
-      console.log(
-        "Job Request popup preview:",
-        popupText.slice(
-          0,
-          1800
-        )
-      );
+    for (
+      let index = 0;
+      index < titleCount;
+      index += 1
+    ) {
+      const candidate =
+        titleCandidates.nth(index);
 
-
-      return popup;
+      if (
+        await candidate
+          .isVisible()
+          .catch(() => false)
+      ) {
+        anchor = candidate;
+        break;
+      }
     }
 
 
-    /*
-     * Some Bootstrap/Vue combinations leave the modal element attached but
-     * briefly transition its classes/styles before Playwright considers it
-     * visible. Also accept a popup whose dimensions are non-zero.
-     */
-    const dimensionsVisible =
-      await popup
-        .evaluate(
-          (element) => {
-            const rect =
-              element
-                .getBoundingClientRect();
+    if (!anchor) {
+      const showingCandidates =
+        page.getByText(
+          /Showing\s+\d+(?:\s+of\s+\d+)?\s+matches/i
+        );
 
-            const style =
-              window
-                .getComputedStyle(
-                  element
-                );
+      const showingCount =
+        await showingCandidates
+          .count()
+          .catch(() => 0);
 
-            return (
-              rect.width > 0 &&
-              rect.height > 0 &&
-              style.display !== "none" &&
-              style.visibility !== "hidden"
-            );
-          }
-        )
-        .catch(() => false);
+      for (
+        let index = 0;
+        index < showingCount;
+        index += 1
+      ) {
+        const candidate =
+          showingCandidates.nth(index);
 
-
-    if (dimensionsVisible) {
-      const popupText =
-        await popup
-          .innerText()
-          .catch(() => "");
+        if (
+          await candidate
+            .isVisible()
+            .catch(() => false)
+        ) {
+          anchor = candidate;
+          break;
+        }
+      }
+    }
 
 
-      console.log(
-        "Open Send Job Request popup found by visible dimensions on #JOB_REQUEST_POPUP."
-      );
+    if (!anchor) {
+      const loadMoreCandidates =
+        page.getByText(
+          "Load More",
+          { exact: true }
+        );
+
+      const loadMoreCount =
+        await loadMoreCandidates
+          .count()
+          .catch(() => 0);
+
+      for (
+        let index = 0;
+        index < loadMoreCount;
+        index += 1
+      ) {
+        const candidate =
+          loadMoreCandidates.nth(index);
+
+        if (
+          await candidate
+            .isVisible()
+            .catch(() => false)
+        ) {
+          anchor = candidate;
+          break;
+        }
+      }
+    }
 
 
-      console.log(
-        "Job Request popup preview:",
-        popupText.slice(
-          0,
-          1800
-        )
-      );
-
-
-      return popup;
+    if (anchor) {
+      break;
     }
 
 
     await page.waitForTimeout(
-      1000
+      2000
     );
   }
 
 
-  const popupHtml =
-    await popup
-      .evaluate(
-        (element) =>
-          element.outerHTML
-            .slice(
-              0,
-              5000
-            )
-      )
+  if (!anchor) {
+    const bodyText =
+      await page
+        .locator("body")
+        .innerText()
+        .catch(() => "");
+
+    console.log(
+      "JOB REQUEST PAGE TEXT WHEN POPUP DETECTION FAILED:",
+      bodyText.slice(-6000)
+    );
+
+    throw new Error(
+      "Send Job Request popup opened after click, but no visible popup title, match count, or Load More control could be detected."
+    );
+  }
+
+
+  let container = anchor.locator(
+    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal-content ')][1]"
+  );
+
+
+  if (
+    (await container.count().catch(() => 0)) === 0
+  ) {
+    container = anchor.locator(
+      "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')][1]"
+    );
+  }
+
+
+  if (
+    (await container.count().catch(() => 0)) === 0
+  ) {
+    // Fallback for Octopus/Vue wrappers that are not marked up as Bootstrap modals.
+    container = anchor.locator(
+      "xpath=ancestor::*[.//*[normalize-space()='Send'] and .//*[normalize-space()='Close']][1]"
+    );
+  }
+
+
+  if (
+    (await container.count().catch(() => 0)) === 0
+  ) {
+    throw new Error(
+      "A visible Send Job Request popup anchor was found, but its container could not be located."
+    );
+  }
+
+
+  await container.waitFor({
+    state: "visible",
+    timeout: 30000
+  });
+
+
+  const containerText =
+    await container
+      .innerText()
       .catch(() => "");
 
 
   console.log(
-    "JOB_REQUEST_POPUP HTML WHEN VISIBILITY DETECTION FAILED:",
-    popupHtml
+    "Open Send Job Request container found from a visible popup element."
   );
 
 
-  throw new Error(
-    "Octopus #JOB_REQUEST_POPUP exists but did not become visible after Send Job Request was clicked."
+  console.log(
+    "Job Request container preview:",
+    containerText.slice(0, 1200)
   );
+
+
+  return container;
 }
 
 
@@ -2361,11 +2410,6 @@ async function setJobRequestRadius(
           /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
         );
 
-      const availableMatch =
-        dialogText.match(
-          /(\d+)\s+of\s+(\d+)\s+available/i
-        );
-
       const showingSimpleMatch =
         dialogText.match(
           /Showing\s+(\d+)\s+matches/i
@@ -2383,20 +2427,16 @@ async function setJobRequestRadius(
         loadedCount:
           showingMatch
             ? Number(showingMatch[1])
-            : availableMatch
-              ? Number(availableMatch[1])
-              : showingSimpleMatch
-                ? Number(showingSimpleMatch[1])
-                : distances.length,
+            : showingSimpleMatch
+              ? Number(showingSimpleMatch[1])
+              : distances.length,
 
         totalCount:
           showingMatch
             ? Number(showingMatch[2])
-            : availableMatch
-              ? Number(availableMatch[2])
-              : showingSimpleMatch
-                ? Number(showingSimpleMatch[1])
-                : distances.length,
+            : showingSimpleMatch
+              ? Number(showingSimpleMatch[1])
+              : distances.length,
 
         dialogText
       };
@@ -2413,12 +2453,10 @@ async function setJobRequestRadius(
         // In Octopus this control may be a button, link, div, or Vue component.
         // Find the visible exact text instead of requiring role=button.
         const loadMoreCandidates =
-          dialog.locator(
-            "button, a, div, span"
-          ).filter({
-            hasText:
-              /^\s*Load More\s*$/i
-          });
+          dialog.getByText(
+            "Load More",
+            { exact: true }
+          );
 
         const loadMoreCount =
           await loadMoreCandidates
@@ -2490,20 +2528,9 @@ async function setJobRequestRadius(
             /Showing\s+(\d+)\s+of\s+(\d+)\s+matches/i
           );
 
-        const availableCountMatch =
-          currentText.match(
-            /(\d+)\s+of\s+(\d+)\s+available/i
-          );
-
-        const resolvedCountMatch =
-          countMatch ||
-          availableCountMatch;
-
-
         if (
-          resolvedCountMatch &&
-          Number(resolvedCountMatch[1]) >=
-            Number(resolvedCountMatch[2])
+          countMatch &&
+          Number(countMatch[1]) >= Number(countMatch[2])
         ) {
           return null;
         }
@@ -2650,6 +2677,226 @@ async function setJobRequestRadius(
 }
 
 
+
+function attachJobRequestTracing(
+  page,
+  bookingId
+) {
+  const startedAt =
+    Date.now();
+
+
+  const logIfRelevant =
+    (
+      prefix,
+      payload
+    ) => {
+      const serialized =
+        typeof payload === "string"
+          ? payload
+          : JSON.stringify(payload);
+
+
+      if (
+        /job[_\s-]*request|fieldworker|available|booking\/view|ajax|api|modal|popup/i.test(
+          serialized
+        )
+      ) {
+        console.log(
+          `[JOB REQUEST TRACE ${bookingId}] ${prefix}`,
+          serialized
+        );
+      }
+    };
+
+
+  const onConsole =
+    (message) => {
+      const type =
+        message.type();
+
+      if (
+        type === "error" ||
+        type === "warning"
+      ) {
+        console.log(
+          `[JOB REQUEST TRACE ${bookingId}] BROWSER ${type.toUpperCase()}:`,
+          message.text()
+        );
+      }
+    };
+
+
+  const onPageError =
+    (error) => {
+      console.log(
+        `[JOB REQUEST TRACE ${bookingId}] PAGE ERROR:`,
+        error?.stack ||
+        error?.message ||
+        String(error)
+      );
+    };
+
+
+  const onRequest =
+    (request) => {
+      const resourceType =
+        request.resourceType();
+
+      const url =
+        request.url();
+
+      if (
+        resourceType === "xhr" ||
+        resourceType === "fetch"
+      ) {
+        logIfRelevant(
+          `REQUEST ${request.method()} ${resourceType}`,
+          {
+            url,
+            postData:
+              request.postData()
+          }
+        );
+      }
+    };
+
+
+  const onResponse =
+    async (response) => {
+      const request =
+        response.request();
+
+      const resourceType =
+        request.resourceType();
+
+      if (
+        resourceType !== "xhr" &&
+        resourceType !== "fetch"
+      ) {
+        return;
+      }
+
+
+      const url =
+        response.url();
+
+      if (
+        !/job[_\s-]*request|fieldworker|available|booking|ajax|api|modal|popup/i.test(
+          url
+        )
+      ) {
+        return;
+      }
+
+
+      let bodyPreview =
+        "";
+
+      try {
+        bodyPreview =
+          (
+            await response.text()
+          ).slice(
+            0,
+            3000
+          );
+      } catch {
+        bodyPreview =
+          "";
+      }
+
+
+      console.log(
+        `[JOB REQUEST TRACE ${bookingId}] RESPONSE ${response.status()} ${request.method()} ${resourceType}:`,
+        JSON.stringify({
+          url,
+          bodyPreview
+        })
+      );
+    };
+
+
+  const onRequestFailed =
+    (request) => {
+      console.log(
+        `[JOB REQUEST TRACE ${bookingId}] REQUEST FAILED ${request.method()} ${request.resourceType()}:`,
+        JSON.stringify({
+          url:
+            request.url(),
+
+          failure:
+            request.failure()
+        })
+      );
+    };
+
+
+  page.on(
+    "console",
+    onConsole
+  );
+
+  page.on(
+    "pageerror",
+    onPageError
+  );
+
+  page.on(
+    "request",
+    onRequest
+  );
+
+  page.on(
+    "response",
+    onResponse
+  );
+
+  page.on(
+    "requestfailed",
+    onRequestFailed
+  );
+
+
+  console.log(
+    `[JOB REQUEST TRACE ${bookingId}] tracing attached at ${new Date().toISOString()}`
+  );
+
+
+  return () => {
+    page.off(
+      "console",
+      onConsole
+    );
+
+    page.off(
+      "pageerror",
+      onPageError
+    );
+
+    page.off(
+      "request",
+      onRequest
+    );
+
+    page.off(
+      "response",
+      onResponse
+    );
+
+    page.off(
+      "requestfailed",
+      onRequestFailed
+    );
+
+
+    console.log(
+      `[JOB REQUEST TRACE ${bookingId}] tracing detached after ${Date.now() - startedAt} ms`
+    );
+  };
+}
+
+
 async function openJobRequestModal(
   page,
   bookingId,
@@ -2723,22 +2970,12 @@ async function openJobRequestModal(
         /Showing\s+(\d+)\s+matches/i
       );
 
-    const availableMatch =
-      bodyText.match(
-        /(\d+)\s+of\s+(\d+)\s+available/i
-      );
-
-    const initialCountMatch =
-      showingMatch ||
-      availableMatch;
-
-
     if (
-      initialCountMatch &&
-      Number(initialCountMatch[1]) > 0
+      showingMatch &&
+      Number(showingMatch[1]) > 0
     ) {
       initialMatchCount =
-        Number(initialCountMatch[1]);
+        Number(showingMatch[1]);
 
       break;
     }
@@ -2806,6 +3043,13 @@ async function openJobRequestModal(
   console.log(
     `Send Job Request button is ready for ${bookingId}.`
   );
+
+
+  const detachJobRequestTracing =
+    attachJobRequestTracing(
+      page,
+      bookingId
+    );
 
 
   const clickedJobRequest =
@@ -2904,6 +3148,82 @@ async function openJobRequestModal(
   );
 
 
+  await page.waitForTimeout(
+    5000
+  );
+
+
+  const targetSnapshot =
+    await page.evaluate(
+      () => {
+        const target =
+          document.querySelector(
+            "#JOB_REQUEST_POPUP"
+          );
+
+        const button =
+          Array.from(
+            document.querySelectorAll(
+              "button[data-target='#JOB_REQUEST_POPUP']"
+            )
+          ).find(
+            (element) => {
+              const rect =
+                element.getBoundingClientRect();
+
+              const style =
+                window.getComputedStyle(
+                  element
+                );
+
+              return (
+                rect.width > 0 &&
+                rect.height > 0 &&
+                style.display !== "none" &&
+                style.visibility !== "hidden"
+              );
+            }
+          );
+
+
+        return {
+          targetExists:
+            Boolean(target),
+
+          targetClass:
+            target?.className || "",
+
+          targetStyle:
+            target?.getAttribute(
+              "style"
+            ) || "",
+
+          targetHtmlPreview:
+            target?.outerHTML
+              ?.slice(
+                0,
+                3000
+              ) || "",
+
+          buttonOuterHtml:
+            button?.outerHTML
+              ?.slice(
+                0,
+                2000
+              ) || ""
+        };
+      }
+    );
+
+
+  console.log(
+    `[JOB REQUEST TRACE ${bookingId}] TARGET SNAPSHOT:`,
+    JSON.stringify(
+      targetSnapshot
+    )
+  );
+
+
   const jobRequestDialog =
     await getJobRequestContainer(
       page
@@ -2913,6 +3233,9 @@ async function openJobRequestModal(
   console.log(
     `Send Job Request modal opened for ${bookingId}.`
   );
+
+
+  detachJobRequestTracing();
 
 
   const radiusResult =
