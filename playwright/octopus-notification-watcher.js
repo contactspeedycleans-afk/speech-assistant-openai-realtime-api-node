@@ -3272,95 +3272,117 @@ async function openJobRequestModal(
     );
 
 
-  // Mirror the known-good standalone test exactly:
-  // the final action is the visible button.save-btn whose text is exactly Send.
-  // Do NOT scope this to the guessed popup container because Octopus sometimes
-  // portals the job-request UI without #JOB_REQUEST_POPUP in the DOM.
-  let finalSendButton =
-    jobRequestDialog
-      .locator("button.save-btn, button, input[type='submit']")
-      .filter({
-        hasText:
-          /^\s*Send\s*$/i
-      })
-      .last();
-
-
-  let foundSendButton =
-    false;
-
+  // Octopus renders the final Send button at the bottom of the real
+  // Send Job Request dialog. In the current UI that button is not reliably
+  // classed as .save-btn and can be portaled outside our detected container.
+  // Find an actually visible button whose accessible/text value is exactly Send.
+  let finalSendButton = null;
 
   for (
     let attempt = 1;
     attempt <= 12;
     attempt += 1
   ) {
-    if (
-      await finalSendButton
-        .isVisible()
-        .catch(() => false)
-    ) {
-      foundSendButton = true;
+    const candidates = [
+      page.getByRole("button", {
+        name: /^\s*Send\s*$/i,
+        exact: true
+      }),
+      page.locator("button").filter({
+        hasText: /^\s*Send\s*$/i
+      }),
+      page.locator("input[type='submit'][value='Send']")
+    ];
+
+    for (const candidateSet of candidates) {
+      const candidateCount =
+        await candidateSet
+          .count()
+          .catch(() => 0);
+
+      for (
+        let index = candidateCount - 1;
+        index >= 0;
+        index -= 1
+      ) {
+        const candidate =
+          candidateSet.nth(index);
+
+        if (
+          await candidate
+            .isVisible()
+            .catch(() => false)
+        ) {
+          finalSendButton = candidate;
+          break;
+        }
+      }
+
+      if (finalSendButton) {
+        break;
+      }
+    }
+
+    if (finalSendButton) {
+      console.log(
+        `Visible final Send button found for ${bookingId} on attempt ${attempt}/12.`
+      );
       break;
     }
 
-
     console.log(
-      `Still waiting for global final Send button — attempt ${attempt}/12 for ${bookingId}.`
+      `Still waiting for visible final Send button — attempt ${attempt}/12 for ${bookingId}.`
     );
-
 
     await page.waitForTimeout(
       2500
     );
-
-
-    finalSendButton =
-      jobRequestDialog
-        .locator("button.save-btn, button, input[type='submit']")
-        .filter({
-          hasText:
-            /^\s*Send\s*$/i
-        })
-        .last();
-
-    if (
-      !(
-        await finalSendButton
-          .isVisible()
-          .catch(() => false)
-      )
-    ) {
-      finalSendButton =
-        page
-          .locator("button.save-btn")
-          .filter({
-            hasText:
-              /^\s*Send\s*$/i
-          })
-          .last();
-    }
   }
 
 
-  if (!foundSendButton) {
-    const visibleSaveButtons =
+  if (!finalSendButton) {
+    const visibleSendLikeButtons =
       await page
-        .locator("button.save-btn")
-        .allTextContents()
+        .locator("button")
+        .evaluateAll(
+          (buttons) =>
+            buttons
+              .filter((button) => {
+                const rect =
+                  button.getBoundingClientRect();
+
+                const style =
+                  window.getComputedStyle(button);
+
+                return (
+                  rect.width > 0 &&
+                  rect.height > 0 &&
+                  style.display !== "none" &&
+                  style.visibility !== "hidden"
+                );
+              })
+              .map((button) =>
+                String(
+                  button.innerText ||
+                  button.textContent ||
+                  ""
+                )
+                  .replace(/\s+/g, " ")
+                  .trim()
+              )
+              .filter(Boolean)
+        )
         .catch(() => []);
 
-
     console.log(
-      "VISIBLE SAVE-BTN TEXTS WHEN FINAL SEND FAILED:",
+      "VISIBLE BUTTON TEXTS WHEN FINAL SEND FAILED:",
       JSON.stringify(
-        visibleSaveButtons
+        visibleSendLikeButtons
       )
     );
 
-
     throw new Error(
-      `Final Send button never appeared for ${bookingId}.`
+      `Visible final Send button never appeared for ${bookingId}.`
     );
   }
 
@@ -3371,8 +3393,7 @@ async function openJobRequestModal(
 
 
   await finalSendButton.click({
-    timeout: 30000,
-    force: true
+    timeout: 30000
   });
 
 
@@ -3382,35 +3403,40 @@ async function openJobRequestModal(
 
 
   console.log(
-    `Waiting for Octopus to finish sending ${bookingId}...`
+    `Waiting for Octopus send-success confirmation for ${bookingId}...`
   );
 
 
-  const sendWaitStartedAt =
-    Date.now();
+  const successToast =
+    page.getByText(
+      /Notification sent successfully/i,
+      { exact: false }
+    ).first();
+
+  const successSeen =
+    await successToast
+      .waitFor({
+        state: "visible",
+        timeout: 45000
+      })
+      .then(() => true)
+      .catch(() => false);
 
 
-  while (
-    Date.now() - sendWaitStartedAt <
-      45000
-  ) {
-    const stillVisible =
-      await finalSendButton
-        .isVisible()
-        .catch(() => false);
-
-    if (!stillVisible) {
-      break;
-    }
-
-    await page.waitForTimeout(
-      1000
+  if (!successSeen) {
+    throw new Error(
+      `Final Send was clicked for ${bookingId}, but Octopus did not show the Notification sent successfully confirmation.`
     );
   }
 
 
   console.log(
-    `Job request send process completed for ${bookingId}.`
+    `Notification sent successfully confirmed for ${bookingId}.`
+  );
+
+
+  await page.waitForTimeout(
+    1500
   );
 
 
