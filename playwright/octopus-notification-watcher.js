@@ -3152,9 +3152,44 @@ async function openJobRequestModal(
     );
 
 
-  // IMPORTANT: use a real Playwright pointer click. The previous diagnostic
-  // build accidentally reverted to HTMLElement.click(), which can trigger some
-  // data fetches without fully opening OctopusPro's Vue/Bootstrap popup.
+  /*
+   * OctopusPro currently renders a Send Job Request trigger whose
+   * data-target is #JOB_REQUEST_POPUP, but on some booking pages that target
+   * is missing from the DOM. Bootstrap cannot open/populate a modal target
+   * that does not exist, even though Octopus may still fire the fieldworker
+   * request. Create the missing Bootstrap modal shell BEFORE the real click.
+   * Octopus can then populate/show the target it already references.
+   */
+  const repairedMissingJobRequestTarget =
+    await page.evaluate(() => {
+      if (document.querySelector("#JOB_REQUEST_POPUP")) {
+        return false;
+      }
+
+      const shell = document.createElement("div");
+      shell.id = "JOB_REQUEST_POPUP";
+      shell.className = "modal fade";
+      shell.setAttribute("tabindex", "-1");
+      shell.setAttribute("role", "dialog");
+      shell.setAttribute("aria-hidden", "true");
+
+      shell.innerHTML = `
+        <div class="modal-dialog" role="document">
+          <div class="modal-content"></div>
+        </div>
+      `;
+
+      document.body.appendChild(shell);
+      return true;
+    });
+
+  if (repairedMissingJobRequestTarget) {
+    console.log(
+      `[JOB REQUEST TRACE ${bookingId}] #JOB_REQUEST_POPUP was missing; inserted Bootstrap modal shell before click.`
+    );
+  }
+
+  // Use a real Playwright pointer click after the target is guaranteed to exist.
   await sendJobRequestButton.click({
     timeout: 30000
   });
