@@ -167,6 +167,57 @@ function escapeXml(value = '') {
         .replaceAll("'", '&apos;');
 }
 
+function getDetroitDateKey(offsetDays = 0) {
+    const shifted = new Date(Date.now() + (Number(offsetDays) || 0) * 86400000);
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Detroit',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(shifted);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.month}/${values.day}/${values.year}`;
+}
+
+function normalizeUsDateKey(value = '') {
+    const text = String(value || '').trim();
+    const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+    if (!match) return '';
+    return `${match[1].padStart(2, '0')}/${match[2].padStart(2, '0')}/${match[3]}`;
+}
+
+function getConfirmationTiming(callPurpose = '', bookingDate = '') {
+    const purpose = String(callPurpose || '').trim().toUpperCase();
+
+    if (purpose === 'SAME_DAY_CONFIRMATION') {
+        return { isConfirmation: true, dayWord: 'today', mode: 'same_day' };
+    }
+
+    if (purpose === 'NEXT_DAY_CONFIRMATION') {
+        return { isConfirmation: true, dayWord: 'tomorrow', mode: 'next_day' };
+    }
+
+    // Safety net: if Make ever sends the wrong/missing purpose, use the actual
+    // booking date when it clearly matches today or tomorrow in Detroit.
+    const bookingDateKey = normalizeUsDateKey(bookingDate);
+    if (bookingDateKey && bookingDateKey === getDetroitDateKey(0)) {
+        return { isConfirmation: true, dayWord: 'today', mode: 'same_day_date_fallback' };
+    }
+    if (bookingDateKey && bookingDateKey === getDetroitDateKey(1)) {
+        return { isConfirmation: true, dayWord: 'tomorrow', mode: 'next_day_date_fallback' };
+    }
+
+    return { isConfirmation: false, dayWord: '', mode: '' };
+}
+
+function buildConfirmationVoicemailMessage({ callPurpose = '', customerName = '', bookingDate = '' } = {}) {
+    const timing = getConfirmationTiming(callPurpose, bookingDate);
+    if (!timing.isConfirmation) return '';
+
+    const firstName = String(customerName || '').trim().split(/\s+/)[0] || '';
+    return `Hi${firstName ? ` ${firstName}` : ''}, this is Emma with SpeedyCleans. I was calling to confirm your cleaning ${timing.dayWord}. Please reply to our text or call us back at 517-777-8712 to confirm or cancel. Thank you!`;
+}
+
 fastify.post('/outbound-call', async (request, reply) => {
     const body = request.body || {};
     const phone = body.phone || body.customer_phone || '';
@@ -194,7 +245,7 @@ fastify.post('/outbound-call', async (request, reply) => {
         city: body.city || body.suburb || '',
         state: body.state || '',
         zip: body.zip || body.postcode || body.postal_code || '',
-        requestedDate: body.requested_date || body.requestedDate || '',
+        requestedDate: body.requested_date || body.requestedDate || body.booking_date || body.bookingDate || '',
         requestedStartTime:
             body.requested_start_time || body.requestedStartTime || body.requested_time || '',
         arrivalWindow: body.arrival_window || body.arrivalWindow || '',
@@ -776,13 +827,17 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
             answeredBy
         });
 
-        const voicemailMessage = callPurpose === 'NEXT_DAY_CONFIRMATION'
-            ? `Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with SpeedyCleans. I was calling to confirm your cleaning tomorrow. Please reply to our text or call us back at 517-777-8712 to confirm or cancel. Thank you!`
-            : `Hi${customerName ? ` ${escapeXml(String(customerName).split(/\s+/)[0])}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!`;
+        const confirmationVoicemailMessage = buildConfirmationVoicemailMessage({
+            callPurpose,
+            customerName,
+            bookingDate: leadBookingData.requestedDate
+        });
+        const voicemailMessage = confirmationVoicemailMessage ||
+            `Hi${customerName ? ` ${String(customerName).split(/\s+/)[0]}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!`;
 
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>${voicemailMessage}</Say>
+    <Say>${escapeXml(voicemailMessage)}</Say>
     <Hangup/>
 </Response>`;
 
@@ -1798,9 +1853,15 @@ const takeOverVoicemailCall = async (transcript) => {
             openAiWs.send(JSON.stringify({ type: 'response.cancel' }));
         }
 
+        const confirmationVoicemailMessage = buildConfirmationVoicemailMessage({
+            callPurpose,
+            customerName: outboundCustomerName,
+            bookingDate: outboundRequestedDate
+        });
+        const fallbackVoicemailMessage = 'Hi, this is Emma with Speedy Solutions calling about your Angi request. Please call us back at 5 1 7, 7 7 7, 8 7 1 2. Thank you.';
         const voicemailTwiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="alice">Hi, this is Emma with Speedy Solutions calling about your Angi request. Please call us back at 5 1 7, 7 7 7, 8 7 1 2. Thank you.</Say>
+    <Say voice="alice">${escapeXml(confirmationVoicemailMessage || fallbackVoicemailMessage)}</Say>
     <Hangup/>
 </Response>`;
 
@@ -1917,7 +1978,8 @@ ${assistantTranscript}`;
 
       const lowerCustomer = customerTranscript.toLowerCase();
       const lowerAssistantForResult = assistantTranscript.toLowerCase();
-      const nextDayResult = callPurpose === 'NEXT_DAY_CONFIRMATION'
+      const confirmationTiming = getConfirmationTiming(callPurpose, outboundRequestedDate);
+      const confirmationResult = confirmationTiming.isConfirmation
           ? {
               answered: customerTranscript.trim().length > 0,
               confirmationStatus: /\b(cancel|cancelled|canceled|do not want|don't want|cannot make|can't make)\b/.test(lowerCustomer)
@@ -1962,7 +2024,7 @@ const completionPayload = {
     requestedStartTime: outboundRequestedStartTime,
     arrivalWindow: outboundArrivalWindow,
     durationMinutes: outboundDurationMinutes,
-    ...(nextDayResult || {})
+    ...(confirmationResult || {})
 };
 
 const retryDelaysMs = [0, 1500, 3000, 6000, 12000, 24000];
@@ -1975,7 +2037,7 @@ for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
     }
 
     try {
-        const completionWebhookUrl = callPurpose === 'NEXT_DAY_CONFIRMATION'
+        const completionWebhookUrl = confirmationTiming.isConfirmation
             ? NEXT_DAY_CONFIRMATION_WEBHOOK_URL
             : AI_CALL_COMPLETED_WEBHOOK_URL;
         const webhookResponse = await fetch(
