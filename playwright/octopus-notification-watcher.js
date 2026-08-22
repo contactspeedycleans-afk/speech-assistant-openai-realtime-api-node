@@ -2173,22 +2173,59 @@ async function waitForJobRequestRecipientUi(page, jobRequestDialog, bookingId) {
     const loadMoreVisible = await loadMore.isVisible().catch(() => false);
     const fieldworkerVisible = await fieldworkerHeader.isVisible().catch(() => false);
 
+    const availableFieldworkersTable = page
+      .locator("#AvailableFieldworkersTable, table#AvailableFieldworkersTable, .AvailableFieldworkersTable")
+      .first();
+
+    const availableFieldworkersTableVisible =
+      await availableFieldworkersTable.isVisible().catch(() => false);
+
+    const availableFieldworkerRows =
+      availableFieldworkersTableVisible
+        ? await availableFieldworkersTable.locator("tbody tr").count().catch(() => 0)
+        : 0;
+
+    const globalFieldworkerVisible =
+      await page.getByText(/^Fieldworker$/i, { exact: true }).first()
+        .isVisible().catch(() => false);
+
+    const globalDistanceVisible =
+      await page.getByText(/^Distance$/i, { exact: true }).first()
+        .isVisible().catch(() => false);
+
     const ready =
-      popupVisible &&
-      modalText.trim().length > 0 &&
-      (showingVisible || loadMoreVisible || fieldworkerVisible);
+      (availableFieldworkersTableVisible && availableFieldworkerRows > 0) ||
+      (globalFieldworkerVisible && globalDistanceVisible) ||
+      (popupVisible &&
+        modalText.trim().length > 0 &&
+        (showingVisible || loadMoreVisible || fieldworkerVisible));
 
     if (ready) {
       console.log(
         `Job Request recipient UI is fully rendered for ${bookingId} after ${Date.now() - startedAt} ms.`
       );
-      return popup;
+      if (availableFieldworkersTableVisible) {
+        const tableContainer = availableFieldworkersTable.locator(
+          "xpath=ancestor::*[.//*[normalize-space()='Fieldworker']][1]"
+        );
+
+        if (
+          (await tableContainer.count().catch(() => 0)) > 0 &&
+          await tableContainer.isVisible().catch(() => false)
+        ) {
+          return tableContainer;
+        }
+
+        return availableFieldworkersTable;
+      }
+
+      return popupVisible ? popup : page.locator("body");
     }
 
     if (Date.now() - lastStateLogAt >= 5000) {
       lastStateLogAt = Date.now();
       console.log(
-        `Waiting for Octopus recipient UI for ${bookingId}: popupVisible=${popupVisible}, modalTextLength=${modalText.trim().length}, showingMatches=${showingVisible}, loadMore=${loadMoreVisible}, fieldworker=${fieldworkerVisible}.`
+        `Waiting for Octopus recipient UI for ${bookingId}: popupVisible=${popupVisible}, modalTextLength=${modalText.trim().length}, showingMatches=${showingVisible}, loadMore=${loadMoreVisible}, fieldworker=${fieldworkerVisible}, tableVisible=${availableFieldworkersTableVisible}, tableRows=${availableFieldworkerRows}, globalFieldworker=${globalFieldworkerVisible}, globalDistance=${globalDistanceVisible}.`
       );
     }
 
