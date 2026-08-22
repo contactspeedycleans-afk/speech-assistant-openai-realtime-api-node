@@ -2140,199 +2140,235 @@ async function revealPopulatedJobRequestPopup(
   page,
   bookingId
 ) {
-  /*
-   * Octopus sometimes fully renders #JOB_REQUEST_POPUP but leaves its
-   * custom-d-none class in place in headless Chromium. In that state the
-   * recipient table and final Send button exist, but Playwright correctly
-   * reports them as hidden. Only reveal the popup after Octopus itself has
-   * populated real modal content; never manufacture a fake modal.
-   */
-  const state = await page.evaluate(() => {
-    const popup = document.querySelector("#JOB_REQUEST_POPUP");
-    if (!popup) {
+  const startedAt = Date.now();
+  let lastLogAt = 0;
+
+  while (Date.now() - startedAt < 90000) {
+    const state = await page.evaluate(() => {
+      const popup = document.querySelector("#JOB_REQUEST_POPUP");
+
+      if (!popup) {
+        return {
+          exists: false,
+          populated: false,
+          hidden: true,
+          textLength: 0,
+          controlCount: 0,
+          hasTable: false,
+          rowCount: 0
+        };
+      }
+
+      const content = popup.querySelector(".modal-content") || popup;
+      const textLength = String(content.innerText || content.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .length;
+
+      const controlCount = content.querySelectorAll(
+        "button, a, input, select, [role='button']"
+      ).length;
+
+      const table = content.querySelector(
+        "#AvailableFieldworkersTable, .AvailableFieldworkersTable, table.table-bordered, table"
+      );
+
+      const rowCount = table
+        ? table.querySelectorAll("tbody tr").length
+        : 0;
+
+      const style = window.getComputedStyle(popup);
+      const rect = popup.getBoundingClientRect();
+      const hidden =
+        popup.classList.contains("custom-d-none") ||
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        Number(style.opacity || "1") === 0 ||
+        rect.width === 0 ||
+        rect.height === 0;
+
       return {
-        exists: false,
-        populated: false,
-        hidden: false,
-        textLength: 0,
-        hasTable: false
+        exists: true,
+        populated: textLength > 0 || controlCount > 0 || Boolean(table),
+        hidden,
+        textLength,
+        controlCount,
+        hasTable: Boolean(table),
+        rowCount
+      };
+    });
+
+    if (state.exists && state.populated) {
+      if (state.hidden) {
+        console.log(
+          `Octopus populated Send Job Request for ${bookingId} but left it hidden. Revealing the real popup.`
+        );
+
+        await page.evaluate(() => {
+          const popup = document.querySelector("#JOB_REQUEST_POPUP");
+          if (!(popup instanceof HTMLElement)) return;
+
+          try {
+            const jq = window.jQuery || window.$;
+            if (jq && typeof jq === "function") {
+              const wrapped = jq(popup);
+              if (wrapped && typeof wrapped.modal === "function") {
+                wrapped.modal("show");
+              }
+            }
+          } catch {
+            // Fall through to DOM visibility repair.
+          }
+
+          popup.classList.remove("custom-d-none");
+          popup.classList.add("show");
+          popup.style.setProperty("display", "block", "important");
+          popup.style.setProperty("visibility", "visible", "important");
+          popup.style.setProperty("opacity", "1", "important");
+          popup.setAttribute("aria-hidden", "false");
+          popup.setAttribute("aria-modal", "true");
+          popup.setAttribute("role", popup.getAttribute("role") || "dialog");
+
+          if (document.body) {
+            document.body.classList.add("modal-open");
+          }
+        });
+
+        await page.waitForTimeout(750);
+      }
+
+      const visible = await page
+        .locator("#JOB_REQUEST_POPUP")
+        .isVisible()
+        .catch(() => false);
+
+      console.log(
+        `Real Send Job Request popup state for ${bookingId}: visible=${visible}, textLength=${state.textLength}, controls=${state.controlCount}, hasTable=${state.hasTable}, rows=${state.rowCount}.`
+      );
+
+      return {
+        ...state,
+        repaired: state.hidden,
+        visible
       };
     }
 
-    const content = popup.querySelector(".modal-content");
-    const textLength = String(content?.innerText || "").trim().length;
-    const hasTable = Boolean(
-      popup.querySelector(
-        ".AvailableFieldworkersTable, #AvailableFieldworkersTable, table.table-bordered"
-      )
-    );
+    if (Date.now() - lastLogAt >= 5000) {
+      lastLogAt = Date.now();
+      console.log(
+        `Waiting for Octopus to create/populate #JOB_REQUEST_POPUP for ${bookingId}: exists=${state.exists}, populated=${state.populated}, textLength=${state.textLength}, controls=${state.controlCount}, hasTable=${state.hasTable}, rows=${state.rowCount}.`
+      );
+    }
 
-    const style = window.getComputedStyle(popup);
-    const rect = popup.getBoundingClientRect();
-    const hidden =
-      popup.classList.contains("custom-d-none") ||
-      style.display === "none" ||
-      style.visibility === "hidden" ||
-      rect.width === 0 ||
-      rect.height === 0;
-
-    return {
-      exists: true,
-      populated: textLength > 0 || hasTable,
-      hidden,
-      textLength,
-      hasTable
-    };
-  });
-
-  if (!state.exists || !state.populated || !state.hidden) {
-    return state;
+    await page.waitForTimeout(1000);
   }
 
-  console.log(
-    `Octopus populated Send Job Request for ${bookingId} but left it hidden. Revealing the real popup.`
-  );
-
-  await page.evaluate(() => {
-    const popup = document.querySelector("#JOB_REQUEST_POPUP");
-    if (!(popup instanceof HTMLElement)) {
-      return;
-    }
-
-    try {
-      const jq = window.jQuery || window.$;
-      if (jq && typeof jq === "function") {
-        const wrapped = jq(popup);
-        if (wrapped && typeof wrapped.modal === "function") {
-          wrapped.modal("show");
-        }
-      }
-    } catch {
-      // Fall through to the DOM visibility repair below.
-    }
-
-    popup.classList.remove("custom-d-none");
-    popup.classList.add("show");
-    popup.style.display = "block";
-    popup.style.visibility = "visible";
-    popup.style.opacity = "1";
-    popup.setAttribute("aria-hidden", "false");
-    popup.setAttribute("aria-modal", "true");
-
-    if (document.body) {
-      document.body.classList.add("modal-open");
-    }
-  });
-
-  await page.waitForTimeout(500);
-
-  const visible = await page
-    .locator("#JOB_REQUEST_POPUP")
-    .isVisible()
-    .catch(() => false);
-
-  console.log(
-    `Real Send Job Request popup visibility after repair for ${bookingId}: ${visible}.`
-  );
-
   return {
-    ...state,
-    repaired: true,
-    visible
+    exists: false,
+    populated: false,
+    hidden: true,
+    timedOut: true
   };
 }
 
 
 async function waitForJobRequestRecipientUi(page, jobRequestDialog, bookingId) {
   /*
-   * Octopus opens #JOB_REQUEST_POPUP before Vue finishes rendering the
-   * recipient table. Do not begin radius/paging work against the empty shell.
-   * Wait for the real recipient UI that a human sees: "Showing X of Y matches"
-   * and/or the Load More control inside the visible job-request dialog.
+   * IMPORTANT: recipient readiness is based on Octopus having populated the
+   * real popup, not on Playwright visibility of a specific header. In
+   * headless Chromium Octopus sometimes leaves Vue/Bootstrap descendants
+   * hidden even though the popup data and controls are already present.
    */
   const startedAt = Date.now();
   let lastStateLogAt = 0;
 
-  while (Date.now() - startedAt < 75000) {
-    const popup = page.locator("#JOB_REQUEST_POPUP");
-    const popupVisible = await popup.isVisible().catch(() => false);
+  while (Date.now() - startedAt < 90000) {
+    await revealPopulatedJobRequestPopup(page, bookingId);
 
-    const modalContent = popup.locator(".modal-content").first();
-    const modalText = popupVisible
-      ? await modalContent.innerText().catch(() => "")
-      : "";
+    const state = await page.evaluate(() => {
+      const popup = document.querySelector("#JOB_REQUEST_POPUP");
+      if (!popup) {
+        return {
+          exists: false,
+          textLength: 0,
+          controlCount: 0,
+          tableCount: 0,
+          rowCount: 0,
+          hasRecipientWords: false,
+          hasFinalSend: false
+        };
+      }
 
-    const showingMatches = popup.getByText(
-      /Showing\s+\d+\s+of\s+\d+\s+matches/i
-    ).first();
+      const content = popup.querySelector(".modal-content") || popup;
+      const text = String(content.innerText || content.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
 
-    const loadMore = popup.getByText(
-      /Load\s+More/i,
-      { exact: false }
-    ).first();
+      const tables = Array.from(
+        content.querySelectorAll(
+          "#AvailableFieldworkersTable, .AvailableFieldworkersTable, table.table-bordered, table"
+        )
+      );
 
-    const fieldworkerHeader = popup.getByText(
-      /Fieldworker/i,
-      { exact: false }
-    ).first();
+      const rowCount = tables.reduce(
+        (total, table) => total + table.querySelectorAll("tbody tr").length,
+        0
+      );
 
-    const showingVisible = await showingMatches.isVisible().catch(() => false);
-    const loadMoreVisible = await loadMore.isVisible().catch(() => false);
-    const fieldworkerVisible = await fieldworkerHeader.isVisible().catch(() => false);
+      const controls = Array.from(
+        content.querySelectorAll("button, a, input, [role='button']")
+      );
 
-    const availableFieldworkersTable = page
-      .locator("#AvailableFieldworkersTable, table#AvailableFieldworkersTable, .AvailableFieldworkersTable")
-      .first();
+      const hasFinalSend = controls.some((element) => {
+        const value = String(
+          element.innerText ||
+          element.textContent ||
+          element.getAttribute("value") ||
+          element.getAttribute("aria-label") ||
+          ""
+        )
+          .replace(/\s+/g, " ")
+          .trim();
 
-    const availableFieldworkersTableVisible =
-      await availableFieldworkersTable.isVisible().catch(() => false);
+        return /^send$/i.test(value);
+      });
 
-    const availableFieldworkerRows =
-      availableFieldworkersTableVisible
-        ? await availableFieldworkersTable.locator("tbody tr").count().catch(() => 0)
-        : 0;
-
-    const globalFieldworkerVisible =
-      await page.getByText(/^Fieldworker$/i, { exact: true }).first()
-        .isVisible().catch(() => false);
-
-    const globalDistanceVisible =
-      await page.getByText(/^Distance$/i, { exact: true }).first()
-        .isVisible().catch(() => false);
+      return {
+        exists: true,
+        textLength: text.length,
+        controlCount: controls.length,
+        tableCount: tables.length,
+        rowCount,
+        hasRecipientWords: /(fieldworker|distance|matches|load more|send job request)/i.test(text),
+        hasFinalSend
+      };
+    });
 
     const ready =
-      (availableFieldworkersTableVisible && availableFieldworkerRows > 0) ||
-      (globalFieldworkerVisible && globalDistanceVisible) ||
-      (popupVisible &&
-        modalText.trim().length > 0 &&
-        (showingVisible || loadMoreVisible || fieldworkerVisible));
+      state.exists &&
+      (
+        state.rowCount > 0 ||
+        state.tableCount > 0 ||
+        state.hasRecipientWords ||
+        state.hasFinalSend ||
+        state.controlCount >= 2
+      );
 
     if (ready) {
       console.log(
-        `Job Request recipient UI is fully rendered for ${bookingId} after ${Date.now() - startedAt} ms.`
+        `Job Request recipient UI is ready for ${bookingId} after ${Date.now() - startedAt} ms: tables=${state.tableCount}, rows=${state.rowCount}, controls=${state.controlCount}, recipientWords=${state.hasRecipientWords}, finalSend=${state.hasFinalSend}.`
       );
-      if (availableFieldworkersTableVisible) {
-        const tableContainer = availableFieldworkersTable.locator(
-          "xpath=ancestor::*[.//*[normalize-space()='Fieldworker']][1]"
-        );
 
-        if (
-          (await tableContainer.count().catch(() => 0)) > 0 &&
-          await tableContainer.isVisible().catch(() => false)
-        ) {
-          return tableContainer;
-        }
-
-        return availableFieldworkersTable;
-      }
-
-      return popupVisible ? popup : page.locator("body");
+      const popup = page.locator("#JOB_REQUEST_POPUP");
+      return (await popup.count().catch(() => 0)) > 0
+        ? popup
+        : (jobRequestDialog || page.locator("body"));
     }
 
     if (Date.now() - lastStateLogAt >= 5000) {
       lastStateLogAt = Date.now();
       console.log(
-        `Waiting for Octopus recipient UI for ${bookingId}: popupVisible=${popupVisible}, modalTextLength=${modalText.trim().length}, showingMatches=${showingVisible}, loadMore=${loadMoreVisible}, fieldworker=${fieldworkerVisible}, tableVisible=${availableFieldworkersTableVisible}, tableRows=${availableFieldworkerRows}, globalFieldworker=${globalFieldworkerVisible}, globalDistance=${globalDistanceVisible}.`
+        `Waiting for Octopus recipient UI for ${bookingId}: exists=${state.exists}, tables=${state.tableCount}, rows=${state.rowCount}, controls=${state.controlCount}, recipientWords=${state.hasRecipientWords}, finalSend=${state.hasFinalSend}.`
       );
     }
 
@@ -2341,13 +2377,13 @@ async function waitForJobRequestRecipientUi(page, jobRequestDialog, bookingId) {
 
   const snapshot = await page.evaluate(() => {
     const popup = document.querySelector("#JOB_REQUEST_POPUP");
-    const content = popup?.querySelector(".modal-content");
+    const content = popup?.querySelector(".modal-content") || popup;
     return {
       popupExists: Boolean(popup),
       popupClass: popup?.className || "",
       popupStyle: popup?.getAttribute("style") || "",
-      modalContentLength: (content?.innerText || "").trim().length,
-      modalHtmlPreview: content?.outerHTML?.slice(0, 4000) || ""
+      modalContentLength: String(content?.innerText || content?.textContent || "").trim().length,
+      modalHtmlPreview: content?.outerHTML?.slice(0, 6000) || ""
     };
   }).catch(() => ({}));
 
@@ -2357,7 +2393,7 @@ async function waitForJobRequestRecipientUi(page, jobRequestDialog, bookingId) {
   );
 
   throw new Error(
-    `Octopus opened the Send Job Request popup for ${bookingId}, but the recipient UI did not finish rendering within 75 seconds.`
+    `Octopus created the Send Job Request flow for ${bookingId}, but no usable recipient content was detected within 90 seconds.`
   );
 }
 
@@ -2366,178 +2402,65 @@ async function getJobRequestContainer(
   page
 ) {
   /*
-   * Never manufacture #JOB_REQUEST_POPUP. Octopus owns the job-request UI.
-   * A valid dialog must be visible AND contain real controls/content.
+   * Return Octopus's real popup as soon as it exists and contains real
+   * content/controls. Visibility is repaired by revealPopulatedJobRequestPopup.
    */
   const startedAt = Date.now();
 
-  while (
-    Date.now() - startedAt < 60000
-  ) {
-    const directPopup =
-      page.locator("#JOB_REQUEST_POPUP");
+  while (Date.now() - startedAt < 90000) {
+    const popup = page.locator("#JOB_REQUEST_POPUP");
+    const count = await popup.count().catch(() => 0);
 
-    if (
-      await directPopup
-        .isVisible()
-        .catch(() => false)
-    ) {
-      const directText =
-        await directPopup
-          .innerText()
-          .catch(() => "");
+    if (count > 0) {
+      const state = await popup.evaluate((root) => {
+        const content = root.querySelector(".modal-content") || root;
+        const textLength = String(content.innerText || content.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .length;
 
-      const directControlCount =
-        await directPopup
-          .locator(
-            "button, input, select, [role='button']"
+        const controlCount = content.querySelectorAll(
+          "button, a, input, select, [role='button']"
+        ).length;
+
+        const hasTable = Boolean(
+          content.querySelector(
+            "#AvailableFieldworkersTable, .AvailableFieldworkersTable, table.table-bordered, table"
           )
-          .count()
-          .catch(() => 0);
-
-      if (
-        directText.trim().length > 0 ||
-        directControlCount > 0
-      ) {
-        console.log(
-          "Real Send Job Request popup found using #JOB_REQUEST_POPUP."
         );
 
-        return directPopup;
-      }
-
-      console.log(
-        "#JOB_REQUEST_POPUP exists but is empty; waiting for Octopus to render real content."
-      );
-    }
-
-    const visibleDialogs =
-      page.locator(
-        ".modal.show, .modal[style*='display: block'], [role='dialog'], .modal-content"
-      );
-
-    const dialogCount =
-      await visibleDialogs
-        .count()
-        .catch(() => 0);
-
-    for (
-      let index = 0;
-      index < dialogCount;
-      index += 1
-    ) {
-      const candidate =
-        visibleDialogs.nth(index);
+        return {
+          textLength,
+          controlCount,
+          hasTable
+        };
+      }).catch(() => ({ textLength: 0, controlCount: 0, hasTable: false }));
 
       if (
-        !(
-          await candidate
-            .isVisible()
-            .catch(() => false)
-        )
-      ) {
-        continue;
-      }
-
-      const text =
-        await candidate
-          .innerText()
-          .catch(() => "");
-
-      if (
-        /(load\s+more|showing\s+\d+|available|fieldworker|send\s+job\s+request)/i.test(
-          text
-        ) &&
-        /\bsend\b/i.test(text)
+        state.textLength > 0 ||
+        state.controlCount > 0 ||
+        state.hasTable
       ) {
         console.log(
-          "Real Send Job Request container found from visible Octopus dialog content."
+          `Real Send Job Request popup found using #JOB_REQUEST_POPUP (textLength=${state.textLength}, controls=${state.controlCount}, hasTable=${state.hasTable}).`
         );
 
-        return candidate;
+        return popup;
       }
     }
 
-    /*
-     * Some Octopus builds portal the job-request controls without a traditional
-     * Bootstrap wrapper. Anchor on the recipient controls, not the page-level
-     * 'Send job request' trigger button.
-     */
-    const contentAnchors = [
-      page.getByText(
-        /Showing\s+\d+(?:\s+of\s+\d+)?\s+matches/i
-      ),
-      page.getByText(
-        /(\d+)\s+of\s+(\d+)\s+available/i
-      ),
-      page.getByText(
-        "Load More",
-        { exact: true }
-      )
-    ];
-
-    for (
-      const locator of contentAnchors
-    ) {
-      const count =
-        await locator
-          .count()
-          .catch(() => 0);
-
-      for (
-        let index = 0;
-        index < count;
-        index += 1
-      ) {
-        const anchor =
-          locator.nth(index);
-
-        if (
-          !(
-            await anchor
-              .isVisible()
-              .catch(() => false)
-          )
-        ) {
-          continue;
-        }
-
-        const container =
-          anchor.locator(
-            "xpath=ancestor::*[.//*[self::button or self::a][normalize-space()='Send']][1]"
-          );
-
-        if (
-          (await container.count().catch(() => 0)) > 0 &&
-          await container
-            .isVisible()
-            .catch(() => false)
-        ) {
-          console.log(
-            "Real Send Job Request container found from recipient controls."
-          );
-
-          return container;
-        }
-      }
-    }
-
-    await page.waitForTimeout(
-      750
-    );
+    await page.waitForTimeout(750);
   }
 
-  const bodyText =
-    await page
-      .locator("body")
-      .innerText()
-      .catch(() => "");
+  const bodyText = await page
+    .locator("body")
+    .innerText()
+    .catch(() => "");
 
   throw new Error(
-    `Octopus did not render a usable Send Job Request UI after the real click. Page tail: ${bodyText.slice(-1800)}`
+    `Octopus did not create/populate #JOB_REQUEST_POPUP after the real click. Page tail: ${bodyText.slice(-1800)}`
   );
 }
-
 
 async function setJobRequestRadius(
   page,
