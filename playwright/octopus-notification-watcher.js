@@ -3734,25 +3734,82 @@ async function openJobRequestModal(
       { exact: false }
     ).first();
 
-  const successSeen =
-    await successToast
-      .waitFor({
-        state: "visible",
-        timeout: 45000
-      })
-      .then(() => true)
-      .catch(() => false);
+
+  // Octopus sometimes renders the success toast in the DOM without making it
+  // Playwright-visible in headless Chromium. A successful send also closes or
+  // hides the real #JOB_REQUEST_POPUP. Accept either signal, but do NOT mark a
+  // send successful if the popup remains open and no confirmation exists.
+  let sendConfirmationReason = null;
+  const confirmationDeadline = Date.now() + 45000;
+
+  while (Date.now() < confirmationDeadline) {
+    const confirmationState = await page.evaluate(() => {
+      const popup = document.querySelector('#JOB_REQUEST_POPUP');
+
+      const toastText = Array.from(
+        document.querySelectorAll('body *')
+      )
+        .map((el) => (el.innerText || el.textContent || '').trim())
+        .find((text) => /Notification sent successfully/i.test(text));
+
+      if (!popup) {
+        return {
+          toastPresent: Boolean(toastText),
+          popupExists: false,
+          popupVisible: false,
+          popupClass: '',
+          popupStyle: ''
+        };
+      }
+
+      const style = window.getComputedStyle(popup);
+      const rect = popup.getBoundingClientRect();
+      const popupVisible = Boolean(
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number(style.opacity || '1') !== 0 &&
+        !popup.classList.contains('custom-d-none')
+      );
+
+      return {
+        toastPresent: Boolean(toastText),
+        popupExists: true,
+        popupVisible,
+        popupClass: popup.className || '',
+        popupStyle: popup.getAttribute('style') || ''
+      };
+    });
+
+    if (confirmationState.toastPresent) {
+      sendConfirmationReason = 'success text present in DOM';
+      break;
+    }
+
+    if (!confirmationState.popupExists) {
+      sendConfirmationReason = 'job request popup removed after final Send';
+      break;
+    }
+
+    if (!confirmationState.popupVisible) {
+      sendConfirmationReason = 'job request popup closed/hidden after final Send';
+      break;
+    }
+
+    await page.waitForTimeout(500);
+  }
 
 
-  if (!successSeen) {
+  if (!sendConfirmationReason) {
     throw new Error(
-      `Final Send was clicked for ${bookingId}, but Octopus did not show the Notification sent successfully confirmation.`
+      `Final Send was clicked for ${bookingId}, but Octopus showed neither a success confirmation nor a closed job-request popup within 45 seconds.`
     );
   }
 
 
   console.log(
-    `Notification sent successfully confirmed for ${bookingId}.`
+    `Job request send confirmed for ${bookingId}: ${sendConfirmationReason}.`
   );
 
 
