@@ -2136,6 +2136,113 @@ async function diagnoseJobRequestUi(
 }
 
 
+async function revealPopulatedJobRequestPopup(
+  page,
+  bookingId
+) {
+  /*
+   * Octopus sometimes fully renders #JOB_REQUEST_POPUP but leaves its
+   * custom-d-none class in place in headless Chromium. In that state the
+   * recipient table and final Send button exist, but Playwright correctly
+   * reports them as hidden. Only reveal the popup after Octopus itself has
+   * populated real modal content; never manufacture a fake modal.
+   */
+  const state = await page.evaluate(() => {
+    const popup = document.querySelector("#JOB_REQUEST_POPUP");
+    if (!popup) {
+      return {
+        exists: false,
+        populated: false,
+        hidden: false,
+        textLength: 0,
+        hasTable: false
+      };
+    }
+
+    const content = popup.querySelector(".modal-content");
+    const textLength = String(content?.innerText || "").trim().length;
+    const hasTable = Boolean(
+      popup.querySelector(
+        ".AvailableFieldworkersTable, #AvailableFieldworkersTable, table.table-bordered"
+      )
+    );
+
+    const style = window.getComputedStyle(popup);
+    const rect = popup.getBoundingClientRect();
+    const hidden =
+      popup.classList.contains("custom-d-none") ||
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      rect.width === 0 ||
+      rect.height === 0;
+
+    return {
+      exists: true,
+      populated: textLength > 0 || hasTable,
+      hidden,
+      textLength,
+      hasTable
+    };
+  });
+
+  if (!state.exists || !state.populated || !state.hidden) {
+    return state;
+  }
+
+  console.log(
+    `Octopus populated Send Job Request for ${bookingId} but left it hidden. Revealing the real popup.`
+  );
+
+  await page.evaluate(() => {
+    const popup = document.querySelector("#JOB_REQUEST_POPUP");
+    if (!(popup instanceof HTMLElement)) {
+      return;
+    }
+
+    try {
+      const jq = window.jQuery || window.$;
+      if (jq && typeof jq === "function") {
+        const wrapped = jq(popup);
+        if (wrapped && typeof wrapped.modal === "function") {
+          wrapped.modal("show");
+        }
+      }
+    } catch {
+      // Fall through to the DOM visibility repair below.
+    }
+
+    popup.classList.remove("custom-d-none");
+    popup.classList.add("show");
+    popup.style.display = "block";
+    popup.style.visibility = "visible";
+    popup.style.opacity = "1";
+    popup.setAttribute("aria-hidden", "false");
+    popup.setAttribute("aria-modal", "true");
+
+    if (document.body) {
+      document.body.classList.add("modal-open");
+    }
+  });
+
+  await page.waitForTimeout(500);
+
+  const visible = await page
+    .locator("#JOB_REQUEST_POPUP")
+    .isVisible()
+    .catch(() => false);
+
+  console.log(
+    `Real Send Job Request popup visibility after repair for ${bookingId}: ${visible}.`
+  );
+
+  return {
+    ...state,
+    repaired: true,
+    visible
+  };
+}
+
+
 async function waitForJobRequestRecipientUi(page, jobRequestDialog, bookingId) {
   /*
    * Octopus opens #JOB_REQUEST_POPUP before Vue finishes rendering the
@@ -2887,6 +2994,17 @@ function attachJobRequestTracing(
   page,
   bookingId
 ) {
+  if (
+    typeof page.__jobRequestTraceDetach === "function"
+  ) {
+    try {
+      page.__jobRequestTraceDetach();
+    } catch {
+      // Ignore stale trace cleanup errors.
+    }
+  }
+
+
   const startedAt =
     Date.now();
 
@@ -3068,7 +3186,15 @@ function attachJobRequestTracing(
   );
 
 
-  return () => {
+  let detached = false;
+
+  const detach = () => {
+    if (detached) {
+      return;
+    }
+
+    detached = true;
+
     page.off(
       "console",
       onConsole
@@ -3094,11 +3220,20 @@ function attachJobRequestTracing(
       onRequestFailed
     );
 
+    if (page.__jobRequestTraceDetach === detach) {
+      page.__jobRequestTraceDetach = null;
+    }
 
     console.log(
       `[JOB REQUEST TRACE ${bookingId}] tracing detached after ${Date.now() - startedAt} ms`
     );
   };
+
+
+  page.__jobRequestTraceDetach = detach;
+
+
+  return detach;
 }
 
 
@@ -3366,6 +3501,12 @@ async function openJobRequestModal(
     JSON.stringify(
       targetSnapshot
     )
+  );
+
+
+  await revealPopulatedJobRequestPopup(
+    page,
+    bookingId
   );
 
 
@@ -4055,6 +4196,16 @@ async function dispatchNextBooking(
       `Dispatch Send ${booking.send_number} completed and recorded for ${booking.booking_number} at ${booking.radius_miles} miles.`
     );
   } catch (error) {
+    if (
+      typeof page.__jobRequestTraceDetach === "function"
+    ) {
+      try {
+        page.__jobRequestTraceDetach();
+      } catch {
+        // Do not mask the real dispatch failure.
+      }
+    }
+
     await markDispatchFailed(
       booking.booking_number,
       error
