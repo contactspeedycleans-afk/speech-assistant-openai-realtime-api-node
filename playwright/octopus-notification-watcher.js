@@ -1541,6 +1541,223 @@ async function ensureLoggedIn(
 }
 
 
+
+// ============================================================
+// LISA / DISPATCH: DETECT OCTOPUS UNASSIGNED FIELDWORKER PROFILE
+// ============================================================
+
+function isUnassignedDispatchProfile(value) {
+  const text = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+  return (
+    text.includes("unassigned fieldworker") ||
+    text.includes("unassigned fieldworkers") ||
+    text.includes("unassigned tasks manager")
+  );
+}
+
+
+async function markBookingNeedsCleanerFromOctopus({
+  bookingNumber,
+  octopusBookingId,
+  octopusBookingUrl,
+  profileName
+}) {
+  await pool.query(
+    `
+      INSERT INTO public.booking_dispatch_state (
+        booking_number,
+        assignment_status,
+        current_cleaner,
+        job_request_status,
+        last_event_type,
+        last_notification_text,
+        last_assignment_change_at,
+        octopus_booking_id,
+        octopus_booking_url,
+        updated_at
+      )
+      VALUES (
+        $1,
+        'NEEDS CLEANER',
+        $2,
+        'NOT_SENT',
+        'OCTOPUS_UNASSIGNED',
+        $3,
+        NOW(),
+        $4,
+        $5,
+        NOW()
+      )
+
+      ON CONFLICT (booking_number)
+
+      DO UPDATE SET
+        assignment_status = 'NEEDS CLEANER',
+
+        current_cleaner =
+          EXCLUDED.current_cleaner,
+
+        job_request_status =
+          CASE
+            WHEN public.booking_dispatch_state.assignment_status
+              IS DISTINCT FROM 'NEEDS CLEANER'
+            THEN 'NOT_SENT'
+            ELSE public.booking_dispatch_state.job_request_status
+          END,
+
+        last_event_type =
+          'OCTOPUS_UNASSIGNED',
+
+        last_notification_text =
+          EXCLUDED.last_notification_text,
+
+        last_assignment_change_at =
+          CASE
+            WHEN public.booking_dispatch_state.assignment_status
+              IS DISTINCT FROM 'NEEDS CLEANER'
+              OR COALESCE(
+                public.booking_dispatch_state.current_cleaner,
+                ''
+              ) IS DISTINCT FROM COALESCE(
+                EXCLUDED.current_cleaner,
+                ''
+              )
+            THEN NOW()
+            ELSE public.booking_dispatch_state.last_assignment_change_at
+          END,
+
+        octopus_booking_id =
+          COALESCE(
+            EXCLUDED.octopus_booking_id,
+            public.booking_dispatch_state.octopus_booking_id
+          ),
+
+        octopus_booking_url =
+          COALESCE(
+            EXCLUDED.octopus_booking_url,
+            public.booking_dispatch_state.octopus_booking_url
+          ),
+
+        updated_at = NOW();
+    `,
+    [
+      bookingNumber,
+      profileName || "Unassigned Fieldworkers",
+      `Verified on Octopus booking page as ${
+        profileName || "Unassigned Fieldworkers"
+      }`,
+      octopusBookingId,
+      octopusBookingUrl
+    ]
+  );
+
+  console.log(
+    `OCTOPUS UNASSIGNED -> NEEDS CLEANER: ${bookingNumber} | ${
+      profileName || "Unassigned Fieldworkers"
+    }`
+  );
+}
+
+
+async function inspectBookingAssignment(
+  page,
+  bookingUrl
+) {
+  const inspectPage =
+    await page.context().newPage();
+
+  try {
+    inspectPage.setDefaultTimeout(
+      30000
+    );
+
+    inspectPage.setDefaultNavigationTimeout(
+      60000
+    );
+
+    await inspectPage.goto(
+      bookingUrl,
+      {
+        waitUntil:
+          "domcontentloaded",
+
+        timeout:
+          60000
+      }
+    );
+
+    await inspectPage.waitForTimeout(
+      3000
+    );
+
+    const currentUrl =
+      inspectPage
+        .url()
+        .toLowerCase();
+
+    if (
+      currentUrl.includes("/login") ||
+      currentUrl.includes(
+        "/checkuserinmulticompanies"
+      )
+    ) {
+      console.log(
+        `Could not inspect assignment for ${bookingUrl}: secondary page is not authenticated.`
+      );
+
+      return {
+        isUnassigned: false,
+        profileName: null
+      };
+    }
+
+    const bodyText =
+      await inspectPage
+        .locator("body")
+        .innerText()
+        .catch(() => "");
+
+    const normalized =
+      String(bodyText || "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const candidates = [
+      "Unassigned Fieldworkers",
+      "Unassigned Fieldworker",
+      "Unassigned Tasks Manager"
+    ];
+
+    const profileName =
+      candidates.find(
+        (name) =>
+          normalized
+            .toLowerCase()
+            .includes(
+              name.toLowerCase()
+            )
+      ) || null;
+
+    return {
+      isUnassigned:
+        isUnassignedDispatchProfile(
+          profileName
+        ),
+
+      profileName
+    };
+
+  } finally {
+    await inspectPage
+      .close()
+      .catch(() => {});
+  }
+}
+
 async function readNotifications(
   page
 ) {
@@ -1701,6 +1918,33 @@ async function readNotifications(
 
     if (inserted) {
       newNotifications += 1;
+
+      try {
+        const assignmentCheck =
+          await inspectBookingAssignment(
+            page,
+            octopusBookingUrl
+          );
+
+        if (
+          assignmentCheck.isUnassigned
+        ) {
+          await markBookingNeedsCleanerFromOctopus({
+            bookingNumber,
+            octopusBookingId,
+            octopusBookingUrl,
+
+            profileName:
+              assignmentCheck.profileName
+          });
+        }
+
+      } catch (assignmentError) {
+        console.error(
+          `Unassigned-profile check failed for ${bookingNumber}:`,
+          assignmentError
+        );
+      }
     }
   }
 
