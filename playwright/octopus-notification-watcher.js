@@ -1543,8 +1543,18 @@ async function ensureLoggedIn(
 
 
 // ============================================================
-// LISA / DISPATCH: DETECT OCTOPUS UNASSIGNED FIELDWORKER PROFILE
+// LISA / DISPATCH: OCTOPUS UNASSIGNED BOOKING DISCOVERY
 // ============================================================
+
+const UNASSIGNED_SWEEP_INTERVAL_MS =
+  Number(process.env.UNASSIGNED_SWEEP_INTERVAL_MS || 300000);
+
+const UNASSIGNED_SWEEP_LOOKAHEAD_DAYS =
+  Number(process.env.UNASSIGNED_SWEEP_LOOKAHEAD_DAYS || 14);
+
+const UNASSIGNED_SWEEP_BATCH_SIZE =
+  Number(process.env.UNASSIGNED_SWEEP_BATCH_SIZE || 20);
+
 
 function isUnassignedDispatchProfile(value) {
   const text = String(value || "")
@@ -1667,6 +1677,150 @@ async function inspectBookingAssignment(
   page,
   bookingUrl
 ) {
+  await page.goto(
+    bookingUrl,
+    {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    }
+  );
+
+  await page.waitForTimeout(2500);
+
+  const currentUrl =
+    page.url().toLowerCase();
+
+  if (
+    currentUrl.includes("/login") ||
+    currentUrl.includes("logout=1") ||
+    currentUrl.includes("/checkuserinmulticompanies")
+  ) {
+    return {
+      isUnassigned: false,
+      profileName: null,
+      reason: "not_authenticated"
+    };
+  }
+
+  const result = await page.evaluate(() => {
+    const clean = (value) =>
+      String(value || "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const candidates = [
+      "Unassigned Fieldworkers",
+      "Unassigned Fieldworker",
+      "Unassigned Tasks Manager"
+    ];
+
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) {
+        return false;
+      }
+
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity || "1") !== 0
+      );
+    };
+
+    const all = Array.from(
+      document.querySelectorAll("body *")
+    );
+
+    for (const candidate of candidates) {
+      const candidateLower = candidate.toLowerCase();
+
+      for (const element of all) {
+        if (!visible(element)) {
+          continue;
+        }
+
+        const ownText = clean(
+          element.innerText || element.textContent
+        );
+
+        if (
+          !ownText ||
+          ownText.length > 160 ||
+          !ownText.toLowerCase().includes(candidateLower)
+        ) {
+          continue;
+        }
+
+        let context = ownText;
+        let node = element.parentElement;
+        let levels = 0;
+
+        while (node && levels < 4) {
+          const parentText = clean(
+            node.innerText || node.textContent
+          );
+
+          if (
+            parentText &&
+            parentText.length <= 900
+          ) {
+            context += ` ${parentText}`;
+          }
+
+          node = node.parentElement;
+          levels += 1;
+        }
+
+        if (
+          /(fieldworker|assigned|assignment|team|technician|worker)/i.test(
+            context
+          )
+        ) {
+          return {
+            profileName: candidate,
+            evidence: context.slice(0, 900)
+          };
+        }
+      }
+    }
+
+    return {
+      profileName: null,
+      evidence: ""
+    };
+  }).catch(() => ({
+    profileName: null,
+    evidence: ""
+  }));
+
+  return {
+    isUnassigned:
+      isUnassignedDispatchProfile(
+        result.profileName
+      ),
+
+    profileName:
+      result.profileName || null,
+
+    reason:
+      result.profileName
+        ? "verified_unassigned_profile"
+        : "not_unassigned",
+
+    evidence:
+      result.evidence || ""
+  };
+}
+
+
+async function inspectBookingAssignmentInNewPage(
+  page,
+  bookingUrl
+) {
   const inspectPage =
     await page.context().newPage();
 
@@ -1679,83 +1833,206 @@ async function inspectBookingAssignment(
       60000
     );
 
-    await inspectPage.goto(
-      bookingUrl,
-      {
-        waitUntil:
-          "domcontentloaded",
-
-        timeout:
-          60000
-      }
+    return await inspectBookingAssignment(
+      inspectPage,
+      bookingUrl
     );
-
-    await inspectPage.waitForTimeout(
-      3000
-    );
-
-    const currentUrl =
-      inspectPage
-        .url()
-        .toLowerCase();
-
-    if (
-      currentUrl.includes("/login") ||
-      currentUrl.includes(
-        "/checkuserinmulticompanies"
-      )
-    ) {
-      console.log(
-        `Could not inspect assignment for ${bookingUrl}: secondary page is not authenticated.`
-      );
-
-      return {
-        isUnassigned: false,
-        profileName: null
-      };
-    }
-
-    const bodyText =
-      await inspectPage
-        .locator("body")
-        .innerText()
-        .catch(() => "");
-
-    const normalized =
-      String(bodyText || "")
-        .replace(/\s+/g, " ")
-        .trim();
-
-    const candidates = [
-      "Unassigned Fieldworkers",
-      "Unassigned Fieldworker",
-      "Unassigned Tasks Manager"
-    ];
-
-    const profileName =
-      candidates.find(
-        (name) =>
-          normalized
-            .toLowerCase()
-            .includes(
-              name.toLowerCase()
-            )
-      ) || null;
-
-    return {
-      isUnassigned:
-        isUnassignedDispatchProfile(
-          profileName
-        ),
-
-      profileName
-    };
-
   } finally {
     await inspectPage
       .close()
       .catch(() => {});
   }
+}
+
+
+async function getUpcomingBookingsForUnassignedSweep() {
+  const result =
+    await pool.query(
+      `
+        WITH candidates AS (
+          SELECT
+            j.booking_number::text AS booking_number,
+            j.octopus_booking_id::bigint AS octopus_booking_id,
+            j.scheduled_start AS booking_date
+          FROM public.jobs j
+          WHERE
+            j.booking_number IS NOT NULL
+            AND j.octopus_booking_id IS NOT NULL
+            AND j.scheduled_start IS NOT NULL
+            AND j.scheduled_start >= NOW() - INTERVAL '2 hours'
+            AND j.scheduled_start < NOW() + ($1 * INTERVAL '1 day')
+
+          UNION
+
+          SELECT
+            t.booking_number::text AS booking_number,
+            t.octopus_booking_id::bigint AS octopus_booking_id,
+            t.booking_date AS booking_date
+          FROM public.booking_tracking t
+          WHERE
+            t.booking_number IS NOT NULL
+            AND t.octopus_booking_id IS NOT NULL
+            AND t.booking_date IS NOT NULL
+            AND t.booking_date >= NOW() - INTERVAL '2 hours'
+            AND t.booking_date < NOW() + ($1 * INTERVAL '1 day')
+            AND UPPER(COALESCE(t.status, '')) NOT IN (
+              'CANCELLED',
+              'CANCELED',
+              'DELETED',
+              'FINISHED',
+              'COMPLETED'
+            )
+        )
+
+        SELECT DISTINCT ON (c.booking_number)
+          c.booking_number,
+          c.octopus_booking_id,
+          c.booking_date,
+          d.assignment_status,
+          d.current_cleaner,
+          d.updated_at AS dispatch_updated_at
+        FROM candidates c
+        LEFT JOIN public.booking_dispatch_state d
+          ON d.booking_number = c.booking_number
+        WHERE
+          c.booking_number ~ '^BOK-[0-9]+$'
+        ORDER BY
+          c.booking_number,
+          c.booking_date ASC;
+      `,
+      [UNASSIGNED_SWEEP_LOOKAHEAD_DAYS]
+    );
+
+  return result.rows;
+}
+
+
+let unassignedSweepCursor = 0;
+
+
+async function sweepOctopusUnassignedBookings(
+  page
+) {
+  const candidates =
+    await getUpcomingBookingsForUnassignedSweep();
+
+  if (!candidates.length) {
+    console.log(
+      "Unassigned sweep: no upcoming booking candidates found."
+    );
+
+    return;
+  }
+
+  const safeBatchSize =
+    Math.max(
+      1,
+      Math.min(
+        UNASSIGNED_SWEEP_BATCH_SIZE,
+        candidates.length
+      )
+    );
+
+  const batch = [];
+
+  for (
+    let offset = 0;
+    offset < safeBatchSize;
+    offset += 1
+  ) {
+    const index =
+      (unassignedSweepCursor + offset) %
+      candidates.length;
+
+    batch.push(candidates[index]);
+  }
+
+  unassignedSweepCursor =
+    (unassignedSweepCursor + safeBatchSize) %
+    candidates.length;
+
+  console.log(
+    `Unassigned sweep: checking ${batch.length} of ${candidates.length} upcoming bookings. Cursor now ${unassignedSweepCursor}.`
+  );
+
+  let verifiedUnassigned = 0;
+
+  for (const booking of batch) {
+    const bookingNumber =
+      String(booking.booking_number || "")
+        .trim()
+        .toUpperCase();
+
+    const octopusBookingId =
+      Number(booking.octopus_booking_id);
+
+    if (
+      !/^BOK-\d+$/.test(bookingNumber) ||
+      !Number.isInteger(octopusBookingId) ||
+      octopusBookingId <= 0
+    ) {
+      continue;
+    }
+
+    const bookingUrl =
+      `https://admin.octopuspro.com/booking/view/${octopusBookingId}`;
+
+    try {
+      const assignmentCheck =
+        await inspectBookingAssignment(
+          page,
+          bookingUrl
+        );
+
+      if (
+        assignmentCheck.reason === "not_authenticated"
+      ) {
+        console.log(
+          `Unassigned sweep lost Octopus login while checking ${bookingNumber}; restoring session.`
+        );
+
+        await ensureLoggedIn(page);
+        continue;
+      }
+
+      if (
+        !assignmentCheck.isUnassigned
+      ) {
+        console.log(
+          `Unassigned sweep: ${bookingNumber} is not verified as unassigned.`
+        );
+        continue;
+      }
+
+      await markBookingNeedsCleanerFromOctopus({
+        bookingNumber,
+        octopusBookingId,
+        octopusBookingUrl: bookingUrl,
+        profileName:
+          assignmentCheck.profileName
+      });
+
+      verifiedUnassigned += 1;
+
+    } catch (error) {
+      console.error(
+        `Unassigned sweep failed for ${bookingNumber}:`,
+        error
+      );
+    }
+  }
+
+  await page.goto(
+    NOTIFICATIONS_URL,
+    {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    }
+  ).catch(() => {});
+
+  console.log(
+    `Unassigned sweep complete: ${verifiedUnassigned} verified unassigned booking(s) marked NEEDS CLEANER.`
+  );
 }
 
 async function readNotifications(
@@ -1921,24 +2198,20 @@ async function readNotifications(
 
       try {
         const assignmentCheck =
-          await inspectBookingAssignment(
+          await inspectBookingAssignmentInNewPage(
             page,
             octopusBookingUrl
           );
 
-        if (
-          assignmentCheck.isUnassigned
-        ) {
+        if (assignmentCheck.isUnassigned) {
           await markBookingNeedsCleanerFromOctopus({
             bookingNumber,
             octopusBookingId,
             octopusBookingUrl,
-
             profileName:
               assignmentCheck.profileName
           });
         }
-
       } catch (assignmentError) {
         console.error(
           `Unassigned-profile check failed for ${bookingNumber}:`,
@@ -4664,10 +4937,14 @@ async function main() {
   const dispatchPage =
     await context.newPage();
 
+  const unassignedSweepPage =
+    await context.newPage();
+
   for (
     const page of [
       notificationPage,
-      dispatchPage
+      dispatchPage,
+      unassignedSweepPage
     ]
   ) {
     page.setDefaultTimeout(
@@ -4769,6 +5046,65 @@ async function main() {
     runDispatchCheck,
     60000
   );
+
+
+  let unassignedSweepRunning =
+    false;
+
+  const runUnassignedSweep =
+    async () => {
+      if (
+        unassignedSweepRunning
+      ) {
+        console.log(
+          "Previous unassigned sweep is still running. Skipping sweep cycle."
+        );
+
+        return;
+      }
+
+      unassignedSweepRunning =
+        true;
+
+      try {
+        await ensureLoggedIn(
+          unassignedSweepPage
+        );
+
+        await sweepOctopusUnassignedBookings(
+          unassignedSweepPage
+        );
+      } catch (error) {
+        console.error(
+          "Octopus unassigned booking sweep failed:",
+          error
+        );
+      } finally {
+        unassignedSweepRunning =
+          false;
+      }
+    };
+
+
+  console.log(
+    `Octopus unassigned sweep enabled: every ${Math.round(UNASSIGNED_SWEEP_INTERVAL_MS / 60000)} minute(s), next ${UNASSIGNED_SWEEP_LOOKAHEAD_DAYS} day(s), ${UNASSIGNED_SWEEP_BATCH_SIZE} booking(s) per cycle.`
+  );
+
+
+  setTimeout(
+    runUnassignedSweep,
+    20000
+  );
+
+
+  setInterval(
+    runUnassignedSweep,
+    Math.max(
+      60000,
+      UNASSIGNED_SWEEP_INTERVAL_MS
+    )
+  );
+
 
   const shutdown =
     async (signal) => {
