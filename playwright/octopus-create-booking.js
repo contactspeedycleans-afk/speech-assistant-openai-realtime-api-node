@@ -510,8 +510,9 @@ console.log("Appointment date/time set.");
     console.log("Completing required booking fields with exact DOM inspection...");
 
     // ONE-TIME ONLY MODE.
-    // Always click the actual visible One Time Cleaning control exactly like a human.
-    console.log("FORCING ONE TIME CLEANING SELECTION...");
+    // IMPORTANT: set the hidden checkbox ONCE and do NOT dispatch a click event.
+    // A synthetic click on a checkbox toggles it back off.
+    console.log("SETTING ONE TIME CLEANING = TRUE...");
 
     const oneTimeInput = page.locator(
       'input[name="attribute_8087013985[]"][value="37558"]'
@@ -522,198 +523,34 @@ console.log("Appointment date/time set.");
       timeout: 10000
     });
 
-    const oneTimeMeta = await oneTimeInput.evaluate(el => ({
+    await oneTimeInput.evaluate(el => {
+      const proto = Object.getPrototypeOf(el);
+      const checkedSetter =
+        Object.getOwnPropertyDescriptor(proto, "checked")?.set;
+
+      if (checkedSetter) {
+        checkedSetter.call(el, true);
+      } else {
+        el.checked = true;
+      }
+
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    await page.waitForTimeout(800);
+
+    const oneTimeState = await oneTimeInput.evaluate(el => ({
       id: el.id || "",
       name: el.getAttribute("name") || "",
       value: el.value || "",
       checked: !!el.checked
     }));
 
-    console.log("One Time input before click:", JSON.stringify(oneTimeMeta));
+    console.log("ONE TIME FINAL STATE:", JSON.stringify(oneTimeState));
 
-    // Best path: click the label tied to the real input, if Octopus supplied one.
-    if (oneTimeMeta.id) {
-      const tiedLabel = page.locator(`label[for="${oneTimeMeta.id}"]`).first();
-
-      if (await tiedLabel.isVisible().catch(() => false)) {
-        console.log("Clicking One Time label tied to input...");
-        await tiedLabel.scrollIntoViewIfNeeded().catch(() => {});
-        await tiedLabel.click({ force: true, timeout: 10000 });
-        await page.waitForTimeout(800);
-      }
-    }
-
-    // Second path: click the smallest visible control containing exactly this text.
-    if (!(await oneTimeInput.isChecked().catch(() => false))) {
-      const exactTextNodes = page.getByText("One Time Cleaning", {
-        exact: true
-      });
-
-      for (let i = 0; i < await exactTextNodes.count(); i++) {
-        const node = exactTextNodes.nth(i);
-        if (!(await node.isVisible().catch(() => false))) continue;
-
-        const clickable = node.locator(
-          'xpath=ancestor-or-self::label[1] | ancestor-or-self::button[1] | ancestor-or-self::*[@role="button"][1] | ancestor-or-self::div[1]'
-        ).first();
-
-        if (await clickable.count()) {
-          console.log("Clicking visible One Time Cleaning control...");
-          await clickable.scrollIntoViewIfNeeded().catch(() => {});
-          await clickable.click({ force: true, timeout: 10000 });
-          await page.waitForTimeout(800);
-          break;
-        }
-      }
-    }
-
-    // Third path: real browser click on the underlying control.
-    if (!(await oneTimeInput.isChecked().catch(() => false))) {
-      console.log("Clicking One Time input directly...");
-      await oneTimeInput.evaluate(el => {
-  el.checked = true;
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
-});
-      await page.waitForTimeout(800);
-    }
-
-    // Final framework event sequence.
-    await oneTimeInput.evaluate(el => {
-      if (!el.checked) el.checked = true;
-      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-      el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    await page.waitForTimeout(1000);
-
-    const oneTimeAfter = await oneTimeInput.evaluate(el => ({
-      id: el.id || "",
-      checked: !!el.checked,
-      value: el.value || "",
-      className: el.className || "",
-      parentText: String(el.parentElement?.innerText || "")
-        .replace(/\s+/g, " ")
-        .trim()
-    }));
-
-    console.log("ONE TIME AFTER CLICK:", JSON.stringify(oneTimeAfter));
-
-
-
-    async function chooseOneTimeCleaning() {
-      console.log("Selecting One Time Cleaning exactly like the web form...");
-
-      // The manual Octopus flow uses the visible One Time Cleaning button.
-      // Do NOT rely on manually toggling the hidden checkbox state.
-      const oneTimeText = page.getByText("One Time Cleaning", {
-        exact: true
-      });
-
-      const count = await oneTimeText.count();
-      let clicked = false;
-      let clickedState = null;
-
-      for (let i = 0; i < count; i++) {
-        const node = oneTimeText.nth(i);
-
-        if (!(await node.isVisible().catch(() => false))) continue;
-
-        const candidate = node.locator(
-          'xpath=ancestor-or-self::button[1] | ancestor-or-self::*[@role="button"][1] | ancestor-or-self::label[1] | ancestor-or-self::div[1]'
-        ).first();
-
-        if (await candidate.count()) {
-          await candidate.scrollIntoViewIfNeeded().catch(() => {});
-          await candidate.click({
-            force: true,
-            timeout: 10000
-          });
-
-          await page.waitForTimeout(800);
-
-          clickedState = await candidate.evaluate(el => ({
-            tag: el.tagName,
-            text: String(el.innerText || el.textContent || "")
-              .replace(/\s+/g, " ")
-              .trim(),
-            className: el.className || "",
-            ariaPressed: el.getAttribute("aria-pressed"),
-            ariaChecked: el.getAttribute("aria-checked"),
-            ariaSelected: el.getAttribute("aria-selected")
-          })).catch(() => null);
-
-          clicked = true;
-          break;
-        }
-      }
-
-      if (!clicked) {
-        throw new Error("ONE_TIME_VISIBLE_CONTROL_NOT_FOUND");
-      }
-
-      console.log(
-        "One Time visible control after click:",
-        JSON.stringify(clickedState)
-      );
-
-      // Give Vue time to commit its model.
-      await page.waitForTimeout(1200);
-
-      // Verify from the service card itself that One Time Cleaning is rendered
-      // as the chosen value. The form validator is the final authority.
-      const serviceAreaText = await page.locator("body").innerText();
-
-      if (!/One Time or Recurring/i.test(serviceAreaText) ||
-          !/One Time Cleaning/i.test(serviceAreaText)) {
-        throw new Error("ONE_TIME_SELECTION_NOT_RENDERED");
-      }
-
-      return true;
-    }
-
-    async function inspectLabeledFields() {
-      return await page.evaluate(() => {
-        const norm = s => String(s || "").replace(/\s+/g, " ").trim();
-        const visible = el => {
-          if (!el) return false;
-          const r = el.getBoundingClientRect();
-          const st = getComputedStyle(el);
-          return st.display !== "none" &&
-                 st.visibility !== "hidden" &&
-                 r.width > 0 &&
-                 r.height > 0;
-        };
-
-        const fields = Array.from(document.querySelectorAll('textarea, input, select'))
-          .filter(visible)
-          .map(el => {
-            let parent = el.parentElement;
-            const ancestors = [];
-            for (let i = 0; i < 5 && parent; i++, parent = parent.parentElement) {
-              const t = norm(parent.innerText || parent.textContent);
-              if (t && t.length < 1200) ancestors.push(t);
-            }
-            return {
-              tag: el.tagName,
-              type: el.getAttribute("type") || "",
-              name: el.getAttribute("name") || "",
-              id: el.id || "",
-              value: "value" in el ? String(el.value || "") : "",
-              placeholder: el.getAttribute("placeholder") || "",
-              ancestors
-            };
-          });
-
-        return fields.filter(f =>
-          /special notes|access instructions|one time or recurring|fieldworker/i.test(
-            [f.name, f.id, f.placeholder, ...f.ancestors].join(" ")
-          )
-        );
-      });
+    if (!oneTimeState.checked) {
+      throw new Error("ONE_TIME_NOT_CHECKED");
     }
 
     const specialNotesField = page.locator("#attribute_8087017483").first();
@@ -1128,22 +965,7 @@ console.log("Appointment date/time set.");
       })
     );
 
-    // Click One Time one more time right before Save, because it is the ONLY mode.
-    const finalOneTimeText = page.getByText("One Time Cleaning", {
-      exact: true
-    });
-
-    for (let i = 0; i < await finalOneTimeText.count(); i++) {
-      const node = finalOneTimeText.nth(i);
-      if (!(await node.isVisible().catch(() => false))) continue;
-
-      console.log("FINAL One Time click immediately before Save...");
-      await node.scrollIntoViewIfNeeded().catch(() => {});
-      await node.click({ force: true, timeout: 10000 });
-      await page.waitForTimeout(700);
-      break;
-    }
-
+    console.log("Deposit skipped - not required.");
     console.log("Attempting to save booking with full validation capture...");
 
     const postTraffic = [];
