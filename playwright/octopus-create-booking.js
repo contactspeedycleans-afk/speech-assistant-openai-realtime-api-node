@@ -271,12 +271,25 @@ await servicesDropdown.waitFor({
 
 await servicesDropdown.scrollIntoViewIfNeeded();
 
-await servicesDropdown.click({
-  force: true,
-  timeout: 5000
+await servicesDropdown.evaluate(element => {
+  element.dispatchEvent(
+    new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    })
+  );
+
+  element.dispatchEvent(
+    new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    })
+  );
 });
 
-await page.waitForTimeout(1000);
+await page.waitForTimeout(2000);
 
 const cleanAsDirected = page.locator("#servicesdropdown_6");
 
