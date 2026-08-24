@@ -504,125 +504,26 @@ console.log("Appointment date/time set.");
       TEST.price
     );
 
-    console.log("Filling required Cleaning Instructions...");
+    console.log("Completing required service fields...");
 
-    const cleaningInstructionResult = await page.evaluate(() => {
-      const visible = element => {
-        if (!element) return false;
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
-      };
-
-      const textNodes = Array.from(
-        document.querySelectorAll("label, div, span, p, small")
-      );
-
-      const label = textNodes.find(el =>
-        /Cleaning Instructions/i.test(
-          String(el.innerText || el.textContent || "")
-        )
-      );
-
-      if (!label) {
-        return {
-          filled: false,
-          reason: "Cleaning Instructions label not found"
-        };
-      }
-
-      let container = label;
-
-      for (let i = 0; i < 6 && container; i++) {
-        const controls = Array.from(
-          container.querySelectorAll(
-            'textarea, input[type="text"], input:not([type])'
-          )
-        ).filter(visible);
-
-        if (controls.length) {
-          const field = controls[0];
-          const value =
-            'Clean as directed by the customer during the scheduled appointment. Focus on the customer-requested cleaning tasks within the booked time.';
-
-          const prototype = Object.getPrototypeOf(field);
-          const descriptor =
-            Object.getOwnPropertyDescriptor(prototype, "value");
-
-          if (descriptor?.set) {
-            descriptor.set.call(field, value);
-          } else {
-            field.value = value;
-          }
-
-          field.dispatchEvent(
-            new Event("input", { bubbles: true })
-          );
-          field.dispatchEvent(
-            new Event("change", { bubbles: true })
-          );
-          field.dispatchEvent(
-            new Event("blur", { bubbles: true })
-          );
-
-          return {
-            filled: true,
-            tag: field.tagName,
-            name: field.getAttribute("name") || "",
-            id: field.id || "",
-            placeholder:
-              field.getAttribute("placeholder") || "",
-            value: field.value
-          };
-        }
-
-        container = container.parentElement;
-      }
-
-      return {
-        filled: false,
-        reason:
-          "Cleaning Instructions label found but no nearby visible text field was found"
-      };
-    });
-
-    console.log(
-      "Cleaning Instructions result:",
-      JSON.stringify(cleaningInstructionResult)
-    );
-
-    if (!cleaningInstructionResult.filled) {
-      throw new Error(
-        `CLEANING_INSTRUCTIONS_NOT_FILLED: ${JSON.stringify(cleaningInstructionResult)}`
-      );
-    }
-
-    await page.waitForTimeout(1000);
-
-    console.log("Setting booking type and notes...");
-
-    // 1) Explicitly select One Time Cleaning.
-    const oneTimeButton = page
+    // Explicitly select One Time Cleaning when that option is present.
+    const oneTimeCleaningButton = page
       .getByText("One Time Cleaning", { exact: true })
       .first();
 
-    if (await oneTimeButton.isVisible().catch(() => false)) {
-      await oneTimeButton.click({ force: true });
+    if (await oneTimeCleaningButton.isVisible().catch(() => false)) {
+      await oneTimeCleaningButton.click({ force: true });
       await page.waitForTimeout(500);
-      console.log("Booking type selected: One Time Cleaning");
+      console.log("One Time Cleaning selected.");
     } else {
-      console.log("One Time Cleaning button not visible; leaving current selection as-is.");
+      console.log("One Time Cleaning option not visible; keeping current service frequency.");
     }
 
-    async function fillTextareaByLabel(labelRegex, value) {
+    async function fillFieldByExactLabel(labelText, value) {
       return await page.evaluate(
-        ({ pattern, flags, value }) => {
-          const regex = new RegExp(pattern, flags);
+        ({ labelText, value }) => {
+          const normalize = text =>
+            String(text || "").replace(/\s+/g, " ").trim();
 
           const visible = element => {
             if (!element) return false;
@@ -636,110 +537,232 @@ console.log("Appointment date/time set.");
             );
           };
 
-          const textNodes = Array.from(
+          const all = Array.from(
             document.querySelectorAll("label, div, span, p, strong, h1, h2, h3, h4, h5, h6")
           );
 
-          const label = textNodes.find(el =>
-            regex.test(
-              String(el.innerText || el.textContent || "").trim()
-            )
-          );
+          // Prefer an element whose OWN visible text is exactly the label.
+          const candidates = all.filter(el => {
+            const ownText = normalize(
+              Array.from(el.childNodes)
+                .filter(n => n.nodeType === Node.TEXT_NODE)
+                .map(n => n.textContent)
+                .join(" ")
+            );
 
-          if (!label) {
-            return { filled: false, reason: "label not found" };
-          }
+            const fullText = normalize(el.innerText || el.textContent);
 
-          let container = label;
+            return ownText === labelText || fullText === labelText;
+          });
 
-          for (let depth = 0; depth < 7 && container; depth++) {
-            const fields = Array.from(
-              container.querySelectorAll("textarea, input[type='text'], input:not([type])")
-            ).filter(visible);
+          for (const label of candidates) {
+            // First try same small wrapper.
+            let wrapper = label.parentElement;
 
-            const field = fields.find(el => {
-              const placeholder = el.getAttribute("placeholder") || "";
-              const current = el.value || "";
-              return !/booking address|find address|tag e\.g|unit \/ lot/i.test(placeholder) &&
-                     !/booking address/i.test(current);
+            for (let depth = 0; depth < 5 && wrapper; depth++, wrapper = wrapper.parentElement) {
+              const fields = Array.from(
+                wrapper.querySelectorAll(
+                  'textarea, input[type="text"], input:not([type])'
+                )
+              ).filter(el => {
+                if (!visible(el)) return false;
+
+                const placeholder = normalize(
+                  el.getAttribute("placeholder")
+                );
+
+                // Never write into address/location inputs.
+                if (
+                  /booking address|find address|enter address|tag e\.g|unit \/ lot|latitude|longitude/i.test(
+                    placeholder
+                  )
+                ) {
+                  return false;
+                }
+
+                return true;
+              });
+
+              if (fields.length === 1) {
+                const field = fields[0];
+
+                const prototype = Object.getPrototypeOf(field);
+                const descriptor =
+                  Object.getOwnPropertyDescriptor(prototype, "value");
+
+                if (descriptor?.set) {
+                  descriptor.set.call(field, value);
+                } else {
+                  field.value = value;
+                }
+
+                field.dispatchEvent(
+                  new Event("input", { bubbles: true })
+                );
+                field.dispatchEvent(
+                  new Event("change", { bubbles: true })
+                );
+                field.dispatchEvent(
+                  new Event("blur", { bubbles: true })
+                );
+
+                return {
+                  filled: true,
+                  label: labelText,
+                  tag: field.tagName,
+                  name: field.getAttribute("name") || "",
+                  id: field.id || "",
+                  placeholder:
+                    field.getAttribute("placeholder") || "",
+                  value: field.value
+                };
+              }
+            }
+
+            // Fallback: nearest following textarea/input in document order.
+            const allFields = Array.from(
+              document.querySelectorAll(
+                'textarea, input[type="text"], input:not([type])'
+              )
+            );
+
+            const labelRect = label.getBoundingClientRect();
+
+            const following = allFields.find(field => {
+              if (!visible(field)) return false;
+
+              const placeholder = normalize(
+                field.getAttribute("placeholder")
+              );
+
+              if (
+                /booking address|find address|enter address|tag e\.g|unit \/ lot|latitude|longitude/i.test(
+                  placeholder
+                )
+              ) {
+                return false;
+              }
+
+              const fieldRect = field.getBoundingClientRect();
+
+              return (
+                fieldRect.top >= labelRect.bottom - 5 &&
+                fieldRect.top - labelRect.bottom < 250
+              );
             });
 
-            if (field) {
-              const prototype = Object.getPrototypeOf(field);
+            if (following) {
+              const prototype = Object.getPrototypeOf(following);
               const descriptor =
                 Object.getOwnPropertyDescriptor(prototype, "value");
 
               if (descriptor?.set) {
-                descriptor.set.call(field, value);
+                descriptor.set.call(following, value);
               } else {
-                field.value = value;
+                following.value = value;
               }
 
-              field.dispatchEvent(new Event("input", { bubbles: true }));
-              field.dispatchEvent(new Event("change", { bubbles: true }));
-              field.dispatchEvent(new Event("blur", { bubbles: true }));
+              following.dispatchEvent(
+                new Event("input", { bubbles: true })
+              );
+              following.dispatchEvent(
+                new Event("change", { bubbles: true })
+              );
+              following.dispatchEvent(
+                new Event("blur", { bubbles: true })
+              );
 
               return {
                 filled: true,
-                tag: field.tagName,
-                name: field.getAttribute("name") || "",
-                id: field.id || "",
-                placeholder: field.getAttribute("placeholder") || "",
-                value: field.value
+                label: labelText,
+                tag: following.tagName,
+                name: following.getAttribute("name") || "",
+                id: following.id || "",
+                placeholder:
+                  following.getAttribute("placeholder") || "",
+                value: following.value,
+                fallback: true
               };
             }
-
-            container = container.parentElement;
           }
 
           return {
             filled: false,
-            reason: "label found but nearby field not found"
+            label: labelText,
+            reason: "Exact label or nearby field not found"
           };
         },
-        {
-          pattern: labelRegex.source,
-          flags: labelRegex.flags,
-          value
-        }
+        { labelText, value }
       );
     }
 
-    // 2) Special Notes: later Lisa can pass call notes here.
-    const specialNotesResult = await fillTextareaByLabel(
-      /^Special Notes$/i,
-      "N/A"
+    // These fields must never be blank in Octopus.
+    const specialNotes = await fillFieldByExactLabel(
+      "Special Notes",
+      "."
+    );
+
+    const accessInstructions = await fillFieldByExactLabel(
+      "Access Instructions",
+      "."
     );
 
     console.log(
-      "Special Notes result:",
-      JSON.stringify(specialNotesResult)
-    );
-
-    // 3) Access Instructions: later Lisa can pass door/code/access notes here.
-    const accessInstructionsResult = await fillTextareaByLabel(
-      /^Access Instructions$/i,
-      "N/A"
+      "Special Notes:",
+      JSON.stringify(specialNotes)
     );
 
     console.log(
-      "Access Instructions result:",
-      JSON.stringify(accessInstructionsResult)
+      "Access Instructions:",
+      JSON.stringify(accessInstructions)
     );
 
-    if (!specialNotesResult.filled) {
+    // Cleaning Instructions can be inside the Service Details accordion.
+    let cleaningInstructions = await fillFieldByExactLabel(
+      "Cleaning Instructions",
+      "Clean as directed."
+    );
+
+    if (!cleaningInstructions.filled) {
+      const serviceDetails = page
+        .getByText("Service Details", { exact: true })
+        .first();
+
+      if (await serviceDetails.isVisible().catch(() => false)) {
+        await serviceDetails.click({ force: true });
+        await page.waitForTimeout(750);
+
+        cleaningInstructions = await fillFieldByExactLabel(
+          "Cleaning Instructions",
+          "Clean as directed."
+        );
+      }
+    }
+
+    console.log(
+      "Cleaning Instructions:",
+      JSON.stringify(cleaningInstructions)
+    );
+
+    if (!specialNotes.filled) {
       throw new Error(
-        `SPECIAL_NOTES_NOT_FILLED: ${JSON.stringify(specialNotesResult)}`
+        `SPECIAL_NOTES_NOT_FILLED: ${JSON.stringify(specialNotes)}`
       );
     }
 
-    if (!accessInstructionsResult.filled) {
+    if (!accessInstructions.filled) {
       throw new Error(
-        `ACCESS_INSTRUCTIONS_NOT_FILLED: ${JSON.stringify(accessInstructionsResult)}`
+        `ACCESS_INSTRUCTIONS_NOT_FILLED: ${JSON.stringify(accessInstructions)}`
       );
     }
 
-    await page.waitForTimeout(500);
+    if (!cleaningInstructions.filled) {
+      throw new Error(
+        `CLEANING_INSTRUCTIONS_NOT_FILLED: ${JSON.stringify(cleaningInstructions)}`
+      );
+    }
+
+    await page.waitForTimeout(750);
 
     console.log("Reading current form state...");
 
