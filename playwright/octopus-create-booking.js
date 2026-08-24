@@ -260,32 +260,43 @@ async function main() {
       "1"
     );
 
-    console.log("Attempting to select service...");
+    console.log("Selecting One Time Clean as Directed...");
 
-    const serviceInput = page
-      .locator('input[placeholder="Select services"]')
-      .first();
+const servicesDropdown = page.locator("#servicesdropdown").first();
 
-    if (await serviceInput.count()) {
-      await serviceInput.click().catch(() => {});
-      await serviceInput.fill(TEST.serviceName).catch(() => {});
-      await page.waitForTimeout(1500);
+await servicesDropdown.waitFor({
+  state: "visible",
+  timeout: 15000
+});
 
-      const option = page
-        .getByText(TEST.serviceName, { exact: true })
-        .last();
+await servicesDropdown.click({
+  timeout: 5000
+});
 
-      if (await option.isVisible().catch(() => false)) {
-        await option.click();
-        console.log("Service selected.");
-      } else {
-        console.log("Could not visibly select service yet.");
-      }
-    }
+await page.waitForTimeout(1000);
 
-    await page.waitForTimeout(2000);
+const cleanAsDirected = page.locator("#servicesdropdown_6");
 
-    console.log("Setting price fields...");
+await cleanAsDirected.waitFor({
+  state: "visible",
+  timeout: 10000
+});
+
+console.log(
+  "Found service:",
+  await cleanAsDirected.innerText()
+);
+
+await cleanAsDirected.click({
+  timeout: 5000
+});
+
+await page.waitForTimeout(2500);
+
+console.log(
+  "Service selected:",
+  await cleanAsDirected.getAttribute("aria-selected")
+);
 
     await setValue(
       page,
