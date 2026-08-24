@@ -504,94 +504,139 @@ console.log("Appointment date/time set.");
       TEST.price
     );
 
-    console.log("Completing required service fields...");
+    console.log("Completing required service + appointment note fields...");
 
-    // Explicitly select One Time Cleaning when that option is present.
-    const oneTimeCleaningButton = page
-      .getByText("One Time Cleaning", { exact: true })
+    // --- Cleaning Instructions: exact known textarea from our inspection ---
+    const cleaningInstructions = page.locator("#attribute_8090313990");
+
+    await cleaningInstructions.waitFor({
+      state: "visible",
+      timeout: 10000
+    });
+
+    await cleaningInstructions.fill("Clean as directed.");
+    await cleaningInstructions.dispatchEvent("change");
+    await cleaningInstructions.dispatchEvent("blur");
+
+    console.log(
+      "Cleaning Instructions:",
+      await cleaningInstructions.inputValue()
+    );
+
+    // --- Make sure this appointment is ONE TIME, not recurring ---
+    const serviceCard = page.locator("#service_checked_809030");
+
+    const recurringCleaning = serviceCard
+      .getByText("Recurring Cleaning", { exact: true })
       .first();
 
-    if (await oneTimeCleaningButton.isVisible().catch(() => false)) {
-      await oneTimeCleaningButton.click({ force: true });
-      await page.waitForTimeout(500);
-      console.log("One Time Cleaning selected.");
+    if (await recurringCleaning.isVisible().catch(() => false)) {
+      console.log("Recurring Cleaning control found; switching to One Time Cleaning...");
+
+      await recurringCleaning.click({ force: true });
+      await page.waitForTimeout(700);
+
+      const oneTimeChoice = page
+        .getByText("One Time Cleaning", { exact: true })
+        .last();
+
+      if (await oneTimeChoice.isVisible().catch(() => false)) {
+        await oneTimeChoice.click({ force: true });
+        await page.waitForTimeout(700);
+        console.log("One Time Cleaning selected.");
+      } else {
+        console.log("One Time Cleaning choice did not appear; continuing with current service state.");
+      }
     } else {
-      console.log("One Time Cleaning option not visible; keeping current service frequency.");
+      console.log("Recurring Cleaning control not visible; service appears already one-time.");
     }
 
-    async function fillFieldByExactLabel(labelText, value) {
-      return await page.evaluate(
-        ({ labelText, value }) => {
-          const normalize = text =>
-            String(text || "").replace(/\s+/g, " ").trim();
+    // --- Appointment Notes button is where Special Notes + Access Instructions live ---
+    console.log("Opening appointment Notes...");
 
-          const visible = element => {
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-            const style = getComputedStyle(element);
+    const appointment = page.locator("#booking_visits_80903_0_0");
+
+    const notesButton = appointment
+      .getByText("Notes", { exact: true })
+      .last();
+
+    await notesButton.waitFor({
+      state: "visible",
+      timeout: 10000
+    });
+
+    await notesButton.click({
+      force: true,
+      timeout: 10000
+    });
+
+    await page.waitForTimeout(1000);
+
+    async function fillVisibleFieldNearLabel(labelText, value) {
+      const result = await page.evaluate(
+        ({ labelText, value }) => {
+          const norm = s =>
+            String(s || "").replace(/\s+/g, " ").trim();
+
+          const visible = el => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
             return (
-              style.display !== "none" &&
-              style.visibility !== "hidden" &&
-              rect.width > 0 &&
-              rect.height > 0
+              s.display !== "none" &&
+              s.visibility !== "hidden" &&
+              r.width > 0 &&
+              r.height > 0
             );
           };
 
-          const all = Array.from(
-            document.querySelectorAll("label, div, span, p, strong, h1, h2, h3, h4, h5, h6")
+          const labels = Array.from(
+            document.querySelectorAll(
+              "label, div, span, p, strong"
+            )
+          ).filter(
+            el =>
+              visible(el) &&
+              norm(el.innerText || el.textContent) === labelText
           );
 
-          // Prefer an element whose OWN visible text is exactly the label.
-          const candidates = all.filter(el => {
-            const ownText = normalize(
-              Array.from(el.childNodes)
-                .filter(n => n.nodeType === Node.TEXT_NODE)
-                .map(n => n.textContent)
-                .join(" ")
-            );
-
-            const fullText = normalize(el.innerText || el.textContent);
-
-            return ownText === labelText || fullText === labelText;
-          });
-
-          for (const label of candidates) {
-            // First try same small wrapper.
+          for (const label of labels) {
+            // Search closest wrappers first.
             let wrapper = label.parentElement;
 
-            for (let depth = 0; depth < 5 && wrapper; depth++, wrapper = wrapper.parentElement) {
+            for (
+              let depth = 0;
+              depth < 6 && wrapper;
+              depth++, wrapper = wrapper.parentElement
+            ) {
               const fields = Array.from(
                 wrapper.querySelectorAll(
-                  'textarea, input[type="text"], input:not([type])'
+                  "textarea, input[type='text'], input:not([type])"
                 )
-              ).filter(el => {
-                if (!visible(el)) return false;
+              ).filter(visible);
 
-                const placeholder = normalize(
-                  el.getAttribute("placeholder")
+              // Exclude address/location fields.
+              const usable = fields.filter(field => {
+                const ph = norm(
+                  field.getAttribute("placeholder")
                 );
-
-                // Never write into address/location inputs.
-                if (
-                  /booking address|find address|enter address|tag e\.g|unit \/ lot|latitude|longitude/i.test(
-                    placeholder
-                  )
-                ) {
-                  return false;
-                }
-
-                return true;
+                return !/booking address|address line|suburb|postal|zip|state|latitude|longitude|tag e\.g|unit \/ lot/i.test(
+                  ph
+                );
               });
 
-              if (fields.length === 1) {
-                const field = fields[0];
+              if (usable.length === 1) {
+                const field = usable[0];
 
-                const prototype = Object.getPrototypeOf(field);
-                const descriptor =
-                  Object.getOwnPropertyDescriptor(prototype, "value");
+                const proto = Object.getPrototypeOf(field);
+                const desc =
+                  Object.getOwnPropertyDescriptor(
+                    proto,
+                    "value"
+                  );
 
-                if (descriptor?.set) {
-                  descriptor.set.call(field, value);
+                if (desc?.set) {
+                  desc.set.call(field, value);
                 } else {
                   field.value = value;
                 }
@@ -618,151 +663,118 @@ console.log("Appointment date/time set.");
                 };
               }
             }
-
-            // Fallback: nearest following textarea/input in document order.
-            const allFields = Array.from(
-              document.querySelectorAll(
-                'textarea, input[type="text"], input:not([type])'
-              )
-            );
-
-            const labelRect = label.getBoundingClientRect();
-
-            const following = allFields.find(field => {
-              if (!visible(field)) return false;
-
-              const placeholder = normalize(
-                field.getAttribute("placeholder")
-              );
-
-              if (
-                /booking address|find address|enter address|tag e\.g|unit \/ lot|latitude|longitude/i.test(
-                  placeholder
-                )
-              ) {
-                return false;
-              }
-
-              const fieldRect = field.getBoundingClientRect();
-
-              return (
-                fieldRect.top >= labelRect.bottom - 5 &&
-                fieldRect.top - labelRect.bottom < 250
-              );
-            });
-
-            if (following) {
-              const prototype = Object.getPrototypeOf(following);
-              const descriptor =
-                Object.getOwnPropertyDescriptor(prototype, "value");
-
-              if (descriptor?.set) {
-                descriptor.set.call(following, value);
-              } else {
-                following.value = value;
-              }
-
-              following.dispatchEvent(
-                new Event("input", { bubbles: true })
-              );
-              following.dispatchEvent(
-                new Event("change", { bubbles: true })
-              );
-              following.dispatchEvent(
-                new Event("blur", { bubbles: true })
-              );
-
-              return {
-                filled: true,
-                label: labelText,
-                tag: following.tagName,
-                name: following.getAttribute("name") || "",
-                id: following.id || "",
-                placeholder:
-                  following.getAttribute("placeholder") || "",
-                value: following.value,
-                fallback: true
-              };
-            }
           }
 
           return {
             filled: false,
             label: labelText,
-            reason: "Exact label or nearby field not found"
+            reason: "visible label/field not found"
           };
         },
         { labelText, value }
       );
+
+      console.log(
+        `${labelText}:`,
+        JSON.stringify(result)
+      );
+
+      return result;
     }
 
-    // These fields must never be blank in Octopus.
-    const specialNotes = await fillFieldByExactLabel(
+    const specialNotes = await fillVisibleFieldNearLabel(
       "Special Notes",
       "."
     );
 
-    const accessInstructions = await fillFieldByExactLabel(
-      "Access Instructions",
-      "."
+    const accessInstructions =
+      await fillVisibleFieldNearLabel(
+        "Access Instructions",
+        "."
+      );
+
+    if (!specialNotes.filled || !accessInstructions.filled) {
+      const notesState = await page.evaluate(() => {
+        const visible = el => {
+          const r = el.getBoundingClientRect();
+          const s = getComputedStyle(el);
+          return (
+            s.display !== "none" &&
+            s.visibility !== "hidden" &&
+            r.width > 0 &&
+            r.height > 0
+          );
+        };
+
+        return Array.from(
+          document.querySelectorAll(
+            "textarea, input, label, button, div, span"
+          )
+        )
+          .filter(visible)
+          .map(el => ({
+            tag: el.tagName,
+            name: el.getAttribute("name") || "",
+            id: el.id || "",
+            placeholder:
+              el.getAttribute("placeholder") || "",
+            value:
+              "value" in el ? String(el.value || "") : "",
+            text: String(
+              el.innerText || el.textContent || ""
+            )
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 300)
+          }))
+          .filter(x =>
+            /special|access|notes|instruction/i.test(
+              [
+                x.text,
+                x.placeholder,
+                x.name,
+                x.id
+              ].join(" ")
+            )
+          )
+          .slice(0, 150);
+      });
+
+      console.log(
+        "NOTES DEBUG:",
+        JSON.stringify(notesState, null, 2)
+      );
+
+      throw new Error(
+        `APPOINTMENT_NOTES_NOT_FILLED special=${JSON.stringify(
+          specialNotes
+        )} access=${JSON.stringify(accessInstructions)}`
+      );
+    }
+
+    // If Notes opened a dialog/panel with its own Save/Confirm button,
+    // save that note section before saving the whole booking.
+    const visibleDialogs = page.locator(
+      '[role="dialog"]:visible, .modal.show:visible'
     );
 
-    console.log(
-      "Special Notes:",
-      JSON.stringify(specialNotes)
-    );
+    if ((await visibleDialogs.count()) > 0) {
+      const dialog = visibleDialogs.last();
 
-    console.log(
-      "Access Instructions:",
-      JSON.stringify(accessInstructions)
-    );
+      const noteSave = dialog
+        .getByRole("button", {
+          name: /^(Save|Confirm|Done|Add)$/i
+        })
+        .last();
 
-    // Cleaning Instructions can be inside the Service Details accordion.
-    let cleaningInstructions = await fillFieldByExactLabel(
-      "Cleaning Instructions",
-      "Clean as directed."
-    );
-
-    if (!cleaningInstructions.filled) {
-      const serviceDetails = page
-        .getByText("Service Details", { exact: true })
-        .first();
-
-      if (await serviceDetails.isVisible().catch(() => false)) {
-        await serviceDetails.click({ force: true });
-        await page.waitForTimeout(750);
-
-        cleaningInstructions = await fillFieldByExactLabel(
-          "Cleaning Instructions",
-          "Clean as directed."
-        );
+      if (await noteSave.isVisible().catch(() => false)) {
+        await noteSave.click({ force: true });
+        await page.waitForTimeout(700);
+        console.log("Appointment Notes saved.");
       }
     }
 
-    console.log(
-      "Cleaning Instructions:",
-      JSON.stringify(cleaningInstructions)
-    );
-
-    if (!specialNotes.filled) {
-      throw new Error(
-        `SPECIAL_NOTES_NOT_FILLED: ${JSON.stringify(specialNotes)}`
-      );
-    }
-
-    if (!accessInstructions.filled) {
-      throw new Error(
-        `ACCESS_INSTRUCTIONS_NOT_FILLED: ${JSON.stringify(accessInstructions)}`
-      );
-    }
-
-    if (!cleaningInstructions.filled) {
-      throw new Error(
-        `CLEANING_INSTRUCTIONS_NOT_FILLED: ${JSON.stringify(cleaningInstructions)}`
-      );
-    }
-
-    await page.waitForTimeout(750);
+    console.log("Required service + appointment note fields completed.");
 
     console.log("Reading current form state...");
 
