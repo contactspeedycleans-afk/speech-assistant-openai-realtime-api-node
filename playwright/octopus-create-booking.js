@@ -194,7 +194,7 @@ async function main() {
       ])
     );
 
-    console.log("Filling address...");
+    console.log("Selecting booking location...");
 
     const bookingAddress = `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state} ${TEST.postcode}`;
 
@@ -202,63 +202,96 @@ async function main() {
       .locator('input[placeholder="Booking address"]')
       .first();
 
-    if (await visibleBookingAddress.isVisible().catch(() => false)) {
-      await visibleBookingAddress.fill(bookingAddress);
+    await visibleBookingAddress.waitFor({
+      state: "visible",
+      timeout: 15000
+    });
+
+    await visibleBookingAddress.click();
+    await visibleBookingAddress.fill(bookingAddress);
+
+    await page.waitForTimeout(3500);
+
+    const exactAddressText =
+      `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state} ${TEST.postcode}, United States`;
+
+    const exactAddressResult = page
+      .getByText(exactAddressText, { exact: true })
+      .last();
+
+    await exactAddressResult.waitFor({
+      state: "visible",
+      timeout: 10000
+    });
+
+    console.log(
+      "Found address result:",
+      (await exactAddressResult.innerText()).replace(/\s+/g, " ").trim()
+    );
+
+    await exactAddressResult.click({
+      force: true,
+      timeout: 5000
+    });
+
+    await page.waitForTimeout(3000);
+
+    const selectedLocation = await page.evaluate(() => {
+      const bookingAddressInput =
+        document.querySelector('input[placeholder="Booking address"]');
+
+      const visible = element => {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const findVisibleValue = placeholder => {
+        const elements = Array.from(
+          document.querySelectorAll(`input[placeholder="${placeholder}"]`)
+        );
+        const match = elements.find(visible);
+        return match?.value || null;
+      };
+
+      return {
+        bookingAddress: bookingAddressInput?.value || null,
+        addressLine1: findVisibleValue("Address Line 1"),
+        addressLine2: findVisibleValue("Address Line 2"),
+        suburb: findVisibleValue("Suburb / Locality"),
+        postcode: findVisibleValue("Postal / Zip code"),
+        state: findVisibleValue("State"),
+        latitude:
+          document.querySelector("#lat-test-input")?.value || null,
+        longitude:
+          document.querySelector("#lng-test-input")?.value || null
+      };
+    });
+
+    console.log(
+      "Selected location:",
+      JSON.stringify(selectedLocation)
+    );
+
+    if (
+      !selectedLocation.bookingAddress ||
+      !selectedLocation.addressLine1 ||
+      !selectedLocation.suburb ||
+      !selectedLocation.postcode ||
+      !selectedLocation.state ||
+      !selectedLocation.latitude ||
+      !selectedLocation.longitude
+    ) {
+      throw new Error(
+        "LOCATION_NOT_SELECTED: Octopus did not fully populate the selected address."
+      );
     }
-
-    await setValue(
-      page,
-      'input[name="address"]',
-      bookingAddress
-    );
-
-    await setValue(
-      page,
-      '#street_number_0',
-      TEST.streetNumber
-    );
-
-    await setValue(
-      page,
-      '#street_address_0',
-      TEST.streetAddress
-    );
-
-    await setValue(
-      page,
-      '#suburb_0',
-      TEST.suburb
-    );
-
-    await setValue(
-      page,
-      '#state_0',
-      TEST.state
-    );
-
-    await setValue(
-      page,
-      '#postcode_0',
-      TEST.postcode
-    );
-
-    await setValue(
-      page,
-      '#time_zone0',
-      "America/Detroit"
-    );
-
-    await setValue(
-      page,
-      '#booking_address_flag',
-      "1"
-    );
-
-    await setValue(
-      page,
-      '#booking_updates_flag',
-      "1"
-    );
 
     console.log("Selecting One Time Clean as Directed...");
 
@@ -423,48 +456,10 @@ console.log("Appointment date/time set.");
     console.log("===== END PRE-SAVE CHECK =====");
     console.log("");
 
-    console.log("Saving booking...");
-
-    const saveButton = page
-      .getByText("Save changes", { exact: true })
-      .last();
-
-    await saveButton.waitFor({
-      state: "visible",
-      timeout: 15000
-    });
-
-    await saveButton.click({
-      force: true,
-      timeout: 10000
-    });
-
-    await page.waitForTimeout(5000);
-
-    const saveResult = await page.evaluate(() => {
-      const bodyText = document.body?.innerText || "";
-      const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
-      const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
-
-      return {
-        url: location.href,
-        booking_number: bokMatch ? bokMatch[0].toUpperCase() : null,
-        booking_id: urlMatch ? urlMatch[1] : null,
-        success_text: bodyText
-          .split("\n")
-          .map(x => x.trim())
-          .filter(Boolean)
-          .filter(x =>
-            /booking|created|success|saved|BOK-/i.test(x)
-          )
-          .slice(0, 80)
-      };
-    });
-
     console.log("");
-    console.log("===== BOOKING SAVE RESULT =====");
-    console.log(JSON.stringify(saveResult, null, 2));
-    console.log("===== END BOOKING SAVE RESULT =====");
+    console.log("LOCATION + SERVICE + SCHEDULE VALIDATED.");
+    console.log("SAVE WAS NOT CLICKED IN THIS VALIDATION RUN.");
+    console.log("");
     console.log("");
   } finally {
     await browser.close();
