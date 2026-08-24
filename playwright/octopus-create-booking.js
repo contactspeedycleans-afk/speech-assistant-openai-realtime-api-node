@@ -324,7 +324,11 @@ await servicesDropdown.evaluate(element => {
 
 await page.waitForTimeout(2000);
 
-const cleanAsDirected = page.locator("#servicesdropdown_6");
+const cleanAsDirected = page
+  .locator('li[role="option"][aria-label="Clean as Directed"]')
+  .filter({ hasText: "$150" })
+  .first();
+
 await cleanAsDirected.waitFor({
   state: "visible",
   timeout: 10000
@@ -332,7 +336,7 @@ await cleanAsDirected.waitFor({
 
 console.log(
   "Found service:",
-  await cleanAsDirected.innerText()
+  (await cleanAsDirected.innerText()).replace(/\s+/g, " ").trim()
 );
 
 await cleanAsDirected.click({
