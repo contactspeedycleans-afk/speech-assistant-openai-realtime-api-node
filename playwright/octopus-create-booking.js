@@ -509,6 +509,97 @@ console.log("Appointment date/time set.");
 
     console.log("Completing required booking fields with exact DOM inspection...");
 
+    // ONE-TIME ONLY MODE.
+    // Always click the actual visible One Time Cleaning control exactly like a human.
+    console.log("FORCING ONE TIME CLEANING SELECTION...");
+
+    const oneTimeInput = page.locator(
+      'input[name="attribute_8087013985[]"][value="37558"]'
+    ).first();
+
+    await oneTimeInput.waitFor({
+      state: "attached",
+      timeout: 10000
+    });
+
+    const oneTimeMeta = await oneTimeInput.evaluate(el => ({
+      id: el.id || "",
+      name: el.getAttribute("name") || "",
+      value: el.value || "",
+      checked: !!el.checked
+    }));
+
+    console.log("One Time input before click:", JSON.stringify(oneTimeMeta));
+
+    // Best path: click the label tied to the real input, if Octopus supplied one.
+    if (oneTimeMeta.id) {
+      const tiedLabel = page.locator(`label[for="${oneTimeMeta.id}"]`).first();
+
+      if (await tiedLabel.isVisible().catch(() => false)) {
+        console.log("Clicking One Time label tied to input...");
+        await tiedLabel.scrollIntoViewIfNeeded().catch(() => {});
+        await tiedLabel.click({ force: true, timeout: 10000 });
+        await page.waitForTimeout(800);
+      }
+    }
+
+    // Second path: click the smallest visible control containing exactly this text.
+    if (!(await oneTimeInput.isChecked().catch(() => false))) {
+      const exactTextNodes = page.getByText("One Time Cleaning", {
+        exact: true
+      });
+
+      for (let i = 0; i < await exactTextNodes.count(); i++) {
+        const node = exactTextNodes.nth(i);
+        if (!(await node.isVisible().catch(() => false))) continue;
+
+        const clickable = node.locator(
+          'xpath=ancestor-or-self::label[1] | ancestor-or-self::button[1] | ancestor-or-self::*[@role="button"][1] | ancestor-or-self::div[1]'
+        ).first();
+
+        if (await clickable.count()) {
+          console.log("Clicking visible One Time Cleaning control...");
+          await clickable.scrollIntoViewIfNeeded().catch(() => {});
+          await clickable.click({ force: true, timeout: 10000 });
+          await page.waitForTimeout(800);
+          break;
+        }
+      }
+    }
+
+    // Third path: real browser click on the underlying control.
+    if (!(await oneTimeInput.isChecked().catch(() => false))) {
+      console.log("Clicking One Time input directly...");
+      await oneTimeInput.click({ force: true, timeout: 10000 });
+      await page.waitForTimeout(800);
+    }
+
+    // Final framework event sequence.
+    await oneTimeInput.evaluate(el => {
+      if (!el.checked) el.checked = true;
+      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    await page.waitForTimeout(1000);
+
+    const oneTimeAfter = await oneTimeInput.evaluate(el => ({
+      id: el.id || "",
+      checked: !!el.checked,
+      value: el.value || "",
+      className: el.className || "",
+      parentText: String(el.parentElement?.innerText || "")
+        .replace(/\s+/g, " ")
+        .trim()
+    }));
+
+    console.log("ONE TIME AFTER CLICK:", JSON.stringify(oneTimeAfter));
+
+
+
     async function chooseOneTimeCleaning() {
       console.log("Selecting One Time Cleaning exactly like the web form...");
 
@@ -979,6 +1070,76 @@ console.log("Appointment date/time set.");
 
     console.log("");
     console.log("LOCATION + SERVICE + SCHEDULE VALIDATED.");
+    // Octopus re-renders the appointment while editing the service.
+    // Re-apply the requested date/time immediately before Save.
+    console.log("FINAL PRE-SAVE DATE/TIME FORCE...");
+
+    const finalAppointment = page.locator('[id^="booking_visits_"]').first();
+
+    async function finalSet(prefix, value) {
+      const loc = finalAppointment.locator(`input[name^="${prefix}"]`).first();
+      await loc.waitFor({ state: "attached", timeout: 10000 });
+
+      await loc.evaluate((el, nextValue) => {
+        const proto = Object.getPrototypeOf(el);
+        const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+
+        if (setter) setter.call(el, nextValue);
+        else el.value = nextValue;
+
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new Event("blur", { bubbles: true }));
+      }, value);
+
+      return loc;
+    }
+
+    const finalStartDate = await finalSet(
+      "multi_new_stpartdate_",
+      "Tuesday, 25 August 2026"
+    );
+    const finalStartTime = await finalSet(
+      "multi_new_stparttime_",
+      "10:00 AM"
+    );
+    const finalEndDate = await finalSet(
+      "multi_new_etpartdate_",
+      "Tuesday, 25 August 2026"
+    );
+    const finalEndTime = await finalSet(
+      "multi_new_etparttime_",
+      "12:00 PM"
+    );
+
+    await page.waitForTimeout(500);
+
+    console.log(
+      "FINAL PRE-SAVE DATE/TIME:",
+      JSON.stringify({
+        startDate: await finalStartDate.inputValue(),
+        startTime: await finalStartTime.inputValue(),
+        endDate: await finalEndDate.inputValue(),
+        endTime: await finalEndTime.inputValue()
+      })
+    );
+
+    // Click One Time one more time right before Save, because it is the ONLY mode.
+    const finalOneTimeText = page.getByText("One Time Cleaning", {
+      exact: true
+    });
+
+    for (let i = 0; i < await finalOneTimeText.count(); i++) {
+      const node = finalOneTimeText.nth(i);
+      if (!(await node.isVisible().catch(() => false))) continue;
+
+      console.log("FINAL One Time click immediately before Save...");
+      await node.scrollIntoViewIfNeeded().catch(() => {});
+      await node.click({ force: true, timeout: 10000 });
+      await page.waitForTimeout(700);
+      break;
+    }
+
     console.log("Attempting to save booking with full validation capture...");
 
     const postTraffic = [];
