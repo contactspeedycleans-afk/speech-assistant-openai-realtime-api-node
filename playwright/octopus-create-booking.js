@@ -668,8 +668,7 @@ console.log("Appointment date/time set.");
   await locator.press("Tab").catch(() => {});
 
   await page.waitForTimeout(400);
-}, value);
-    }
+}
 
     await setFirstAppointmentValue(firstStartDate, expectedAppointment.startDate);
     await setFirstAppointmentValue(firstStartTime, expectedAppointment.startTime);
