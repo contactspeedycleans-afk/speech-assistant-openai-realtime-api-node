@@ -339,26 +339,80 @@ console.log(
   (await cleanAsDirected.innerText()).replace(/\s+/g, " ").trim()
 );
 
-await cleanAsDirected.click({
-  force: true,
-  timeout: 5000
+await cleanAsDirected.evaluate(element => {
+  element.dispatchEvent(
+    new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    })
+  );
+
+  element.dispatchEvent(
+    new MouseEvent("mouseup", {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    })
+  );
+
+  element.dispatchEvent(
+    new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    })
+  );
 });
 
-await page.waitForTimeout(2500);
+await page.waitForTimeout(3000);
 
-// After selection, Octopus closes/removes the option from the DOM,
-// so do NOT query the old <li> again. Verify from the dropdown text instead.
-const selectedServiceText = (
-  await page.locator("#servicesdropdown").innerText()
-)
-  .replace(/\s+/g, " ")
-  .trim();
+const serviceState = await page.evaluate(() => {
+  const dropdown =
+    document.querySelector("#servicesdropdown");
 
-console.log("Service selected text:", selectedServiceText);
+  const bodyText = document.body?.innerText || "";
 
-if (!/Clean as Directed/i.test(selectedServiceText)) {
+  const selectedOptions = Array.from(
+    document.querySelectorAll(
+      'li[role="option"][aria-selected="true"]'
+    )
+  ).map(el =>
+    String(el.innerText || el.textContent || "")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+
+  const serviceDetailsPresent =
+    /Service Details/i.test(bodyText) &&
+    /Clean as Directed/i.test(bodyText);
+
+  return {
+    dropdownText: String(
+      dropdown?.innerText ||
+      dropdown?.textContent ||
+      ""
+    )
+      .replace(/\s+/g, " ")
+      .trim(),
+    selectedOptions,
+    serviceDetailsPresent
+  };
+});
+
+console.log(
+  "Service state:",
+  JSON.stringify(serviceState)
+);
+
+if (
+  !serviceState.selectedOptions.some(x =>
+    /Clean as Directed/i.test(x)
+  ) &&
+  !serviceState.serviceDetailsPresent
+) {
   throw new Error(
-    `SERVICE_NOT_SELECTED: dropdown text was "${selectedServiceText}"`
+    `SERVICE_NOT_SELECTED: ${JSON.stringify(serviceState)}`
   );
 }
 
