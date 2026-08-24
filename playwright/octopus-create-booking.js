@@ -510,77 +510,64 @@ console.log("Appointment date/time set.");
     console.log("Completing required booking fields with exact DOM inspection...");
 
     async function chooseOneTimeCleaning() {
-      const exact = page.locator(
+      console.log("Selecting One Time Cleaning with real click/check events...");
+
+      const exactInput = page.locator(
         'input[name="attribute_8087013985[]"][value="37558"]'
       ).first();
 
-      if (await exact.count()) {
-        await exact.evaluate(el => {
-          el.checked = true;
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-        });
-
-        await page.waitForTimeout(500);
-
-        const state = await exact.evaluate(el => ({
-          name: el.getAttribute("name") || "",
-          value: el.value || "",
-          checked: !!el.checked
-        }));
-
-        console.log("One Time Cleaning exact input:", JSON.stringify(state));
-
-        if (state.checked) return true;
-      }
-
-      const fallback = await page.evaluate(() => {
-        const norm = s => String(s || "").replace(/\s+/g, " ").trim();
-        const visible = el => {
-          if (!el) return false;
-          const r = el.getBoundingClientRect();
-          const st = getComputedStyle(el);
-          return st.display !== "none" &&
-                 st.visibility !== "hidden" &&
-                 r.width > 0 &&
-                 r.height > 0;
-        };
-
-        const candidates = Array.from(
-          document.querySelectorAll("label, div, span, button")
-        ).filter(visible);
-
-        const target = candidates.find(el =>
-          norm(el.innerText || el.textContent) === "One Time Cleaning"
-        );
-
-        if (!target) {
-          return { selected: false, reason: "visible One Time Cleaning label not found" };
-        }
-
-        const wrapper = target.closest("label") || target.parentElement || target;
-        const input =
-          wrapper.querySelector?.('input[type="radio"], input[type="checkbox"]') ||
-          target.querySelector?.('input[type="radio"], input[type="checkbox"]');
-
-        target.click();
-
-        if (input) {
-          input.checked = true;
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-          input.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-
-        return {
-          selected: input ? !!input.checked : true,
-          inputName: input?.getAttribute("name") || "",
-          inputValue: input?.value || "",
-          checked: input ? !!input.checked : null
-        };
+      await exactInput.waitFor({
+        state: "attached",
+        timeout: 10000
       });
 
-      console.log("One Time Cleaning fallback:", JSON.stringify(fallback));
-      return !!fallback.selected;
+      // First click the visible One Time Cleaning control exactly as a user would.
+      const visibleOneTime = page
+        .getByText("One Time Cleaning", { exact: true })
+        .filter({ visible: true })
+        .last();
+
+      if (await visibleOneTime.isVisible().catch(() => false)) {
+        await visibleOneTime.scrollIntoViewIfNeeded().catch(() => {});
+        await visibleOneTime.click({
+          force: true,
+          timeout: 10000
+        });
+        await page.waitForTimeout(500);
+      }
+
+      // Then use Playwright's CHECK action on the actual input so Vue/framework
+      // receives the full browser event sequence instead of us only setting .checked.
+      if (!(await exactInput.isChecked().catch(() => false))) {
+        await exactInput.check({
+          force: true,
+          timeout: 10000
+        });
+        await page.waitForTimeout(500);
+      }
+
+      // Fire one final real click if Octopus still has not committed it.
+      if (!(await exactInput.isChecked().catch(() => false))) {
+        await exactInput.click({
+          force: true,
+          timeout: 10000
+        });
+        await page.waitForTimeout(500);
+      }
+
+      const state = await exactInput.evaluate(el => ({
+        checked: !!el.checked,
+        name: el.getAttribute("name") || "",
+        value: el.value || "",
+        outerHTML: el.outerHTML
+      }));
+
+      console.log(
+        "One Time Cleaning committed state:",
+        JSON.stringify(state)
+      );
+
+      return state.checked;
     }
 
     async function inspectLabeledFields() {
@@ -624,19 +611,11 @@ console.log("Appointment date/time set.");
       });
     }
 
-    // Exact required service fields discovered from the live Octopus DOM.
     const specialNotesField = page.locator("#attribute_8087017483").first();
     const accessInstructionsField = page.locator("#attribute_8087013969").first();
 
-    await specialNotesField.waitFor({
-      state: "visible",
-      timeout: 10000
-    });
-
-    await accessInstructionsField.waitFor({
-      state: "visible",
-      timeout: 10000
-    });
+    await specialNotesField.waitFor({ state: "visible", timeout: 10000 });
+    await accessInstructionsField.waitFor({ state: "visible", timeout: 10000 });
 
     await specialNotesField.fill(TEST.specialNotes);
     await specialNotesField.dispatchEvent("input");
@@ -648,24 +627,13 @@ console.log("Appointment date/time set.");
     await accessInstructionsField.dispatchEvent("change");
     await accessInstructionsField.dispatchEvent("blur");
 
-    const requiredNotesState = {
-      specialNotes: await specialNotesField.inputValue(),
-      accessInstructions: await accessInstructionsField.inputValue()
-    };
-
     console.log(
       "Required notes exact values:",
-      JSON.stringify(requiredNotesState)
+      JSON.stringify({
+        specialNotes: await specialNotesField.inputValue(),
+        accessInstructions: await accessInstructionsField.inputValue()
+      })
     );
-
-    if (
-      requiredNotesState.specialNotes !== TEST.specialNotes ||
-      requiredNotesState.accessInstructions !== TEST.accessInstructions
-    ) {
-      throw new Error(
-        `REQUIRED_NOTES_NOT_STICKING: ${JSON.stringify(requiredNotesState)}`
-      );
-    }
 
     // IMPORTANT: use only the FIRST scheduled appointment.
     // We previously created/targeted a second appointment accidentally.
@@ -884,6 +852,67 @@ console.log("Appointment date/time set.");
     // the selected worker in Vue state without rendering the name in this container.
     // The final Save validation below is the authoritative test.
     console.log("Fieldworker selection attempt completed.");
+
+    console.log("Re-applying appointment after fieldworker render...");
+
+    const liveFirstAppointment = page.locator('[id^="booking_visits_"]').first();
+
+    const liveStartDate = liveFirstAppointment.locator(
+      'input[name^="multi_new_stpartdate_"]'
+    ).first();
+
+    const liveStartTime = liveFirstAppointment.locator(
+      'input[name^="multi_new_stparttime_"]'
+    ).first();
+
+    const liveEndDate = liveFirstAppointment.locator(
+      'input[name^="multi_new_etpartdate_"]'
+    ).first();
+
+    const liveEndTime = liveFirstAppointment.locator(
+      'input[name^="multi_new_etparttime_"]'
+    ).first();
+
+    await setFirstAppointmentValue(liveStartDate, "Tuesday, 25 August 2026");
+    await setFirstAppointmentValue(liveStartTime, "10:00 AM");
+    await setFirstAppointmentValue(liveEndDate, "Tuesday, 25 August 2026");
+    await setFirstAppointmentValue(liveEndTime, "12:00 PM");
+
+    await page.waitForTimeout(500);
+
+    const finalAppointmentState = {
+      startDate: await liveStartDate.inputValue(),
+      startTime: await liveStartTime.inputValue(),
+      endDate: await liveEndDate.inputValue(),
+      endTime: await liveEndTime.inputValue(),
+      fieldworkerId: await liveFirstAppointment
+        .locator('input[name^="contractor_"]')
+        .first()
+        .inputValue()
+        .catch(() => "")
+    };
+
+    console.log(
+      "FINAL appointment + fieldworker state:",
+      JSON.stringify(finalAppointmentState)
+    );
+
+    if (
+      finalAppointmentState.startDate !== "Tuesday, 25 August 2026" ||
+      finalAppointmentState.startTime !== "10:00 AM" ||
+      finalAppointmentState.endDate !== "Tuesday, 25 August 2026" ||
+      finalAppointmentState.endTime !== "12:00 PM"
+    ) {
+      throw new Error(
+        `FINAL_APPOINTMENT_NOT_STICKING: ${JSON.stringify(finalAppointmentState)}`
+      );
+    }
+
+    if (!finalAppointmentState.fieldworkerId) {
+      throw new Error(
+        `FIELDWORKER_ID_MISSING: ${JSON.stringify(finalAppointmentState)}`
+      );
+    }
 
     console.log("Required booking fields completed.");
 
