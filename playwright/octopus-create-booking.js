@@ -559,7 +559,35 @@ console.log("Appointment date/time set.");
 
     console.log("");
     console.log("LOCATION + SERVICE + SCHEDULE VALIDATED.");
-    console.log("Attempting to save booking...");
+    console.log("Attempting to save booking with full validation capture...");
+
+    const postTraffic = [];
+
+    page.on("request", request => {
+      if (request.method() === "POST") {
+        postTraffic.push({
+          kind: "request",
+          url: request.url(),
+          postData: request.postData() || null
+        });
+      }
+    });
+
+    page.on("response", async response => {
+      const request = response.request();
+      if (request.method() === "POST") {
+        let body = null;
+        try {
+          body = await response.text();
+        } catch {}
+        postTraffic.push({
+          kind: "response",
+          status: response.status(),
+          url: response.url(),
+          body: body ? body.slice(0, 8000) : null
+        });
+      }
+    });
 
     const saveButton = page
       .getByText("Save changes", { exact: true })
@@ -570,92 +598,117 @@ console.log("Appointment date/time set.");
       timeout: 15000
     });
 
+    console.log(
+      "Save button disabled:",
+      await saveButton.isDisabled().catch(() => false)
+    );
+
+    await saveButton.scrollIntoViewIfNeeded();
+
     await saveButton.click({
       timeout: 10000
+    }).catch(async error => {
+      console.log("Normal Save click failed:", error.message);
+      console.log("Retrying with force...");
+      await saveButton.click({
+        force: true,
+        timeout: 10000
+      });
     });
 
     await page.waitForTimeout(8000);
 
-    const created = await page.evaluate(() => {
+    const result = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
       const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
       const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
+
+      const visible = el => {
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        return (
+          s.display !== "none" &&
+          s.visibility !== "hidden" &&
+          r.width > 0 &&
+          r.height > 0
+        );
+      };
+
+      const visibleAlerts = Array.from(
+        document.querySelectorAll(
+          '.alert, .alert-danger, .alert-warning, .invalid-feedback, .text-danger, .error, [role="alert"], .toast, .notification'
+        )
+      )
+        .filter(visible)
+        .map(el =>
+          String(el.innerText || el.textContent || "")
+            .replace(/\s+/g, " ")
+            .trim()
+        )
+        .filter(Boolean);
+
+      const invalidFields = Array.from(
+        document.querySelectorAll("input, textarea, select")
+      )
+        .filter(el => {
+          try {
+            return !el.checkValidity();
+          } catch {
+            return false;
+          }
+        })
+        .map(el => ({
+          tag: el.tagName,
+          type: el.getAttribute("type") || "",
+          name: el.getAttribute("name") || "",
+          id: el.id || "",
+          placeholder: el.getAttribute("placeholder") || "",
+          value: "value" in el ? String(el.value || "") : "",
+          required: !!el.required,
+          validationMessage: el.validationMessage || ""
+        }));
+
+      const errorLines = bodyText
+        .split("\n")
+        .map(x => x.trim())
+        .filter(Boolean)
+        .filter(x =>
+          /required|please|error|invalid|warning|confirm|missing|must|cannot|can't|select|enter|provide|booking|service|appointment/i.test(x)
+        )
+        .slice(0, 250);
+
+      const allTextTail = bodyText
+        .split("\n")
+        .map(x => x.trim())
+        .filter(Boolean)
+        .slice(-220);
 
       return {
         url: location.href,
         booking_number: bokMatch ? bokMatch[0].toUpperCase() : null,
         booking_id: urlMatch ? urlMatch[1] : null,
-        body_excerpt: bodyText
-          .split("\n")
-          .map(x => x.trim())
-          .filter(Boolean)
-          .filter(x =>
-            /BOK-|Gina|Grand River|Howell|Standard Cleaning|150|Aug|10:00|12:00|Upcoming/i.test(x)
-          )
-          .slice(0, 120)
+        visibleAlerts,
+        invalidFields,
+        errorLines,
+        allTextTail
       };
     });
 
     console.log("");
-    console.log("===== CREATED BOOKING RESULT =====");
-    console.log(JSON.stringify(created, null, 2));
-    console.log("===== END CREATED BOOKING RESULT =====");
+    console.log("===== FULL SAVE DIAGNOSTICS =====");
+    console.log(JSON.stringify({
+      result,
+      postTraffic
+    }, null, 2));
+    console.log("===== END FULL SAVE DIAGNOSTICS =====");
     console.log("");
 
-    if (!created.booking_number && !created.booking_id) {
-      throw new Error(
-        `BOOKING_NOT_CREATED: stayed at ${created.url}`
-      );
+    if (result.booking_number || result.booking_id) {
+      console.log("BOOKING CREATED SUCCESSFULLY.");
+    } else {
+      console.log("BOOKING NOT CREATED - validation details printed above.");
     }
 
-    console.log("Booking created. Verifying booking page...");
-
-    if (created.booking_id) {
-      await page.goto(
-        `https://admin.octopuspro.com/booking/view/${created.booking_id}`,
-        {
-          waitUntil: "domcontentloaded",
-          timeout: 60000
-        }
-      );
-
-      await page.waitForTimeout(5000);
-    }
-
-    const verification = await page.evaluate(() => {
-      const bodyText = document.body?.innerText || "";
-
-      return {
-        url: location.href,
-        booking_number:
-          bodyText.match(/\bBOK-\d+\b/i)?.[0]?.toUpperCase() || null,
-        has_customer: /Gina Manciolini/i.test(bodyText),
-        has_address:
-          /123 Grand River (Avenue|Ave)/i.test(bodyText) &&
-          /Howell/i.test(bodyText) &&
-          /48843/i.test(bodyText),
-        has_service: /Standard Cleaning/i.test(bodyText),
-        has_price: /\$?\s*150(?:\.00)?/.test(bodyText),
-        has_time:
-          /10:00\s*AM/i.test(bodyText) &&
-          /12:00\s*PM/i.test(bodyText),
-        excerpt: bodyText
-          .split("\n")
-          .map(x => x.trim())
-          .filter(Boolean)
-          .filter(x =>
-            /BOK-|Gina|Grand River|Howell|48843|Standard Cleaning|150|10:00|12:00|Upcoming/i.test(x)
-          )
-          .slice(0, 160)
-      };
-    });
-
-    console.log("");
-    console.log("===== BOOKING VERIFICATION =====");
-    console.log(JSON.stringify(verification, null, 2));
-    console.log("===== END BOOKING VERIFICATION =====");
-    console.log("");
-    console.log("");
   } finally {
     await browser.close();
   }
