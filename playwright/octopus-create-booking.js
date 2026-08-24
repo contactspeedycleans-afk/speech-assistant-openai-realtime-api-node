@@ -1,4 +1,4 @@
-﻿import { chromium } from "playwright";
+import { chromium } from "playwright";
 
 const OCTOPUS_EMAIL = process.env.OCTOPUS_EMAIL;
 const OCTOPUS_PASSWORD = process.env.OCTOPUS_PASSWORD;
@@ -292,7 +292,6 @@ await servicesDropdown.evaluate(element => {
 await page.waitForTimeout(2000);
 
 const cleanAsDirected = page.locator("#servicesdropdown_6");
-
 await cleanAsDirected.waitFor({
   state: "visible",
   timeout: 10000
@@ -314,6 +313,52 @@ console.log(
   "Service selected:",
   await cleanAsDirected.getAttribute("aria-selected")
 );
+
+console.log("Setting appointment date and time...");
+
+async function forceInputValue(selector, value) {
+  const field = page.locator(selector).first();
+
+  await field.waitFor({
+    state: "attached",
+    timeout: 10000
+  });
+
+  await field.evaluate(
+    (element, nextValue) => {
+      element.value = nextValue;
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.dispatchEvent(new Event("blur", { bubbles: true }));
+    },
+    value
+  );
+}
+
+await forceInputValue(
+  'input[name="multi_new_stpartdate_80903_0[0]"]',
+  "Tuesday, 25 August 2026"
+);
+
+await forceInputValue(
+  'input[name="multi_new_stparttime_80903_0[0]"]',
+  "10:00 AM"
+);
+
+await forceInputValue(
+  'input[name="multi_new_etpartdate_80903_0[0]"]',
+  "Tuesday, 25 August 2026"
+);
+
+await forceInputValue(
+  'input[name="multi_new_etparttime_80903_0[0]"]',
+  "12:00 PM"
+);
+
+await page.waitForTimeout(2000);
+
+console.log("Appointment date/time set.");
+
 
     await setValue(
       page,
