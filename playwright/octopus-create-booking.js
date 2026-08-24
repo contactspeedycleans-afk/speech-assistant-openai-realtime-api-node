@@ -1104,6 +1104,28 @@ console.log(
   JSON.stringify(appointmentSummaryBeforeSave)
 );
 
+console.log("Setting NEW booking_id = 0...");
+
+await setValue(
+  page,
+  'input[name="booking_id"]',
+  "0"
+);
+
+const bookingIdBeforeSave = await page
+  .locator('input[name="booking_id"]')
+  .first()
+  .inputValue()
+  .catch(() => "");
+
+console.log("booking_id before Save:", bookingIdBeforeSave);
+
+if (bookingIdBeforeSave !== "0") {
+  throw new Error(
+    `BOOKING_ID_NOT_ZERO_BEFORE_SAVE: ${bookingIdBeforeSave}`
+  );
+}
+
 console.log("Deposit skipped - not required.");
     console.log("Attempting to save booking with full validation capture...");
 
