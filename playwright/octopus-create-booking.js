@@ -504,6 +504,243 @@ console.log("Appointment date/time set.");
       TEST.price
     );
 
+    console.log("Filling required Cleaning Instructions...");
+
+    const cleaningInstructionResult = await page.evaluate(() => {
+      const visible = element => {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const textNodes = Array.from(
+        document.querySelectorAll("label, div, span, p, small")
+      );
+
+      const label = textNodes.find(el =>
+        /Cleaning Instructions/i.test(
+          String(el.innerText || el.textContent || "")
+        )
+      );
+
+      if (!label) {
+        return {
+          filled: false,
+          reason: "Cleaning Instructions label not found"
+        };
+      }
+
+      let container = label;
+
+      for (let i = 0; i < 6 && container; i++) {
+        const controls = Array.from(
+          container.querySelectorAll(
+            'textarea, input[type="text"], input:not([type])'
+          )
+        ).filter(visible);
+
+        if (controls.length) {
+          const field = controls[0];
+          const value =
+            'Clean as directed by the customer during the scheduled appointment. Focus on the customer-requested cleaning tasks within the booked time.';
+
+          const prototype = Object.getPrototypeOf(field);
+          const descriptor =
+            Object.getOwnPropertyDescriptor(prototype, "value");
+
+          if (descriptor?.set) {
+            descriptor.set.call(field, value);
+          } else {
+            field.value = value;
+          }
+
+          field.dispatchEvent(
+            new Event("input", { bubbles: true })
+          );
+          field.dispatchEvent(
+            new Event("change", { bubbles: true })
+          );
+          field.dispatchEvent(
+            new Event("blur", { bubbles: true })
+          );
+
+          return {
+            filled: true,
+            tag: field.tagName,
+            name: field.getAttribute("name") || "",
+            id: field.id || "",
+            placeholder:
+              field.getAttribute("placeholder") || "",
+            value: field.value
+          };
+        }
+
+        container = container.parentElement;
+      }
+
+      return {
+        filled: false,
+        reason:
+          "Cleaning Instructions label found but no nearby visible text field was found"
+      };
+    });
+
+    console.log(
+      "Cleaning Instructions result:",
+      JSON.stringify(cleaningInstructionResult)
+    );
+
+    if (!cleaningInstructionResult.filled) {
+      throw new Error(
+        `CLEANING_INSTRUCTIONS_NOT_FILLED: ${JSON.stringify(cleaningInstructionResult)}`
+      );
+    }
+
+    await page.waitForTimeout(1000);
+
+    console.log("Setting booking type and notes...");
+
+    // 1) Explicitly select One Time Cleaning.
+    const oneTimeButton = page
+      .getByText("One Time Cleaning", { exact: true })
+      .first();
+
+    if (await oneTimeButton.isVisible().catch(() => false)) {
+      await oneTimeButton.click({ force: true });
+      await page.waitForTimeout(500);
+      console.log("Booking type selected: One Time Cleaning");
+    } else {
+      console.log("One Time Cleaning button not visible; leaving current selection as-is.");
+    }
+
+    async function fillTextareaByLabel(labelRegex, value) {
+      return await page.evaluate(
+        ({ pattern, flags, value }) => {
+          const regex = new RegExp(pattern, flags);
+
+          const visible = element => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          };
+
+          const textNodes = Array.from(
+            document.querySelectorAll("label, div, span, p, strong, h1, h2, h3, h4, h5, h6")
+          );
+
+          const label = textNodes.find(el =>
+            regex.test(
+              String(el.innerText || el.textContent || "").trim()
+            )
+          );
+
+          if (!label) {
+            return { filled: false, reason: "label not found" };
+          }
+
+          let container = label;
+
+          for (let depth = 0; depth < 7 && container; depth++) {
+            const fields = Array.from(
+              container.querySelectorAll("textarea, input[type='text'], input:not([type])")
+            ).filter(visible);
+
+            const field = fields.find(el => {
+              const placeholder = el.getAttribute("placeholder") || "";
+              const current = el.value || "";
+              return !/booking address|find address|tag e\.g|unit \/ lot/i.test(placeholder) &&
+                     !/booking address/i.test(current);
+            });
+
+            if (field) {
+              const prototype = Object.getPrototypeOf(field);
+              const descriptor =
+                Object.getOwnPropertyDescriptor(prototype, "value");
+
+              if (descriptor?.set) {
+                descriptor.set.call(field, value);
+              } else {
+                field.value = value;
+              }
+
+              field.dispatchEvent(new Event("input", { bubbles: true }));
+              field.dispatchEvent(new Event("change", { bubbles: true }));
+              field.dispatchEvent(new Event("blur", { bubbles: true }));
+
+              return {
+                filled: true,
+                tag: field.tagName,
+                name: field.getAttribute("name") || "",
+                id: field.id || "",
+                placeholder: field.getAttribute("placeholder") || "",
+                value: field.value
+              };
+            }
+
+            container = container.parentElement;
+          }
+
+          return {
+            filled: false,
+            reason: "label found but nearby field not found"
+          };
+        },
+        {
+          pattern: labelRegex.source,
+          flags: labelRegex.flags,
+          value
+        }
+      );
+    }
+
+    // 2) Special Notes: later Lisa can pass call notes here.
+    const specialNotesResult = await fillTextareaByLabel(
+      /^Special Notes$/i,
+      "N/A"
+    );
+
+    console.log(
+      "Special Notes result:",
+      JSON.stringify(specialNotesResult)
+    );
+
+    // 3) Access Instructions: later Lisa can pass door/code/access notes here.
+    const accessInstructionsResult = await fillTextareaByLabel(
+      /^Access Instructions$/i,
+      "N/A"
+    );
+
+    console.log(
+      "Access Instructions result:",
+      JSON.stringify(accessInstructionsResult)
+    );
+
+    if (!specialNotesResult.filled) {
+      throw new Error(
+        `SPECIAL_NOTES_NOT_FILLED: ${JSON.stringify(specialNotesResult)}`
+      );
+    }
+
+    if (!accessInstructionsResult.filled) {
+      throw new Error(
+        `ACCESS_INSTRUCTIONS_NOT_FILLED: ${JSON.stringify(accessInstructionsResult)}`
+      );
+    }
+
+    await page.waitForTimeout(500);
+
     console.log("Reading current form state...");
 
     const result = await page.evaluate(() => {
