@@ -468,22 +468,22 @@ async function forceInputValue(selector, value) {
 }
 
 await forceInputValue(
-  'input[name="multi_new_stpartdate_80903_0[0]"]',
+  'input[name^="multi_new_stpartdate_"][name$="_0[0]"]',
   "Tuesday, 25 August 2026"
 );
 
 await forceInputValue(
-  'input[name="multi_new_stparttime_80903_0[0]"]',
+  'input[name^="multi_new_stparttime_"][name$="_0[0]"]',
   "10:00 AM"
 );
 
 await forceInputValue(
-  'input[name="multi_new_etpartdate_80903_0[0]"]',
+  'input[name^="multi_new_etpartdate_"][name$="_0[0]"]',
   "Tuesday, 25 August 2026"
 );
 
 await forceInputValue(
-  'input[name="multi_new_etparttime_80903_0[0]"]',
+  'input[name^="multi_new_etparttime_"][name$="_0[0]"]',
   "12:00 PM"
 );
 
@@ -507,7 +507,7 @@ console.log("Appointment date/time set.");
     console.log("Filling appointment Notes...");
 
     const appointmentNotes = page.locator(
-      'textarea[name="extra_comments_new_80903_0[0]"]'
+      'textarea[name^="extra_comments_new_"][name$="_0[0]"]'
     );
 
     await appointmentNotes.waitFor({
