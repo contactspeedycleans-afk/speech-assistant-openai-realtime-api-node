@@ -504,11 +504,30 @@ console.log("Appointment date/time set.");
       TEST.price
     );
 
+    console.log("Opening appointment Notes...");
+
+    // The Notes textarea exists only after the appointment Notes section is opened.
+    const notesToggle = page
+      .getByText("Notes", { exact: true })
+      .last();
+
+    await notesToggle.waitFor({
+      state: "visible",
+      timeout: 10000
+    });
+
+    await notesToggle.click({
+      force: true,
+      timeout: 10000
+    });
+
+    await page.waitForTimeout(750);
+
     console.log("Filling appointment Notes...");
 
     const appointmentNotes = page.locator(
       'textarea[name^="extra_comments_new_"][name$="_0[0]"]'
-    );
+    ).first();
 
     await appointmentNotes.waitFor({
       state: "visible",
@@ -517,6 +536,7 @@ console.log("Appointment date/time set.");
 
     await appointmentNotes.fill("Standard Cleaning");
 
+    await appointmentNotes.dispatchEvent("input");
     await appointmentNotes.dispatchEvent("change");
     await appointmentNotes.dispatchEvent("blur");
 
