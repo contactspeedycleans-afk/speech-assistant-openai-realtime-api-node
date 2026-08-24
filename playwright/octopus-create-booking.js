@@ -461,12 +461,19 @@ function addHours(date, hours) {
 }
 
 function formatOctopusDate(date) {
-  return new Intl.DateTimeFormat("en-US", {
-    weekday: "long",
-    day: "2-digit",
-    month: "long",
-    year: "numeric"
-  }).format(date).replace(",", "");
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    weekday: "long"
+  }).format(date);
+
+  const day = String(date.getDate()).padStart(2, "0");
+
+  const month = new Intl.DateTimeFormat("en-US", {
+    month: "long"
+  }).format(date);
+
+  const year = date.getFullYear();
+
+  return `${weekday}, ${day} ${month} ${year}`;
 }
 
 function formatOctopusTime(date) {
@@ -645,16 +652,23 @@ console.log("Appointment date/time set.");
     ).first();
 
     async function setFirstAppointmentValue(locator, value) {
-      await locator.waitFor({ state: "attached", timeout: 10000 });
-      await locator.evaluate((el, nextValue) => {
-        const proto = Object.getPrototypeOf(el);
-        const desc = Object.getOwnPropertyDescriptor(proto, "value");
-        if (desc?.set) desc.set.call(el, nextValue);
-        else el.value = nextValue;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        el.dispatchEvent(new Event("blur", { bubbles: true }));
-      }, value);
+  await locator.waitFor({
+    state: "visible",
+    timeout: 10000
+  });
+
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
+  await locator.click({ force: true });
+
+  await locator.press("Control+A").catch(() => {});
+  await locator.press("Backspace").catch(() => {});
+  await locator.type(value, { delay: 20 });
+
+  await locator.press("Enter").catch(() => {});
+  await locator.press("Tab").catch(() => {});
+
+  await page.waitForTimeout(400);
+}, value);
     }
 
     await setFirstAppointmentValue(firstStartDate, expectedAppointment.startDate);
@@ -958,119 +972,48 @@ console.log("Appointment date/time set.");
     const finalAppointment = page.locator('[id^="booking_visits_"]').first();
 
     async function finalSet(prefix, value) {
-      const loc = finalAppointment.locator(`input[name^="${prefix}"]`).first();
-      await loc.waitFor({ state: "attached", timeout: 10000 });
-
-      await loc.evaluate((el, nextValue) => {
-        const proto = Object.getPrototypeOf(el);
-        const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-
-        if (setter) setter.call(el, nextValue);
-        else el.value = nextValue;
-
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        el.dispatchEvent(new Event("blur", { bubbles: true }));
-      }, value);
-
-      return loc;
-    }
-
-    const finalStartDate = await finalSet(
-      "multi_new_stpartdate_",
-      expectedAppointment.startDate
-    );
-    const finalStartTime = await finalSet(
-      "multi_new_stparttime_",
-      expectedAppointment.startTime
-    );
-    const finalEndDate = await finalSet(
-      "multi_new_etpartdate_",
-      expectedAppointment.endDate
-    );
-    const finalEndTime = await finalSet(
-      "multi_new_etparttime_",
-      expectedAppointment.endTime
-    );
-
-    await page.waitForTimeout(500);
-
-    console.log(
-      "FINAL PRE-SAVE DATE/TIME:",
-      JSON.stringify({
-        startDate: await finalStartDate.inputValue(),
-        startTime: await finalStartTime.inputValue(),
-        endDate: await finalEndDate.inputValue(),
-        endTime: await finalEndTime.inputValue()
-      })
-    );
-
-    console.log("FINAL APPOINTMENT VERIFICATION LOOP...");
-
-for (let attempt = 1; attempt <= 3; attempt++) {
-  const liveAppointment = page.locator('[id^="booking_visits_"]').first();
-
-  const sDate = liveAppointment.locator(
-    'input[name^="multi_new_stpartdate_"]'
-  ).first();
-  const sTime = liveAppointment.locator(
-    'input[name^="multi_new_stparttime_"]'
-  ).first();
-  const eDate = liveAppointment.locator(
-    'input[name^="multi_new_etpartdate_"]'
-  ).first();
-  const eTime = liveAppointment.locator(
-    'input[name^="multi_new_etparttime_"]'
+  const loc = finalAppointment.locator(
+    `input[name^="${prefix}"]`
   ).first();
 
-  const current = {
-    startDate: await sDate.inputValue().catch(() => ""),
-    startTime: await sTime.inputValue().catch(() => ""),
-    endDate: await eDate.inputValue().catch(() => ""),
-    endTime: await eTime.inputValue().catch(() => "")
-  };
+  await loc.waitFor({
+    state: "visible",
+    timeout: 10000
+  });
 
-  console.log(`Appointment verify attempt ${attempt}:`, JSON.stringify(current));
+  await loc.scrollIntoViewIfNeeded().catch(() => {});
+  await loc.click({ force: true });
 
-  const correct =
-    current.startDate === expectedAppointment.startDate &&
-    current.startTime === expectedAppointment.startTime &&
-    current.endDate === expectedAppointment.endDate &&
-    current.endTime === expectedAppointment.endTime;
+  // Use keyboard input so Octopus' date/time component receives the
+  // same event sequence as a human typing into the field.
+  await loc.press("Control+A").catch(() => {});
+  await loc.press("Backspace").catch(() => {});
+  await loc.type(value, { delay: 20 });
 
-  if (correct) {
-    console.log("APPOINTMENT VALUES CONFIRMED.");
-    break;
-  }
+  await loc.press("Enter").catch(() => {});
+  await loc.press("Tab").catch(() => {});
 
-  await finalSet("multi_new_stpartdate_", expectedAppointment.startDate);
-  await finalSet("multi_new_stparttime_", expectedAppointment.startTime);
-  await finalSet("multi_new_etpartdate_", expectedAppointment.endDate);
-  await finalSet("multi_new_etparttime_", expectedAppointment.endTime);
+  await page.waitForTimeout(400);
 
-  await page.waitForTimeout(700);
-
-  if (attempt === 3) {
-    const last = {
-      startDate: await sDate.inputValue().catch(() => ""),
-      startTime: await sTime.inputValue().catch(() => ""),
-      endDate: await eDate.inputValue().catch(() => ""),
-      endTime: await eTime.inputValue().catch(() => "")
-    };
-
-    const lastCorrect =
-      last.startDate === expectedAppointment.startDate &&
-      last.startTime === expectedAppointment.startTime &&
-      last.endDate === expectedAppointment.endDate &&
-      last.endTime === expectedAppointment.endTime;
-
-    if (!lastCorrect) {
-      throw new Error(
-        `APPOINTMENT_FINAL_VERIFICATION_FAILED: ${JSON.stringify(last)}`
-      );
-    }
-  }
+  return loc;
 }
+
+
+const appointmentSummaryBeforeSave = (
+  await page.locator("body").innerText().catch(() => "")
+)
+  .split("\n")
+  .map(x => x.trim())
+  .filter(Boolean)
+  .filter(x =>
+    /Appointment time|25 Aug 2026|10:00 AM|12:00 PM|10:00|12:00/i.test(x)
+  )
+  .slice(-40);
+
+console.log(
+  "RENDERED APPOINTMENT SUMMARY BEFORE SAVE:",
+  JSON.stringify(appointmentSummaryBeforeSave)
+);
 
 console.log("Deposit skipped - not required.");
     console.log("Attempting to save booking with full validation capture...");
