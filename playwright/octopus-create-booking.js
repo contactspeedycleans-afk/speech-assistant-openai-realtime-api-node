@@ -358,15 +358,7 @@ await forceInputValue(
 await page.waitForTimeout(2000);
 
 console.log("Appointment date/time set.");
-console.log("START DATE:", await page.locator('input[name="multi_new_stpartdate_80903_0[0]"]').inputValue());
-console.log("START TIME:", await page.locator('input[name="multi_new_stparttime_80903_0[0]"]').inputValue());
-console.log("END DATE:", await page.locator('input[name="multi_new_etpartdate_80903_0[0]"]').inputValue());
-console.log("END TIME:", await page.locator('input[name="multi_new_etparttime_80903_0[0]"]').inputValue());
 
-console.log(
-  "APPOINTMENT SUMMARY:",
-  await page.locator("#booking_visits_80903_0_0").innerText()
-);
 
     await setValue(
       page,
@@ -426,10 +418,53 @@ console.log(
     });
 
     console.log("");
-    console.log("===== CREATE BOOKING DRY RUN =====");
+    console.log("===== CREATE BOOKING PRE-SAVE CHECK =====");
     console.log(JSON.stringify(result, null, 2));
-    console.log("SAVE WAS NOT CLICKED");
-    console.log("===== END CREATE BOOKING DRY RUN =====");
+    console.log("===== END PRE-SAVE CHECK =====");
+    console.log("");
+
+    console.log("Saving booking...");
+
+    const saveButton = page
+      .getByText("Save changes", { exact: true })
+      .last();
+
+    await saveButton.waitFor({
+      state: "visible",
+      timeout: 15000
+    });
+
+    await saveButton.click({
+      force: true,
+      timeout: 10000
+    });
+
+    await page.waitForTimeout(5000);
+
+    const saveResult = await page.evaluate(() => {
+      const bodyText = document.body?.innerText || "";
+      const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
+      const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
+
+      return {
+        url: location.href,
+        booking_number: bokMatch ? bokMatch[0].toUpperCase() : null,
+        booking_id: urlMatch ? urlMatch[1] : null,
+        success_text: bodyText
+          .split("\n")
+          .map(x => x.trim())
+          .filter(Boolean)
+          .filter(x =>
+            /booking|created|success|saved|BOK-/i.test(x)
+          )
+          .slice(0, 80)
+      };
+    });
+
+    console.log("");
+    console.log("===== BOOKING SAVE RESULT =====");
+    console.log(JSON.stringify(saveResult, null, 2));
+    console.log("===== END BOOKING SAVE RESULT =====");
     console.log("");
   } finally {
     await browser.close();
