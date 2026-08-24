@@ -570,7 +570,11 @@ console.log("Appointment date/time set.");
     // Third path: real browser click on the underlying control.
     if (!(await oneTimeInput.isChecked().catch(() => false))) {
       console.log("Clicking One Time input directly...");
-      await oneTimeInput.click({ force: true, timeout: 10000 });
+      await oneTimeInput.evaluate(el => {
+  el.checked = true;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+});
       await page.waitForTimeout(800);
     }
 
