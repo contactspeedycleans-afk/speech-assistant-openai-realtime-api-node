@@ -179,8 +179,56 @@ async function main() {
 
     await page.waitForTimeout(5000);
 
-    console.log("Filling customer...");
+    console.log("Filling customer through the visible Octopus selector...");
 
+    const customerSearch = page.locator(
+      'input[placeholder="Find customer"]'
+    ).first();
+
+    await customerSearch.waitFor({
+      state: "visible",
+      timeout: 15000
+    });
+
+    await customerSearch.click();
+    await customerSearch.fill("");
+    await customerSearch.type(TEST.customerName, {
+      delay: 35
+    });
+
+    await page.waitForTimeout(1800);
+
+    let customerOption = page
+      .getByText(TEST.customerName, { exact: true })
+      .filter({ visible: true })
+      .last();
+
+    if (!(await customerOption.isVisible().catch(() => false))) {
+      customerOption = page
+        .getByText(new RegExp(TEST.customerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"))
+        .filter({ visible: true })
+        .last();
+    }
+
+    if (!(await customerOption.isVisible().catch(() => false))) {
+      throw new Error(
+        `CUSTOMER_OPTION_NOT_FOUND: ${TEST.customerName}`
+      );
+    }
+
+    console.log(
+      "Selecting customer option:",
+      (await customerOption.innerText()).replace(/\s+/g, " ").trim()
+    );
+
+    await customerOption.click({
+      force: true,
+      timeout: 10000
+    });
+
+    await page.waitForTimeout(1200);
+
+    // Keep hidden values synchronized after the real UI selection.
     await setValue(
       page,
       'input[name="customer_id"]',
@@ -197,6 +245,48 @@ async function main() {
         }
       ])
     );
+
+    const customerState = await page.evaluate(() => {
+      const visible = el => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        return (
+          s.display !== "none" &&
+          s.visibility !== "hidden" &&
+          r.width > 0 &&
+          r.height > 0
+        );
+      };
+
+      const findInput = Array.from(
+        document.querySelectorAll('input[placeholder="Find customer"]')
+      ).find(visible);
+
+      return {
+        customer_id:
+          document.querySelector('input[name="customer_id"]')?.value || "",
+        customers:
+          document.querySelector('input[name="customers"]')?.value || "",
+        visibleFindCustomerValue: findInput?.value || "",
+        bodyHasCustomer: document.body.innerText.includes(TEST.customerName)
+      };
+    });
+
+    console.log(
+      "Customer committed state:",
+      JSON.stringify(customerState)
+    );
+
+    if (
+      !customerState.customer_id ||
+      !customerState.customers ||
+      !customerState.bodyHasCustomer
+    ) {
+      throw new Error(
+        `CUSTOMER_NOT_COMMITTED: ${JSON.stringify(customerState)}`
+      );
+    }
 
     console.log("Selecting booking location...");
 
