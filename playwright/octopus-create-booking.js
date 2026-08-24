@@ -624,139 +624,46 @@ console.log("Appointment date/time set.");
       });
     }
 
-    const usedRequiredFields = new Set();
+    // Exact required service fields discovered from live Octopus DOM.
+    const specialNotesField = page.locator("#attribute_8087017483").first();
+    const accessInstructionsField = page.locator("#attribute_8087013969").first();
 
-    async function fillExactLabeledField(labelText, value) {
-      return await page.evaluate(({ labelText, value, usedKeys }) => {
-        const norm = s => String(s || "").replace(/\s+/g, " ").trim();
-        const visible = el => {
-          if (!el) return false;
-          const r = el.getBoundingClientRect();
-          const st = getComputedStyle(el);
-          return st.display !== "none" &&
-                 st.visibility !== "hidden" &&
-                 r.width > 0 &&
-                 r.height > 0;
-        };
+    await specialNotesField.waitFor({
+      state: "visible",
+      timeout: 10000
+    });
 
-        const labels = Array.from(
-          document.querySelectorAll("label, div, span, p, strong")
-        ).filter(visible).filter(el => {
-          const full = norm(el.innerText || el.textContent);
-          const own = norm(
-            Array.from(el.childNodes)
-              .filter(n => n.nodeType === Node.TEXT_NODE)
-              .map(n => n.textContent)
-              .join(" ")
-          );
-          return full === labelText || own === labelText;
-        });
+    await accessInstructionsField.waitFor({
+      state: "visible",
+      timeout: 10000
+    });
 
-        const allFields = Array.from(
-          document.querySelectorAll('textarea, input[type="text"], input:not([type])')
-        ).filter(visible);
+    await specialNotesField.fill(TEST.specialNotes);
+    await specialNotesField.dispatchEvent("input");
+    await specialNotesField.dispatchEvent("change");
+    await specialNotesField.dispatchEvent("blur");
 
-        const keyFor = field =>
-          field.getAttribute("name") ||
-          field.id ||
-          `${field.tagName}:${allFields.indexOf(field)}`;
+    await accessInstructionsField.fill(TEST.accessInstructions);
+    await accessInstructionsField.dispatchEvent("input");
+    await accessInstructionsField.dispatchEvent("change");
+    await accessInstructionsField.dispatchEvent("blur");
 
-        const setValue = field => {
-          const proto = Object.getPrototypeOf(field);
-          const desc = Object.getOwnPropertyDescriptor(proto, "value");
+    const requiredNotesState = {
+      specialNotes: await specialNotesField.inputValue(),
+      accessInstructions: await accessInstructionsField.inputValue()
+    };
 
-          if (desc?.set) desc.set.call(field, value);
-          else field.value = value;
-
-          field.dispatchEvent(new Event("input", { bubbles: true }));
-          field.dispatchEvent(new Event("change", { bubbles: true }));
-          field.dispatchEvent(new Event("blur", { bubbles: true }));
-
-          return {
-            filled: true,
-            label: labelText,
-            tag: field.tagName,
-            name: field.getAttribute("name") || "",
-            id: field.id || "",
-            value: field.value,
-            key: keyFor(field)
-          };
-        };
-
-        for (const label of labels) {
-          const labelRect = label.getBoundingClientRect();
-
-          const candidates = allFields
-            .filter(field => !usedKeys.includes(keyFor(field)))
-            .map(field => {
-              const r = field.getBoundingClientRect();
-              const afterInDom =
-                !!(label.compareDocumentPosition(field) &
-                   Node.DOCUMENT_POSITION_FOLLOWING);
-              return {
-                field,
-                afterInDom,
-                verticalGap: r.top - labelRect.bottom
-              };
-            })
-            .filter(x =>
-              x.afterInDom &&
-              x.verticalGap >= -5 &&
-              x.verticalGap < 350
-            )
-            .sort((a, b) => a.verticalGap - b.verticalGap);
-
-          if (candidates.length) {
-            return setValue(candidates[0].field);
-          }
-        }
-
-        return {
-          filled: false,
-          label: labelText,
-          reason: "distinct following field not found"
-        };
-      }, {
-        labelText,
-        value,
-        usedKeys: Array.from(usedRequiredFields)
-      });
-    }
-
-    const oneTimeOk = await chooseOneTimeCleaning();
-    if (!oneTimeOk) {
-      console.log("Required field candidates:", JSON.stringify(await inspectLabeledFields(), null, 2));
-      throw new Error("ONE_TIME_NOT_SELECTED");
-    }
-
-    await page.waitForTimeout(500);
-
-    const specialNotesResult = await fillExactLabeledField(
-      "Special Notes",
-      TEST.specialNotes
+    console.log(
+      "Required notes exact values:",
+      JSON.stringify(requiredNotesState)
     );
-    console.log("Special Notes result:", JSON.stringify(specialNotesResult));
-    if (specialNotesResult.filled && specialNotesResult.key) {
-      usedRequiredFields.add(specialNotesResult.key);
-    }
-
-    const accessInstructionsResult = await fillExactLabeledField(
-      "Access Instructions",
-      TEST.accessInstructions
-    );
-    console.log("Access Instructions result:", JSON.stringify(accessInstructionsResult));
-    if (accessInstructionsResult.filled && accessInstructionsResult.key) {
-      usedRequiredFields.add(accessInstructionsResult.key);
-    }
 
     if (
-      !specialNotesResult.filled ||
-      !accessInstructionsResult.filled ||
-      specialNotesResult.key === accessInstructionsResult.key
+      requiredNotesState.specialNotes !== TEST.specialNotes ||
+      requiredNotesState.accessInstructions !== TEST.accessInstructions
     ) {
-      console.log("Required field candidates:", JSON.stringify(await inspectLabeledFields(), null, 2));
       throw new Error(
-        `REQUIRED_NOTES_NOT_FILLED special=${JSON.stringify(specialNotesResult)} access=${JSON.stringify(accessInstructionsResult)}`
+        `REQUIRED_NOTES_NOT_STICKING: ${JSON.stringify(requiredNotesState)}`
       );
     }
 
@@ -792,12 +699,21 @@ console.log("Appointment date/time set.");
       await locator.evaluate((el, nextValue) => {
         const proto = Object.getPrototypeOf(el);
         const desc = Object.getOwnPropertyDescriptor(proto, "value");
-        if (desc?.set) desc.set.call(el, nextValue);
-        else el.value = nextValue;
+
+        if (desc?.set) {
+          desc.set.call(el, nextValue);
+        } else {
+          el.value = nextValue;
+        }
+
         el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
         el.dispatchEvent(new Event("blur", { bubbles: true }));
       }, value);
+
+      await locator.press("Tab").catch(() => {});
+      await page.waitForTimeout(150);
     }
 
     await setFirstAppointmentValue(firstStartDate, "Tuesday, 25 August 2026");
@@ -909,7 +825,7 @@ console.log("Appointment date/time set.");
 
     console.log("Reading current form state...");
 
-    const saveDiagnostics = await page.evaluate(() => {
+    const preSaveState = await page.evaluate(() => {
       const read = selector =>
         document.querySelector(selector)?.value ?? null;
 
@@ -959,6 +875,51 @@ console.log("Appointment date/time set.");
     console.log("");
 
     console.log("");
+    const preSaveRequiredState = {
+      oneTimeChecked: await page.locator(
+        'input[name="attribute_8087013985[]"][value="37558"]'
+      ).first().isChecked().catch(() => false),
+
+      specialNotes: await page.locator(
+        "#attribute_8087017483"
+      ).first().inputValue().catch(() => ""),
+
+      accessInstructions: await page.locator(
+        "#attribute_8087013969"
+      ).first().inputValue().catch(() => ""),
+
+      fieldworkerText: (
+        await firstAppointment.innerText().catch(() => "")
+      ).replace(/\s+/g, " ").trim()
+    };
+
+    console.log(
+      "PRE-SAVE REQUIRED STATE:",
+      JSON.stringify(preSaveRequiredState)
+    );
+
+    if (!preSaveRequiredState.oneTimeChecked) {
+      throw new Error("PRE_SAVE_ONE_TIME_NOT_CHECKED");
+    }
+
+    if (!preSaveRequiredState.specialNotes) {
+      throw new Error("PRE_SAVE_SPECIAL_NOTES_EMPTY");
+    }
+
+    if (!preSaveRequiredState.accessInstructions) {
+      throw new Error("PRE_SAVE_ACCESS_INSTRUCTIONS_EMPTY");
+    }
+
+    if (
+      !preSaveRequiredState.fieldworkerText.includes(
+        TEST.fieldworkerName
+      )
+    ) {
+      throw new Error(
+        "PRE_SAVE_FIELDWORKER_NOT_CONFIRMED"
+      );
+    }
+
     console.log("LOCATION + SERVICE + SCHEDULE VALIDATED.");
     console.log("Attempting to save booking with full validation capture...");
 
@@ -1019,7 +980,7 @@ console.log("Appointment date/time set.");
 
     await page.waitForTimeout(8000);
 
-    const preSaveState = await page.evaluate(() => {
+    const saveDiagnostics = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
       const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
       const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
