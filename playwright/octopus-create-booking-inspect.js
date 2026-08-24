@@ -116,22 +116,11 @@ async function openNewBooking(page) {
   }
 
   if (!clicked) {
-    const links = await page.locator('a[href*="booking"]').evaluateAll(
-      els =>
-        els
-          .map(a => ({
-            text: (a.innerText || a.textContent || "").trim(),
-            href: a.href
-          }))
-          .filter(x => /new|create/i.test(x.text))
-    );
-
-    console.log(
-      "New-booking-looking links:",
-      JSON.stringify(links, null, 2)
-    );
-
-    throw new Error("Could not find New Booking control");
+    console.log("Opening New Booking directly...");
+    await page.goto("https://admin.octopuspro.com/booking/add", {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    });
   }
 
   await page.waitForTimeout(5000);
@@ -254,3 +243,4 @@ main().catch(err => {
   console.error(err);
   process.exitCode = 1;
 });
+
