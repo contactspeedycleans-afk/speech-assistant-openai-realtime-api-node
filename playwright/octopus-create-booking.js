@@ -358,7 +358,15 @@ await forceInputValue(
 await page.waitForTimeout(2000);
 
 console.log("Appointment date/time set.");
+console.log("START DATE:", await page.locator('input[name="multi_new_stpartdate_80903_0[0]"]').inputValue());
+console.log("START TIME:", await page.locator('input[name="multi_new_stparttime_80903_0[0]"]').inputValue());
+console.log("END DATE:", await page.locator('input[name="multi_new_etpartdate_80903_0[0]"]').inputValue());
+console.log("END TIME:", await page.locator('input[name="multi_new_etparttime_80903_0[0]"]').inputValue());
 
+console.log(
+  "APPOINTMENT SUMMARY:",
+  await page.locator("#booking_visits_80903_0_0").innerText()
+);
 
     await setValue(
       page,
