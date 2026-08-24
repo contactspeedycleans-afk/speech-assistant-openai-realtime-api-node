@@ -17,6 +17,7 @@ const TEST = {
   bookingDate: "2026-08-25",
   startTime: "10:00",
   endTime: "12:00",
+  durationHours: 2,
   price: "82.50",
   fieldworkerName: "Unassigned Tasks Manager",
   specialNotes: ".",
@@ -449,6 +450,45 @@ if (
 
 console.log("Service selected: true");
 
+function parseLocalDateTime(dateIso, time24) {
+  const [y, m, d] = dateIso.split("-").map(Number);
+  const [hh, mm] = time24.split(":").map(Number);
+  return new Date(y, m - 1, d, hh, mm, 0, 0);
+}
+
+function addHours(date, hours) {
+  return new Date(date.getTime() + Math.round(hours * 60 * 60 * 1000));
+}
+
+function formatOctopusDate(date) {
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric"
+  }).format(date).replace(",", "");
+}
+
+function formatOctopusTime(date) {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  }).format(date);
+}
+
+const requestedStart = parseLocalDateTime(TEST.bookingDate, TEST.startTime);
+const requestedEnd = addHours(requestedStart, TEST.durationHours || 2);
+
+const expectedAppointment = {
+  startDate: formatOctopusDate(requestedStart),
+  startTime: formatOctopusTime(requestedStart),
+  endDate: formatOctopusDate(requestedEnd),
+  endTime: formatOctopusTime(requestedEnd)
+};
+
+console.log("Calculated appointment:", JSON.stringify(expectedAppointment));
+
 console.log("Setting appointment date and time...");
 
 async function forceInputValue(selector, value) {
@@ -617,10 +657,10 @@ console.log("Appointment date/time set.");
       }, value);
     }
 
-    await setFirstAppointmentValue(firstStartDate, "Tuesday, 25 August 2026");
-    await setFirstAppointmentValue(firstStartTime, "10:00 AM");
-    await setFirstAppointmentValue(firstEndDate, "Tuesday, 25 August 2026");
-    await setFirstAppointmentValue(firstEndTime, "12:00 PM");
+    await setFirstAppointmentValue(firstStartDate, expectedAppointment.startDate);
+    await setFirstAppointmentValue(firstStartTime, expectedAppointment.startTime);
+    await setFirstAppointmentValue(firstEndDate, expectedAppointment.endDate);
+    await setFirstAppointmentValue(firstEndTime, expectedAppointment.endTime);
 
     const appointmentTimes = {
       startDate: await firstStartDate.inputValue(),
@@ -637,8 +677,8 @@ console.log("Appointment date/time set.");
     if (
       !appointmentTimes.startDate ||
       !appointmentTimes.endDate ||
-      appointmentTimes.startTime !== "10:00 AM" ||
-      appointmentTimes.endTime !== "12:00 PM"
+      appointmentTimes.startTime !== expectedAppointment.startTime ||
+      appointmentTimes.endTime !== expectedAppointment.endTime
     ) {
       throw new Error(
         `APPOINTMENT_TIME_NOT_STICKING: ${JSON.stringify(appointmentTimes)}`
@@ -815,10 +855,10 @@ console.log("Appointment date/time set.");
       'input[name^="multi_new_etparttime_"]'
     ).first();
 
-    await setFirstAppointmentValue(liveStartDate, "Tuesday, 25 August 2026");
-    await setFirstAppointmentValue(liveStartTime, "10:00 AM");
-    await setFirstAppointmentValue(liveEndDate, "Tuesday, 25 August 2026");
-    await setFirstAppointmentValue(liveEndTime, "12:00 PM");
+    await setFirstAppointmentValue(liveStartDate, expectedAppointment.startDate);
+    await setFirstAppointmentValue(liveStartTime, expectedAppointment.startTime);
+    await setFirstAppointmentValue(liveEndDate, expectedAppointment.endDate);
+    await setFirstAppointmentValue(liveEndTime, expectedAppointment.endTime);
 
     await page.waitForTimeout(500);
 
@@ -840,10 +880,10 @@ console.log("Appointment date/time set.");
     );
 
     if (
-      finalAppointmentState.startDate !== "Tuesday, 25 August 2026" ||
-      finalAppointmentState.startTime !== "10:00 AM" ||
-      finalAppointmentState.endDate !== "Tuesday, 25 August 2026" ||
-      finalAppointmentState.endTime !== "12:00 PM"
+      finalAppointmentState.startDate !== expectedAppointment.startDate ||
+      finalAppointmentState.startTime !== expectedAppointment.startTime ||
+      finalAppointmentState.endDate !== expectedAppointment.endDate ||
+      finalAppointmentState.endTime !== expectedAppointment.endTime
     ) {
       throw new Error(
         `FINAL_APPOINTMENT_NOT_STICKING: ${JSON.stringify(finalAppointmentState)}`
@@ -938,19 +978,19 @@ console.log("Appointment date/time set.");
 
     const finalStartDate = await finalSet(
       "multi_new_stpartdate_",
-      "Tuesday, 25 August 2026"
+      expectedAppointment.startDate
     );
     const finalStartTime = await finalSet(
       "multi_new_stparttime_",
-      "10:00 AM"
+      expectedAppointment.startTime
     );
     const finalEndDate = await finalSet(
       "multi_new_etpartdate_",
-      "Tuesday, 25 August 2026"
+      expectedAppointment.endDate
     );
     const finalEndTime = await finalSet(
       "multi_new_etparttime_",
-      "12:00 PM"
+      expectedAppointment.endTime
     );
 
     await page.waitForTimeout(500);
@@ -965,7 +1005,74 @@ console.log("Appointment date/time set.");
       })
     );
 
-    console.log("Deposit skipped - not required.");
+    console.log("FINAL APPOINTMENT VERIFICATION LOOP...");
+
+for (let attempt = 1; attempt <= 3; attempt++) {
+  const liveAppointment = page.locator('[id^="booking_visits_"]').first();
+
+  const sDate = liveAppointment.locator(
+    'input[name^="multi_new_stpartdate_"]'
+  ).first();
+  const sTime = liveAppointment.locator(
+    'input[name^="multi_new_stparttime_"]'
+  ).first();
+  const eDate = liveAppointment.locator(
+    'input[name^="multi_new_etpartdate_"]'
+  ).first();
+  const eTime = liveAppointment.locator(
+    'input[name^="multi_new_etparttime_"]'
+  ).first();
+
+  const current = {
+    startDate: await sDate.inputValue().catch(() => ""),
+    startTime: await sTime.inputValue().catch(() => ""),
+    endDate: await eDate.inputValue().catch(() => ""),
+    endTime: await eTime.inputValue().catch(() => "")
+  };
+
+  console.log(`Appointment verify attempt ${attempt}:`, JSON.stringify(current));
+
+  const correct =
+    current.startDate === expectedAppointment.startDate &&
+    current.startTime === expectedAppointment.startTime &&
+    current.endDate === expectedAppointment.endDate &&
+    current.endTime === expectedAppointment.endTime;
+
+  if (correct) {
+    console.log("APPOINTMENT VALUES CONFIRMED.");
+    break;
+  }
+
+  await finalSet("multi_new_stpartdate_", expectedAppointment.startDate);
+  await finalSet("multi_new_stparttime_", expectedAppointment.startTime);
+  await finalSet("multi_new_etpartdate_", expectedAppointment.endDate);
+  await finalSet("multi_new_etparttime_", expectedAppointment.endTime);
+
+  await page.waitForTimeout(700);
+
+  if (attempt === 3) {
+    const last = {
+      startDate: await sDate.inputValue().catch(() => ""),
+      startTime: await sTime.inputValue().catch(() => ""),
+      endDate: await eDate.inputValue().catch(() => ""),
+      endTime: await eTime.inputValue().catch(() => "")
+    };
+
+    const lastCorrect =
+      last.startDate === expectedAppointment.startDate &&
+      last.startTime === expectedAppointment.startTime &&
+      last.endDate === expectedAppointment.endDate &&
+      last.endTime === expectedAppointment.endTime;
+
+    if (!lastCorrect) {
+      throw new Error(
+        `APPOINTMENT_FINAL_VERIFICATION_FAILED: ${JSON.stringify(last)}`
+      );
+    }
+  }
+}
+
+console.log("Deposit skipped - not required.");
     console.log("Attempting to save booking with full validation capture...");
 
     const postTraffic = [];
