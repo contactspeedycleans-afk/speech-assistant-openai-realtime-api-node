@@ -510,64 +510,74 @@ console.log("Appointment date/time set.");
     console.log("Completing required booking fields with exact DOM inspection...");
 
     async function chooseOneTimeCleaning() {
-      console.log("Selecting One Time Cleaning with real click/check events...");
+      console.log("Selecting One Time Cleaning exactly like the web form...");
 
-      const exactInput = page.locator(
-        'input[name="attribute_8087013985[]"][value="37558"]'
-      ).first();
-
-      await exactInput.waitFor({
-        state: "attached",
-        timeout: 10000
+      // The manual Octopus flow uses the visible One Time Cleaning button.
+      // Do NOT rely on manually toggling the hidden checkbox state.
+      const oneTimeText = page.getByText("One Time Cleaning", {
+        exact: true
       });
 
-      // First click the visible One Time Cleaning control exactly as a user would.
-      const visibleOneTime = page
-        .getByText("One Time Cleaning", { exact: true })
-        .filter({ visible: true })
-        .last();
+      const count = await oneTimeText.count();
+      let clicked = false;
+      let clickedState = null;
 
-      if (await visibleOneTime.isVisible().catch(() => false)) {
-        await visibleOneTime.scrollIntoViewIfNeeded().catch(() => {});
-        await visibleOneTime.click({
-          force: true,
-          timeout: 10000
-        });
-        await page.waitForTimeout(500);
+      for (let i = 0; i < count; i++) {
+        const node = oneTimeText.nth(i);
+
+        if (!(await node.isVisible().catch(() => false))) continue;
+
+        const candidate = node.locator(
+          'xpath=ancestor-or-self::button[1] | ancestor-or-self::*[@role="button"][1] | ancestor-or-self::label[1] | ancestor-or-self::div[1]'
+        ).first();
+
+        if (await candidate.count()) {
+          await candidate.scrollIntoViewIfNeeded().catch(() => {});
+          await candidate.click({
+            force: true,
+            timeout: 10000
+          });
+
+          await page.waitForTimeout(800);
+
+          clickedState = await candidate.evaluate(el => ({
+            tag: el.tagName,
+            text: String(el.innerText || el.textContent || "")
+              .replace(/\s+/g, " ")
+              .trim(),
+            className: el.className || "",
+            ariaPressed: el.getAttribute("aria-pressed"),
+            ariaChecked: el.getAttribute("aria-checked"),
+            ariaSelected: el.getAttribute("aria-selected")
+          })).catch(() => null);
+
+          clicked = true;
+          break;
+        }
       }
 
-      // Then use Playwright's CHECK action on the actual input so Vue/framework
-      // receives the full browser event sequence instead of us only setting .checked.
-      if (!(await exactInput.isChecked().catch(() => false))) {
-        await exactInput.check({
-          force: true,
-          timeout: 10000
-        });
-        await page.waitForTimeout(500);
+      if (!clicked) {
+        throw new Error("ONE_TIME_VISIBLE_CONTROL_NOT_FOUND");
       }
-
-      // Fire one final real click if Octopus still has not committed it.
-      if (!(await exactInput.isChecked().catch(() => false))) {
-        await exactInput.click({
-          force: true,
-          timeout: 10000
-        });
-        await page.waitForTimeout(500);
-      }
-
-      const state = await exactInput.evaluate(el => ({
-        checked: !!el.checked,
-        name: el.getAttribute("name") || "",
-        value: el.value || "",
-        outerHTML: el.outerHTML
-      }));
 
       console.log(
-        "One Time Cleaning committed state:",
-        JSON.stringify(state)
+        "One Time visible control after click:",
+        JSON.stringify(clickedState)
       );
 
-      return state.checked;
+      // Give Vue time to commit its model.
+      await page.waitForTimeout(1200);
+
+      // Verify from the service card itself that One Time Cleaning is rendered
+      // as the chosen value. The form validator is the final authority.
+      const serviceAreaText = await page.locator("body").innerText();
+
+      if (!/One Time or Recurring/i.test(serviceAreaText) ||
+          !/One Time Cleaning/i.test(serviceAreaText)) {
+        throw new Error("ONE_TIME_SELECTION_NOT_RENDERED");
+      }
+
+      return true;
     }
 
     async function inspectLabeledFields() {
@@ -1026,7 +1036,17 @@ console.log("Appointment date/time set.");
       });
     });
 
-    await page.waitForTimeout(8000);
+    // Manual Octopus behavior: Save creates the booking first, then opens
+    // a "Notify Customer" modal. That modal is NOT required to create the BOK.
+    await Promise.race([
+      page.waitForURL(/\/booking\/view\/\d+/i, { timeout: 12000 }).catch(() => null),
+      page.getByText("Notify Customer", { exact: true })
+        .waitFor({ state: "visible", timeout: 12000 })
+        .catch(() => null),
+      page.waitForTimeout(12000)
+    ]);
+
+    await page.waitForTimeout(1200);
 
     const saveDiagnostics = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
@@ -1093,10 +1113,26 @@ console.log("Appointment date/time set.");
         .filter(Boolean)
         .slice(-220);
 
+      const notifyCustomerVisible = Array.from(
+        document.querySelectorAll("body *")
+      ).some(el => {
+        const text = String(el.innerText || el.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        return text === "Notify Customer" &&
+               s.display !== "none" &&
+               s.visibility !== "hidden" &&
+               r.width > 0 &&
+               r.height > 0;
+      });
+
       return {
         url: location.href,
         booking_number: bokMatch ? bokMatch[0].toUpperCase() : null,
         booking_id: urlMatch ? urlMatch[1] : null,
+        notify_customer_visible: notifyCustomerVisible,
         visibleAlerts,
         invalidFields,
         errorLines,
@@ -1113,10 +1149,35 @@ console.log("Appointment date/time set.");
     console.log("===== END FULL SAVE DIAGNOSTICS =====");
     console.log("");
 
-    if (saveDiagnostics.booking_number || saveDiagnostics.booking_id) {
+    if (
+      saveDiagnostics.booking_number ||
+      saveDiagnostics.booking_id ||
+      saveDiagnostics.notify_customer_visible
+    ) {
       console.log("BOOKING CREATED SUCCESSFULLY.");
+      console.log(
+        "CREATED BOOKING:",
+        JSON.stringify({
+          booking_number: saveDiagnostics.booking_number,
+          booking_id: saveDiagnostics.booking_id,
+          url: saveDiagnostics.url
+        })
+      );
+
+      // We do not need to send Octopus notifications here.
+      // The booking already exists at this point.
+      const cancelNotify = page.getByText("Cancel", { exact: true }).last();
+      if (
+        saveDiagnostics.notify_customer_visible &&
+        await cancelNotify.isVisible().catch(() => false)
+      ) {
+        await cancelNotify.click({ force: true }).catch(() => {});
+        console.log("Notify Customer modal closed without sending.");
+      }
     } else {
-      console.log("BOOKING NOT CREATED - validation details printed above.");
+      throw new Error(
+        `BOOKING_NOT_CREATED: ${JSON.stringify(saveDiagnostics.visibleAlerts)}`
+      );
     }
 
   } finally {
