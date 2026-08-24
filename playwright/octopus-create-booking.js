@@ -346,10 +346,23 @@ await cleanAsDirected.click({
 
 await page.waitForTimeout(2500);
 
-console.log(
-  "Service selected:",
-  await cleanAsDirected.getAttribute("aria-selected")
-);
+// After selection, Octopus closes/removes the option from the DOM,
+// so do NOT query the old <li> again. Verify from the dropdown text instead.
+const selectedServiceText = (
+  await page.locator("#servicesdropdown").innerText()
+)
+  .replace(/\s+/g, " ")
+  .trim();
+
+console.log("Service selected text:", selectedServiceText);
+
+if (!/Clean as Directed/i.test(selectedServiceText)) {
+  throw new Error(
+    `SERVICE_NOT_SELECTED: dropdown text was "${selectedServiceText}"`
+  );
+}
+
+console.log("Service selected: true");
 
 console.log("Setting appointment date and time...");
 
