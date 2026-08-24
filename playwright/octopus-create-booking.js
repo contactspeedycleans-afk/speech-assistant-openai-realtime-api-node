@@ -1151,6 +1151,22 @@ console.log("Deposit skipped - not required.");
 
     await saveButton.scrollIntoViewIfNeeded();
 
+    // NEW-BOOKING SAVE FIX:
+    // Octopus' legacy /booking-add?old=1 endpoint is receiving a blank booking_id
+    // field and then treating the request like an update. For a brand-new booking,
+    // we will capture the browser-generated form submission and, only if the normal
+    // save returns the specific "booking_id cannot be null" error, replay the exact
+    // same form data WITHOUT the blank booking_id field.
+    let normalSaveResponse = null;
+
+    const normalSaveResponsePromise = page.waitForResponse(
+      response =>
+        response.request().method() === "POST" &&
+        /\/booking-add\?old=1/i.test(response.url()),
+      { timeout: 15000 }
+    ).catch(() => null);
+
+
     await saveButton.click({
       timeout: 10000
     }).catch(async error => {
@@ -1161,6 +1177,128 @@ console.log("Deposit skipped - not required.");
         timeout: 10000
       });
     });
+
+
+    normalSaveResponse = await normalSaveResponsePromise;
+
+    let normalSaveBody = "";
+    if (normalSaveResponse) {
+      normalSaveBody = await normalSaveResponse.text().catch(() => "");
+      console.log("Normal save response:", normalSaveBody);
+    }
+
+    const bookingIdNullError =
+      /Column\s+'booking_id'\s+cannot\s+be\s+null/i.test(normalSaveBody);
+
+    if (bookingIdNullError) {
+      console.log(
+        "Octopus returned blank booking_id error; retrying as true NEW booking without booking_id field..."
+      );
+
+      const latestSaveRequest = [...postTraffic]
+        .reverse()
+        .find(item =>
+          item.kind === "request" &&
+          /\/booking-add\?old=1/i.test(item.url) &&
+          typeof item.postData === "string" &&
+          item.postData.includes('name="booking_id"')
+        );
+
+      if (!latestSaveRequest?.postData) {
+        throw new Error("NEW_BOOKING_RETRY_NO_CAPTURED_POST");
+      }
+
+      const contentType = normalSaveResponse
+        ?.request()
+        ?.headers()
+        ?.["content-type"] || "";
+
+      const boundaryMatch = contentType.match(/boundary=(.+)$/i);
+
+      if (!boundaryMatch) {
+        throw new Error(
+          `NEW_BOOKING_RETRY_NO_MULTIPART_BOUNDARY: ${contentType}`
+        );
+      }
+
+      const boundary = boundaryMatch[1];
+      const rawParts = latestSaveRequest.postData.split(`--${boundary}`);
+
+      const filteredParts = rawParts.filter(part => {
+        if (!part || part === "--\r\n" || part === "--") return true;
+        return !/name="booking_id"\r?\n\r?\n\s*\r?\n/i.test(part);
+      });
+
+      const retryBody = filteredParts.join(`--${boundary}`);
+
+      const retryResult = await page.evaluate(
+        async ({ body, contentType }) => {
+          const response = await fetch("/booking-add?old=1", {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type": contentType,
+              "X-Requested-With": "XMLHttpRequest"
+            },
+            body
+          });
+
+          const responseText = await response.text();
+
+          return {
+            status: response.status,
+            responseText
+          };
+        },
+        {
+          body: retryBody,
+          contentType
+        }
+      );
+
+      console.log(
+        "NEW BOOKING RETRY RESPONSE:",
+        JSON.stringify(retryResult)
+      );
+
+      let parsedRetry = null;
+      try {
+        parsedRetry = JSON.parse(retryResult.responseText);
+      } catch {}
+
+      if (
+        parsedRetry?.IsSuccess === true ||
+        /BOK-\d+/i.test(retryResult.responseText)
+      ) {
+        console.log("NEW BOOKING RETRY SUCCEEDED.");
+
+        await page.waitForTimeout(1500);
+
+        // If the endpoint returns a booking URL/id in JSON, navigate to it so the
+        // existing success diagnostics can capture the booking number/id.
+        const possibleUrl =
+          parsedRetry?.RedirectUrl ||
+          parsedRetry?.redirect_url ||
+          parsedRetry?.Url ||
+          parsedRetry?.url ||
+          null;
+
+        if (possibleUrl && typeof possibleUrl === "string") {
+          const absoluteUrl = possibleUrl.startsWith("http")
+            ? possibleUrl
+            : new URL(possibleUrl, page.url()).href;
+
+          await page.goto(absoluteUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: 30000
+          }).catch(() => {});
+        }
+      } else {
+        throw new Error(
+          `NEW_BOOKING_RETRY_FAILED: ${retryResult.responseText}`
+        );
+      }
+    }
 
     // Manual Octopus behavior: Save creates the booking first, then opens
     // a "Notify Customer" modal. That modal is NOT required to create the BOK.
