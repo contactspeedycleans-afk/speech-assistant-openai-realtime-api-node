@@ -13,11 +13,11 @@ const TEST = {
   suburb: "Howell",
   state: "MI",
   postcode: "48843",
-  serviceName: "Clean as Directed",
+  serviceName: "Standard Cleaning",
   bookingDate: "2026-08-25",
   startTime: "10:00",
   endTime: "12:00",
-  price: "150.00"
+  price: "82.50"
 };
 
 if (!OCTOPUS_EMAIL) throw new Error("Missing OCTOPUS_EMAIL");
@@ -321,7 +321,7 @@ async function main() {
 
     console.log("Location confirmed.");
 
-    console.log("Selecting One Time Clean as Directed...");
+    console.log("Selecting One Time Standard Cleaning...");
 
 const servicesDropdown = page.locator("#servicesdropdown").first();
 
@@ -353,8 +353,8 @@ await servicesDropdown.evaluate(element => {
 await page.waitForTimeout(2000);
 
 const cleanAsDirected = page
-  .locator('li[role="option"][aria-label="Clean as Directed"]')
-  .filter({ hasText: "$150" })
+  .locator('li[role="option"][aria-label="Standard Cleaning"]')
+  .filter({ hasText: "$82.5" })
   .first();
 
 await cleanAsDirected.waitFor({
@@ -413,7 +413,7 @@ const serviceState = await page.evaluate(() => {
 
   const serviceDetailsPresent =
     /Service Details/i.test(bodyText) &&
-    /Clean as Directed/i.test(bodyText);
+    /Standard Cleaning/i.test(bodyText);
 
   return {
     dropdownText: String(
@@ -435,7 +435,7 @@ console.log(
 
 if (
   !serviceState.selectedOptions.some(x =>
-    /Clean as Directed/i.test(x)
+    /Standard Cleaning/i.test(x)
   ) &&
   !serviceState.serviceDetailsPresent
 ) {
@@ -504,277 +504,26 @@ console.log("Appointment date/time set.");
       TEST.price
     );
 
-    console.log("Completing required service + appointment note fields...");
+    console.log("Filling appointment Notes...");
 
-    // --- Cleaning Instructions: exact known textarea from our inspection ---
-    const cleaningInstructions = page.locator("#attribute_8090313990");
+    const appointmentNotes = page.locator(
+      'textarea[name="extra_comments_new_80903_0[0]"]'
+    );
 
-    await cleaningInstructions.waitFor({
+    await appointmentNotes.waitFor({
       state: "visible",
       timeout: 10000
     });
 
-    await cleaningInstructions.fill("Clean as directed.");
-    await cleaningInstructions.dispatchEvent("change");
-    await cleaningInstructions.dispatchEvent("blur");
+    await appointmentNotes.fill("Standard Cleaning");
+
+    await appointmentNotes.dispatchEvent("change");
+    await appointmentNotes.dispatchEvent("blur");
 
     console.log(
-      "Cleaning Instructions:",
-      await cleaningInstructions.inputValue()
+      "Appointment Notes:",
+      await appointmentNotes.inputValue()
     );
-
-    // --- Make sure this appointment is ONE TIME, not recurring ---
-    const serviceCard = page.locator("#service_checked_809030");
-
-    const recurringCleaning = serviceCard
-      .getByText("Recurring Cleaning", { exact: true })
-      .first();
-
-    if (await recurringCleaning.isVisible().catch(() => false)) {
-      console.log("Recurring Cleaning control found; switching to One Time Cleaning...");
-
-      await recurringCleaning.click({ force: true });
-      await page.waitForTimeout(700);
-
-      const oneTimeChoice = page
-        .getByText("One Time Cleaning", { exact: true })
-        .last();
-
-      if (await oneTimeChoice.isVisible().catch(() => false)) {
-        await oneTimeChoice.click({ force: true });
-        await page.waitForTimeout(700);
-        console.log("One Time Cleaning selected.");
-      } else {
-        console.log("One Time Cleaning choice did not appear; continuing with current service state.");
-      }
-    } else {
-      console.log("Recurring Cleaning control not visible; service appears already one-time.");
-    }
-
-    // --- Appointment Notes button is where Special Notes + Access Instructions live ---
-    console.log("Opening appointment Notes...");
-
-    const appointment = page.locator("#booking_visits_80903_0_0");
-
-    const notesButton = appointment
-      .getByText("Notes", { exact: true })
-      .last();
-
-    await notesButton.waitFor({
-      state: "visible",
-      timeout: 10000
-    });
-
-    await notesButton.click({
-      force: true,
-      timeout: 10000
-    });
-
-    await page.waitForTimeout(1000);
-
-    async function fillVisibleFieldNearLabel(labelText, value) {
-      const result = await page.evaluate(
-        ({ labelText, value }) => {
-          const norm = s =>
-            String(s || "").replace(/\s+/g, " ").trim();
-
-          const visible = el => {
-            if (!el) return false;
-            const r = el.getBoundingClientRect();
-            const s = getComputedStyle(el);
-            return (
-              s.display !== "none" &&
-              s.visibility !== "hidden" &&
-              r.width > 0 &&
-              r.height > 0
-            );
-          };
-
-          const labels = Array.from(
-            document.querySelectorAll(
-              "label, div, span, p, strong"
-            )
-          ).filter(
-            el =>
-              visible(el) &&
-              norm(el.innerText || el.textContent) === labelText
-          );
-
-          for (const label of labels) {
-            // Search closest wrappers first.
-            let wrapper = label.parentElement;
-
-            for (
-              let depth = 0;
-              depth < 6 && wrapper;
-              depth++, wrapper = wrapper.parentElement
-            ) {
-              const fields = Array.from(
-                wrapper.querySelectorAll(
-                  "textarea, input[type='text'], input:not([type])"
-                )
-              ).filter(visible);
-
-              // Exclude address/location fields.
-              const usable = fields.filter(field => {
-                const ph = norm(
-                  field.getAttribute("placeholder")
-                );
-                return !/booking address|address line|suburb|postal|zip|state|latitude|longitude|tag e\.g|unit \/ lot/i.test(
-                  ph
-                );
-              });
-
-              if (usable.length === 1) {
-                const field = usable[0];
-
-                const proto = Object.getPrototypeOf(field);
-                const desc =
-                  Object.getOwnPropertyDescriptor(
-                    proto,
-                    "value"
-                  );
-
-                if (desc?.set) {
-                  desc.set.call(field, value);
-                } else {
-                  field.value = value;
-                }
-
-                field.dispatchEvent(
-                  new Event("input", { bubbles: true })
-                );
-                field.dispatchEvent(
-                  new Event("change", { bubbles: true })
-                );
-                field.dispatchEvent(
-                  new Event("blur", { bubbles: true })
-                );
-
-                return {
-                  filled: true,
-                  label: labelText,
-                  tag: field.tagName,
-                  name: field.getAttribute("name") || "",
-                  id: field.id || "",
-                  placeholder:
-                    field.getAttribute("placeholder") || "",
-                  value: field.value
-                };
-              }
-            }
-          }
-
-          return {
-            filled: false,
-            label: labelText,
-            reason: "visible label/field not found"
-          };
-        },
-        { labelText, value }
-      );
-
-      console.log(
-        `${labelText}:`,
-        JSON.stringify(result)
-      );
-
-      return result;
-    }
-
-    const specialNotes = await fillVisibleFieldNearLabel(
-      "Special Notes",
-      "."
-    );
-
-    const accessInstructions =
-      await fillVisibleFieldNearLabel(
-        "Access Instructions",
-        "."
-      );
-
-    if (!specialNotes.filled || !accessInstructions.filled) {
-      const notesState = await page.evaluate(() => {
-        const visible = el => {
-          const r = el.getBoundingClientRect();
-          const s = getComputedStyle(el);
-          return (
-            s.display !== "none" &&
-            s.visibility !== "hidden" &&
-            r.width > 0 &&
-            r.height > 0
-          );
-        };
-
-        return Array.from(
-          document.querySelectorAll(
-            "textarea, input, label, button, div, span"
-          )
-        )
-          .filter(visible)
-          .map(el => ({
-            tag: el.tagName,
-            name: el.getAttribute("name") || "",
-            id: el.id || "",
-            placeholder:
-              el.getAttribute("placeholder") || "",
-            value:
-              "value" in el ? String(el.value || "") : "",
-            text: String(
-              el.innerText || el.textContent || ""
-            )
-              .replace(/\s+/g, " ")
-              .trim()
-              .slice(0, 300)
-          }))
-          .filter(x =>
-            /special|access|notes|instruction/i.test(
-              [
-                x.text,
-                x.placeholder,
-                x.name,
-                x.id
-              ].join(" ")
-            )
-          )
-          .slice(0, 150);
-      });
-
-      console.log(
-        "NOTES DEBUG:",
-        JSON.stringify(notesState, null, 2)
-      );
-
-      throw new Error(
-        `APPOINTMENT_NOTES_NOT_FILLED special=${JSON.stringify(
-          specialNotes
-        )} access=${JSON.stringify(accessInstructions)}`
-      );
-    }
-
-    // If Notes opened a dialog/panel with its own Save/Confirm button,
-    // save that note section before saving the whole booking.
-    const visibleDialogs = page.locator(
-      '[role="dialog"]:visible, .modal.show:visible'
-    );
-
-    if ((await visibleDialogs.count()) > 0) {
-      const dialog = visibleDialogs.last();
-
-      const noteSave = dialog
-        .getByRole("button", {
-          name: /^(Save|Confirm|Done|Add)$/i
-        })
-        .last();
-
-      if (await noteSave.isVisible().catch(() => false)) {
-        await noteSave.click({ force: true });
-        await page.waitForTimeout(700);
-        console.log("Appointment Notes saved.");
-      }
-    }
-
-    console.log("Required service + appointment note fields completed.");
 
     console.log("Reading current form state...");
 
@@ -860,7 +609,7 @@ console.log("Appointment date/time set.");
           .map(x => x.trim())
           .filter(Boolean)
           .filter(x =>
-            /BOK-|Gina|Grand River|Howell|Clean as Directed|150|Aug|10:00|12:00|Upcoming/i.test(x)
+            /BOK-|Gina|Grand River|Howell|Standard Cleaning|150|Aug|10:00|12:00|Upcoming/i.test(x)
           )
           .slice(0, 120)
       };
@@ -904,7 +653,7 @@ console.log("Appointment date/time set.");
           /123 Grand River (Avenue|Ave)/i.test(bodyText) &&
           /Howell/i.test(bodyText) &&
           /48843/i.test(bodyText),
-        has_service: /Clean as Directed/i.test(bodyText),
+        has_service: /Standard Cleaning/i.test(bodyText),
         has_price: /\$?\s*150(?:\.00)?/.test(bodyText),
         has_time:
           /10:00\s*AM/i.test(bodyText) &&
@@ -914,7 +663,7 @@ console.log("Appointment date/time set.");
           .map(x => x.trim())
           .filter(Boolean)
           .filter(x =>
-            /BOK-|Gina|Grand River|Howell|48843|Clean as Directed|150|10:00|12:00|Upcoming/i.test(x)
+            /BOK-|Gina|Grand River|Howell|48843|Standard Cleaning|150|10:00|12:00|Upcoming/i.test(x)
           )
           .slice(0, 160)
       };
