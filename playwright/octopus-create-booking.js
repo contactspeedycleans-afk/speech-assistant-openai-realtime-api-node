@@ -246,7 +246,7 @@ async function main() {
       ])
     );
 
-    const customerState = await page.evaluate(() => {
+    const customerState = await page.evaluate((customerName) => {
       const visible = el => {
         if (!el) return false;
         const r = el.getBoundingClientRect();
@@ -269,9 +269,9 @@ async function main() {
         customers:
           document.querySelector('input[name="customers"]')?.value || "",
         visibleFindCustomerValue: findInput?.value || "",
-        bodyHasCustomer: document.body.innerText.includes(TEST.customerName)
+        bodyHasCustomer: document.body.innerText.includes(customerName)
       };
-    });
+    }, TEST.customerName);
 
     console.log(
       "Customer committed state:",
