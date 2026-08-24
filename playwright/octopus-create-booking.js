@@ -507,192 +507,252 @@ console.log("Appointment date/time set.");
       TEST.price
     );
 
-    console.log("Completing required booking fields...");
+    console.log("Completing required booking fields with exact DOM inspection...");
 
-    async function clickVisibleExactText(textValue) {
-      const matches = page.getByText(textValue, { exact: true });
-      const count = await matches.count();
+    async function chooseOneTimeCleaning() {
+      const result = await page.evaluate(() => {
+        const norm = s => String(s || "").replace(/\s+/g, " ").trim();
+        const visible = el => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          const st = getComputedStyle(el);
+          return st.display !== "none" &&
+                 st.visibility !== "hidden" &&
+                 r.width > 0 &&
+                 r.height > 0;
+        };
 
-      for (let i = 0; i < count; i++) {
-        const item = matches.nth(i);
-        if (await item.isVisible().catch(() => false)) {
-          await item.scrollIntoViewIfNeeded().catch(() => {});
-          await item.click({ force: true, timeout: 10000 });
-          return true;
+        const candidates = Array.from(document.querySelectorAll(
+          'input[type="radio"], input[type="checkbox"], label, button, [role="radio"], [role="option"], [role="button"], div, span'
+        )).filter(visible);
+
+        const target = candidates.find(el => {
+          const txt = norm(el.innerText || el.textContent);
+          const aria = norm(el.getAttribute?.("aria-label"));
+          const val = norm(el.getAttribute?.("value"));
+          return txt === "One Time Cleaning" ||
+                 aria === "One Time Cleaning" ||
+                 val === "One Time Cleaning";
+        });
+
+        if (!target) {
+          return { selected: false, reason: "One Time Cleaning control not found" };
         }
-      }
 
-      return false;
+        const clickTarget =
+          target.matches('input[type="radio"], input[type="checkbox"], button, [role="radio"], [role="button"], [role="option"]')
+            ? target
+            : (target.closest('label, button, [role="radio"], [role="button"], [role="option"]') || target);
+
+        clickTarget.click();
+
+        const checkedInput =
+          target.matches('input[type="radio"], input[type="checkbox"]')
+            ? target
+            : target.querySelector?.('input[type="radio"], input[type="checkbox"]') ||
+              target.closest('label')?.querySelector?.('input[type="radio"], input[type="checkbox"]');
+
+        return {
+          selected: true,
+          tag: clickTarget.tagName,
+          text: norm(clickTarget.innerText || clickTarget.textContent),
+          inputName: checkedInput?.getAttribute?.("name") || "",
+          inputValue: checkedInput?.value || "",
+          checked: checkedInput ? !!checkedInput.checked : null
+        };
+      });
+
+      console.log("One Time Cleaning result:", JSON.stringify(result));
+      return result.selected;
     }
 
-    async function fillNearExactLabel(labelText, value) {
-      return await page.evaluate(
-        ({ labelText, value }) => {
-          const normalize = value =>
-            String(value || "").replace(/\s+/g, " ").trim();
+    async function inspectLabeledFields() {
+      return await page.evaluate(() => {
+        const norm = s => String(s || "").replace(/\s+/g, " ").trim();
+        const visible = el => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          const st = getComputedStyle(el);
+          return st.display !== "none" &&
+                 st.visibility !== "hidden" &&
+                 r.width > 0 &&
+                 r.height > 0;
+        };
 
-          const visible = element => {
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-            const style = getComputedStyle(element);
-            return (
-              style.display !== "none" &&
-              style.visibility !== "hidden" &&
-              rect.width > 0 &&
-              rect.height > 0
-            );
-          };
-
-          const labels = Array.from(
-            document.querySelectorAll("label, div, span, p, strong")
-          ).filter(element => {
-            if (!visible(element)) return false;
-
-            const ownText = normalize(
-              Array.from(element.childNodes)
-                .filter(node => node.nodeType === Node.TEXT_NODE)
-                .map(node => node.textContent)
-                .join(" ")
-            );
-
-            const fullText = normalize(
-              element.innerText || element.textContent
-            );
-
-            return ownText === labelText || fullText === labelText;
+        const fields = Array.from(document.querySelectorAll('textarea, input, select'))
+          .filter(visible)
+          .map(el => {
+            let parent = el.parentElement;
+            const ancestors = [];
+            for (let i = 0; i < 5 && parent; i++, parent = parent.parentElement) {
+              const t = norm(parent.innerText || parent.textContent);
+              if (t && t.length < 1200) ancestors.push(t);
+            }
+            return {
+              tag: el.tagName,
+              type: el.getAttribute("type") || "",
+              name: el.getAttribute("name") || "",
+              id: el.id || "",
+              value: "value" in el ? String(el.value || "") : "",
+              placeholder: el.getAttribute("placeholder") || "",
+              ancestors
+            };
           });
 
-          const forbidden = field => {
-            const placeholder = normalize(
-              field.getAttribute("placeholder")
-            );
-            const name = normalize(field.getAttribute("name"));
-            const id = normalize(field.id);
+        return fields.filter(f =>
+          /special notes|access instructions|one time or recurring|fieldworker/i.test(
+            [f.name, f.id, f.placeholder, ...f.ancestors].join(" ")
+          )
+        );
+      });
+    }
 
-            return /booking address|address line|suburb|postal|zip|state|latitude|longitude|customer|fieldworker|date|time/i.test(
-              `${placeholder} ${name} ${id}`
-            );
+    async function fillExactLabeledField(labelText, value) {
+      return await page.evaluate(({ labelText, value }) => {
+        const norm = s => String(s || "").replace(/\s+/g, " ").trim();
+        const visible = el => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          const st = getComputedStyle(el);
+          return st.display !== "none" &&
+                 st.visibility !== "hidden" &&
+                 r.width > 0 &&
+                 r.height > 0;
+        };
+
+        const labels = Array.from(document.querySelectorAll('label, div, span, p, strong'))
+          .filter(visible)
+          .filter(el => {
+            const full = norm(el.innerText || el.textContent);
+            const own = norm(Array.from(el.childNodes)
+              .filter(n => n.nodeType === Node.TEXT_NODE)
+              .map(n => n.textContent)
+              .join(" "));
+            return full === labelText || own === labelText;
+          });
+
+        const setValue = field => {
+          const proto = Object.getPrototypeOf(field);
+          const desc = Object.getOwnPropertyDescriptor(proto, "value");
+          if (desc?.set) desc.set.call(field, value);
+          else field.value = value;
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+          field.dispatchEvent(new Event("change", { bubbles: true }));
+          field.dispatchEvent(new Event("blur", { bubbles: true }));
+          return {
+            filled: true,
+            tag: field.tagName,
+            name: field.getAttribute("name") || "",
+            id: field.id || "",
+            value: field.value
           };
+        };
 
-          const setFieldValue = field => {
-            const proto = Object.getPrototypeOf(field);
-            const descriptor =
-              Object.getOwnPropertyDescriptor(proto, "value");
+        for (const label of labels) {
+          let wrapper = label.parentElement;
+          for (let depth = 0; depth < 6 && wrapper; depth++, wrapper = wrapper.parentElement) {
+            const candidates = Array.from(
+              wrapper.querySelectorAll('textarea, input[type="text"], input:not([type])')
+            ).filter(visible);
 
-            if (descriptor?.set) {
-              descriptor.set.call(field, value);
-            } else {
-              field.value = value;
-            }
-
-            field.dispatchEvent(new Event("input", { bubbles: true }));
-            field.dispatchEvent(new Event("change", { bubbles: true }));
-            field.dispatchEvent(new Event("blur", { bubbles: true }));
-
-            return {
-              filled: true,
-              label: labelText,
-              tag: field.tagName,
-              name: field.getAttribute("name") || "",
-              id: field.id || "",
-              placeholder: field.getAttribute("placeholder") || "",
-              value: field.value
-            };
-          };
-
-          for (const label of labels) {
-            let wrapper = label.parentElement;
-
-            for (
-              let depth = 0;
-              depth < 6 && wrapper;
-              depth++, wrapper = wrapper.parentElement
-            ) {
-              const candidates = Array.from(
-                wrapper.querySelectorAll(
-                  'textarea, input[type="text"], input:not([type])'
-                )
-              ).filter(field => visible(field) && !forbidden(field));
-
-              if (candidates.length === 1) {
-                return setFieldValue(candidates[0]);
-              }
-            }
-
-            const labelRect = label.getBoundingClientRect();
-            const fields = Array.from(
-              document.querySelectorAll(
-                'textarea, input[type="text"], input:not([type])'
-              )
-            ).filter(field => {
-              if (!visible(field) || forbidden(field)) return false;
-
-              const rect = field.getBoundingClientRect();
-              return (
-                rect.top >= labelRect.bottom - 5 &&
-                rect.top - labelRect.bottom < 220
-              );
-            });
-
-            if (fields.length) {
-              return setFieldValue(fields[0]);
+            if (candidates.length === 1) {
+              return setValue(candidates[0]);
             }
           }
 
-          return {
-            filled: false,
-            label: labelText,
-            reason: "visible field near exact label not found"
-          };
-        },
-        { labelText, value }
-      );
+          const labelRect = label.getBoundingClientRect();
+          const candidates = Array.from(
+            document.querySelectorAll('textarea, input[type="text"], input:not([type])')
+          ).filter(field => {
+            if (!visible(field)) return false;
+            const r = field.getBoundingClientRect();
+            return r.top >= labelRect.bottom - 5 &&
+                   r.top - labelRect.bottom < 220;
+          });
+
+          if (candidates.length) return setValue(candidates[0]);
+        }
+
+        return { filled: false, label: labelText };
+      }, { labelText, value });
     }
 
-    console.log("Selecting One Time Cleaning...");
-    const oneTimeSelected = await clickVisibleExactText("One Time Cleaning");
-
-    if (!oneTimeSelected) {
-      throw new Error("ONE_TIME_NOT_SELECTED: visible One Time Cleaning option not found.");
+    const oneTimeOk = await chooseOneTimeCleaning();
+    if (!oneTimeOk) {
+      console.log("Required field candidates:", JSON.stringify(await inspectLabeledFields(), null, 2));
+      throw new Error("ONE_TIME_NOT_SELECTED");
     }
 
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(500);
 
-    const specialNotesResult = await fillNearExactLabel(
+    const specialNotesResult = await fillExactLabeledField(
       "Special Notes",
       TEST.specialNotes
     );
+    console.log("Special Notes result:", JSON.stringify(specialNotesResult));
 
-    console.log(
-      "Special Notes:",
-      JSON.stringify(specialNotesResult)
-    );
-
-    if (!specialNotesResult.filled) {
-      throw new Error(
-        `SPECIAL_NOTES_NOT_FILLED: ${JSON.stringify(specialNotesResult)}`
-      );
-    }
-
-    const accessInstructionsResult = await fillNearExactLabel(
+    const accessInstructionsResult = await fillExactLabeledField(
       "Access Instructions",
       TEST.accessInstructions
     );
+    console.log("Access Instructions result:", JSON.stringify(accessInstructionsResult));
 
-    console.log(
-      "Access Instructions:",
-      JSON.stringify(accessInstructionsResult)
-    );
-
-    if (!accessInstructionsResult.filled) {
+    if (!specialNotesResult.filled || !accessInstructionsResult.filled) {
+      console.log("Required field candidates:", JSON.stringify(await inspectLabeledFields(), null, 2));
       throw new Error(
-        `ACCESS_INSTRUCTIONS_NOT_FILLED: ${JSON.stringify(accessInstructionsResult)}`
+        `REQUIRED_NOTES_NOT_FILLED special=${JSON.stringify(specialNotesResult)} access=${JSON.stringify(accessInstructionsResult)}`
       );
     }
 
-    console.log("Selecting placeholder fieldworker...");
+    // IMPORTANT: use only the FIRST scheduled appointment.
+    // We previously created/targeted a second appointment accidentally.
+    const appointmentBlocks = page.locator('[id^="booking_visits_"]');
+    const appointmentCount = await appointmentBlocks.count();
+    console.log("Appointment block count:", appointmentCount);
 
-    const fieldworkerSearch = page
+    if (appointmentCount < 1) {
+      throw new Error("NO_APPOINTMENT_BLOCK_FOUND");
+    }
+
+    const firstAppointment = appointmentBlocks.first();
+
+    // Re-set ONLY the first appointment times after service frequency selection,
+    // because selecting One Time can re-render/reset the appointment.
+    const firstStartDate = firstAppointment.locator(
+      'input[name^="multi_new_stpartdate_"]'
+    ).first();
+    const firstStartTime = firstAppointment.locator(
+      'input[name^="multi_new_stparttime_"]'
+    ).first();
+    const firstEndDate = firstAppointment.locator(
+      'input[name^="multi_new_etpartdate_"]'
+    ).first();
+    const firstEndTime = firstAppointment.locator(
+      'input[name^="multi_new_etparttime_"]'
+    ).first();
+
+    async function setFirstAppointmentValue(locator, value) {
+      await locator.waitFor({ state: "attached", timeout: 10000 });
+      await locator.evaluate((el, nextValue) => {
+        const proto = Object.getPrototypeOf(el);
+        const desc = Object.getOwnPropertyDescriptor(proto, "value");
+        if (desc?.set) desc.set.call(el, nextValue);
+        else el.value = nextValue;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new Event("blur", { bubbles: true }));
+      }, value);
+    }
+
+    await setFirstAppointmentValue(firstStartDate, "Tuesday, 25 August 2026");
+    await setFirstAppointmentValue(firstStartTime, "10:00 AM");
+    await setFirstAppointmentValue(firstEndDate, "Tuesday, 25 August 2026");
+    await setFirstAppointmentValue(firstEndTime, "12:00 PM");
+
+    console.log("First appointment date/time re-applied.");
+
+    // Select fieldworker inside the FIRST appointment only.
+    const fieldworkerSearch = firstAppointment
       .locator('input[placeholder="Select Fieldworker"]')
       .first();
 
@@ -703,72 +763,65 @@ console.log("Appointment date/time set.");
 
     await fieldworkerSearch.click({ force: true });
     await fieldworkerSearch.fill(TEST.fieldworkerName);
+    await page.waitForTimeout(1200);
 
-    await page.waitForTimeout(1500);
+    let selectedFieldworker = false;
 
-    let fieldworkerSelected = false;
-
-    const optionCandidates = page.locator(
-      '[role="option"], .vs__dropdown-option, li'
+    const options = page.locator(
+      '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
     );
-
-    const optionCount = await optionCandidates.count();
+    const optionCount = await options.count();
 
     for (let i = 0; i < optionCount; i++) {
-      const option = optionCandidates.nth(i);
-      const optionText = (
-        await option.innerText().catch(() => "")
-      )
+      const option = options.nth(i);
+      const txt = (await option.innerText().catch(() => ""))
         .replace(/\s+/g, " ")
         .trim();
 
       if (
-        optionText &&
-        optionText.toLowerCase().includes(
-          TEST.fieldworkerName.toLowerCase()
-        ) &&
-        await option.isVisible().catch(() => false)
+        txt &&
+        txt.toLowerCase().includes(TEST.fieldworkerName.toLowerCase())
       ) {
-        console.log("Found fieldworker:", optionText);
+        console.log("Selecting fieldworker option:", txt);
         await option.click({ force: true, timeout: 10000 });
-        fieldworkerSelected = true;
+        selectedFieldworker = true;
         break;
       }
     }
 
-    if (!fieldworkerSelected) {
-      const exactFieldworker = page
-        .getByText(TEST.fieldworkerName, { exact: false })
-        .last();
-
-      if (await exactFieldworker.isVisible().catch(() => false)) {
-        console.log(
-          "Found fieldworker:",
-          (await exactFieldworker.innerText())
-            .replace(/\s+/g, " ")
-            .trim()
-        );
-        await exactFieldworker.click({
-          force: true,
-          timeout: 10000
-        });
-        fieldworkerSelected = true;
-      }
-    }
-
-    if (!fieldworkerSelected) {
+    if (!selectedFieldworker) {
       throw new Error(
-        `FIELDWORKER_NOT_SELECTED: could not find ${TEST.fieldworkerName}`
+        `FIELDWORKER_NOT_SELECTED: ${TEST.fieldworkerName}`
       );
     }
 
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(700);
+
+    const fieldworkerState = await firstAppointment.evaluate(el => {
+      const txt = String(el.innerText || el.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const hiddenValues = Array.from(
+        el.querySelectorAll('input[type="hidden"]')
+      ).map(input => ({
+        name: input.getAttribute("name") || "",
+        value: input.value || ""
+      }));
+
+      return { text: txt, hiddenValues };
+    });
+
+    console.log(
+      "First appointment fieldworker state:",
+      JSON.stringify(fieldworkerState)
+    );
 
     console.log("Required booking fields completed.");
 
     console.log("Reading current form state...");
 
-    const result = await page.evaluate(() => {
+    const saveDiagnostics = await page.evaluate(() => {
       const read = selector =>
         document.querySelector(selector)?.value ?? null;
 
@@ -878,7 +931,7 @@ console.log("Appointment date/time set.");
 
     await page.waitForTimeout(8000);
 
-    const saveDiagnostics = await page.evaluate(() => {
+    const result = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
       const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
       const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
