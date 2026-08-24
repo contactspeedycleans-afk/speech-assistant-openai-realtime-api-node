@@ -510,7 +510,31 @@ console.log("Appointment date/time set.");
     console.log("Completing required booking fields with exact DOM inspection...");
 
     async function chooseOneTimeCleaning() {
-      const result = await page.evaluate(() => {
+      const exact = page.locator(
+        'input[name="attribute_8087013985[]"][value="37558"]'
+      ).first();
+
+      if (await exact.count()) {
+        await exact.evaluate(el => {
+          el.checked = true;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+
+        await page.waitForTimeout(500);
+
+        const state = await exact.evaluate(el => ({
+          name: el.getAttribute("name") || "",
+          value: el.value || "",
+          checked: !!el.checked
+        }));
+
+        console.log("One Time Cleaning exact input:", JSON.stringify(state));
+
+        if (state.checked) return true;
+      }
+
+      const fallback = await page.evaluate(() => {
         const norm = s => String(s || "").replace(/\s+/g, " ").trim();
         const visible = el => {
           if (!el) return false;
@@ -522,48 +546,41 @@ console.log("Appointment date/time set.");
                  r.height > 0;
         };
 
-        const candidates = Array.from(document.querySelectorAll(
-          'input[type="radio"], input[type="checkbox"], label, button, [role="radio"], [role="option"], [role="button"], div, span'
-        )).filter(visible);
+        const candidates = Array.from(
+          document.querySelectorAll("label, div, span, button")
+        ).filter(visible);
 
-        const target = candidates.find(el => {
-          const txt = norm(el.innerText || el.textContent);
-          const aria = norm(el.getAttribute?.("aria-label"));
-          const val = norm(el.getAttribute?.("value"));
-          return txt === "One Time Cleaning" ||
-                 aria === "One Time Cleaning" ||
-                 val === "One Time Cleaning";
-        });
+        const target = candidates.find(el =>
+          norm(el.innerText || el.textContent) === "One Time Cleaning"
+        );
 
         if (!target) {
-          return { selected: false, reason: "One Time Cleaning control not found" };
+          return { selected: false, reason: "visible One Time Cleaning label not found" };
         }
 
-        const clickTarget =
-          target.matches('input[type="radio"], input[type="checkbox"], button, [role="radio"], [role="button"], [role="option"]')
-            ? target
-            : (target.closest('label, button, [role="radio"], [role="button"], [role="option"]') || target);
+        const wrapper = target.closest("label") || target.parentElement || target;
+        const input =
+          wrapper.querySelector?.('input[type="radio"], input[type="checkbox"]') ||
+          target.querySelector?.('input[type="radio"], input[type="checkbox"]');
 
-        clickTarget.click();
+        target.click();
 
-        const checkedInput =
-          target.matches('input[type="radio"], input[type="checkbox"]')
-            ? target
-            : target.querySelector?.('input[type="radio"], input[type="checkbox"]') ||
-              target.closest('label')?.querySelector?.('input[type="radio"], input[type="checkbox"]');
+        if (input) {
+          input.checked = true;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        }
 
         return {
-          selected: true,
-          tag: clickTarget.tagName,
-          text: norm(clickTarget.innerText || clickTarget.textContent),
-          inputName: checkedInput?.getAttribute?.("name") || "",
-          inputValue: checkedInput?.value || "",
-          checked: checkedInput ? !!checkedInput.checked : null
+          selected: input ? !!input.checked : true,
+          inputName: input?.getAttribute("name") || "",
+          inputValue: input?.value || "",
+          checked: input ? !!input.checked : null
         };
       });
 
-      console.log("One Time Cleaning result:", JSON.stringify(result));
-      return result.selected;
+      console.log("One Time Cleaning fallback:", JSON.stringify(fallback));
+      return !!fallback.selected;
     }
 
     async function inspectLabeledFields() {
@@ -607,8 +624,10 @@ console.log("Appointment date/time set.");
       });
     }
 
+    const usedRequiredFields = new Set();
+
     async function fillExactLabeledField(labelText, value) {
-      return await page.evaluate(({ labelText, value }) => {
+      return await page.evaluate(({ labelText, value, usedKeys }) => {
         const norm = s => String(s || "").replace(/\s+/g, " ").trim();
         const visible = el => {
           if (!el) return false;
@@ -620,61 +639,88 @@ console.log("Appointment date/time set.");
                  r.height > 0;
         };
 
-        const labels = Array.from(document.querySelectorAll('label, div, span, p, strong'))
-          .filter(visible)
-          .filter(el => {
-            const full = norm(el.innerText || el.textContent);
-            const own = norm(Array.from(el.childNodes)
+        const labels = Array.from(
+          document.querySelectorAll("label, div, span, p, strong")
+        ).filter(visible).filter(el => {
+          const full = norm(el.innerText || el.textContent);
+          const own = norm(
+            Array.from(el.childNodes)
               .filter(n => n.nodeType === Node.TEXT_NODE)
               .map(n => n.textContent)
-              .join(" "));
-            return full === labelText || own === labelText;
-          });
+              .join(" ")
+          );
+          return full === labelText || own === labelText;
+        });
+
+        const allFields = Array.from(
+          document.querySelectorAll('textarea, input[type="text"], input:not([type])')
+        ).filter(visible);
+
+        const keyFor = field =>
+          field.getAttribute("name") ||
+          field.id ||
+          `${field.tagName}:${allFields.indexOf(field)}`;
 
         const setValue = field => {
           const proto = Object.getPrototypeOf(field);
           const desc = Object.getOwnPropertyDescriptor(proto, "value");
+
           if (desc?.set) desc.set.call(field, value);
           else field.value = value;
+
           field.dispatchEvent(new Event("input", { bubbles: true }));
           field.dispatchEvent(new Event("change", { bubbles: true }));
           field.dispatchEvent(new Event("blur", { bubbles: true }));
+
           return {
             filled: true,
+            label: labelText,
             tag: field.tagName,
             name: field.getAttribute("name") || "",
             id: field.id || "",
-            value: field.value
+            value: field.value,
+            key: keyFor(field)
           };
         };
 
         for (const label of labels) {
-          let wrapper = label.parentElement;
-          for (let depth = 0; depth < 6 && wrapper; depth++, wrapper = wrapper.parentElement) {
-            const candidates = Array.from(
-              wrapper.querySelectorAll('textarea, input[type="text"], input:not([type])')
-            ).filter(visible);
-
-            if (candidates.length === 1) {
-              return setValue(candidates[0]);
-            }
-          }
-
           const labelRect = label.getBoundingClientRect();
-          const candidates = Array.from(
-            document.querySelectorAll('textarea, input[type="text"], input:not([type])')
-          ).filter(field => {
-            if (!visible(field)) return false;
-            const r = field.getBoundingClientRect();
-            return r.top >= labelRect.bottom - 5 &&
-                   r.top - labelRect.bottom < 220;
-          });
 
-          if (candidates.length) return setValue(candidates[0]);
+          const candidates = allFields
+            .filter(field => !usedKeys.includes(keyFor(field)))
+            .map(field => {
+              const r = field.getBoundingClientRect();
+              const afterInDom =
+                !!(label.compareDocumentPosition(field) &
+                   Node.DOCUMENT_POSITION_FOLLOWING);
+              return {
+                field,
+                afterInDom,
+                verticalGap: r.top - labelRect.bottom
+              };
+            })
+            .filter(x =>
+              x.afterInDom &&
+              x.verticalGap >= -5 &&
+              x.verticalGap < 350
+            )
+            .sort((a, b) => a.verticalGap - b.verticalGap);
+
+          if (candidates.length) {
+            return setValue(candidates[0].field);
+          }
         }
 
-        return { filled: false, label: labelText };
-      }, { labelText, value });
+        return {
+          filled: false,
+          label: labelText,
+          reason: "distinct following field not found"
+        };
+      }, {
+        labelText,
+        value,
+        usedKeys: Array.from(usedRequiredFields)
+      });
     }
 
     const oneTimeOk = await chooseOneTimeCleaning();
@@ -690,14 +736,24 @@ console.log("Appointment date/time set.");
       TEST.specialNotes
     );
     console.log("Special Notes result:", JSON.stringify(specialNotesResult));
+    if (specialNotesResult.filled && specialNotesResult.key) {
+      usedRequiredFields.add(specialNotesResult.key);
+    }
 
     const accessInstructionsResult = await fillExactLabeledField(
       "Access Instructions",
       TEST.accessInstructions
     );
     console.log("Access Instructions result:", JSON.stringify(accessInstructionsResult));
+    if (accessInstructionsResult.filled && accessInstructionsResult.key) {
+      usedRequiredFields.add(accessInstructionsResult.key);
+    }
 
-    if (!specialNotesResult.filled || !accessInstructionsResult.filled) {
+    if (
+      !specialNotesResult.filled ||
+      !accessInstructionsResult.filled ||
+      specialNotesResult.key === accessInstructionsResult.key
+    ) {
       console.log("Required field candidates:", JSON.stringify(await inspectLabeledFields(), null, 2));
       throw new Error(
         `REQUIRED_NOTES_NOT_FILLED special=${JSON.stringify(specialNotesResult)} access=${JSON.stringify(accessInstructionsResult)}`
@@ -749,7 +805,28 @@ console.log("Appointment date/time set.");
     await setFirstAppointmentValue(firstEndDate, "Tuesday, 25 August 2026");
     await setFirstAppointmentValue(firstEndTime, "12:00 PM");
 
-    console.log("First appointment date/time re-applied.");
+    const appointmentTimes = {
+      startDate: await firstStartDate.inputValue(),
+      startTime: await firstStartTime.inputValue(),
+      endDate: await firstEndDate.inputValue(),
+      endTime: await firstEndTime.inputValue()
+    };
+
+    console.log(
+      "First appointment date/time re-applied:",
+      JSON.stringify(appointmentTimes)
+    );
+
+    if (
+      !appointmentTimes.startDate ||
+      !appointmentTimes.endDate ||
+      appointmentTimes.startTime !== "10:00 AM" ||
+      appointmentTimes.endTime !== "12:00 PM"
+    ) {
+      throw new Error(
+        `APPOINTMENT_TIME_NOT_STICKING: ${JSON.stringify(appointmentTimes)}`
+      );
+    }
 
     // Select fieldworker inside the FIRST appointment only.
     const fieldworkerSearch = firstAppointment
@@ -817,6 +894,17 @@ console.log("Appointment date/time set.");
       JSON.stringify(fieldworkerState)
     );
 
+    if (
+      !/Unassigned Tasks Manager/i.test(fieldworkerState.text) &&
+      !fieldworkerState.hiddenValues.some(x =>
+        /fieldworker|worker|assigned/i.test(x.name) && x.value
+      )
+    ) {
+      throw new Error(
+        `FIELDWORKER_NOT_STICKING: ${JSON.stringify(fieldworkerState)}`
+      );
+    }
+
     console.log("Required booking fields completed.");
 
     console.log("Reading current form state...");
@@ -866,7 +954,7 @@ console.log("Appointment date/time set.");
 
     console.log("");
     console.log("===== CREATE BOOKING PRE-SAVE CHECK =====");
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify(preSaveState, null, 2));
     console.log("===== END PRE-SAVE CHECK =====");
     console.log("");
 
@@ -931,7 +1019,7 @@ console.log("Appointment date/time set.");
 
     await page.waitForTimeout(8000);
 
-    const result = await page.evaluate(() => {
+    const preSaveState = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
       const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
       const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
