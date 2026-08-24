@@ -529,7 +529,39 @@ console.log("Appointment date/time set.");
 
     console.log("");
     console.log("LOCATION + SERVICE + SCHEDULE VALIDATED.");
-    console.log("Attempting to save booking...");
+    console.log("Attempting to save booking with diagnostics...");
+
+    const postTraffic = [];
+
+    page.on("request", request => {
+      if (request.method() === "POST") {
+        postTraffic.push({
+          type: "request",
+          method: request.method(),
+          url: request.url(),
+          postData: request.postData() || null
+        });
+      }
+    });
+
+    page.on("response", async response => {
+      const request = response.request();
+
+      if (request.method() === "POST") {
+        let body = null;
+
+        try {
+          body = await response.text();
+        } catch {}
+
+        postTraffic.push({
+          type: "response",
+          status: response.status(),
+          url: response.url(),
+          body: body ? body.slice(0, 5000) : null
+        });
+      }
+    });
 
     const saveButton = page
       .getByText("Save changes", { exact: true })
@@ -540,39 +572,103 @@ console.log("Appointment date/time set.");
       timeout: 15000
     });
 
+    console.log(
+      "Save button disabled:",
+      await saveButton.isDisabled().catch(() => false)
+    );
+
+    await saveButton.scrollIntoViewIfNeeded();
+
     await saveButton.click({
-      force: true,
       timeout: 10000
+    }).catch(async error => {
+      console.log("Normal save click failed:", error.message);
+      console.log("Trying forced save click...");
+      await saveButton.click({
+        force: true,
+        timeout: 10000
+      });
     });
 
-    await page.waitForTimeout(6000);
+    await page.waitForTimeout(8000);
 
     const saveResult = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
       const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
       const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
 
-      const messages = bodyText
+      const visible = el => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const validationMessages = Array.from(
+        document.querySelectorAll(
+          '.alert, .alert-danger, .alert-warning, .invalid-feedback, .text-danger, [role="alert"], .toast, .notification, .error'
+        )
+      )
+        .filter(visible)
+        .map(el =>
+          String(el.innerText || el.textContent || "")
+            .replace(/\s+/g, " ")
+            .trim()
+        )
+        .filter(Boolean)
+        .slice(0, 100);
+
+      const invalidInputs = Array.from(
+        document.querySelectorAll("input, select, textarea")
+      )
+        .filter(el => {
+          try {
+            return !el.checkValidity();
+          } catch {
+            return false;
+          }
+        })
+        .map(el => ({
+          tag: el.tagName,
+          type: el.getAttribute("type") || "",
+          name: el.getAttribute("name") || "",
+          id: el.id || "",
+          value: "value" in el ? String(el.value || "") : "",
+          required: !!el.required,
+          validationMessage: el.validationMessage || ""
+        }))
+        .slice(0, 100);
+
+      const interestingText = bodyText
         .split("\n")
         .map(x => x.trim())
         .filter(Boolean)
         .filter(x =>
-          /BOK-|booking|created|success|saved|please|confirm location|error/i.test(x)
+          /BOK-|booking|created|success|saved|please|confirm|location|required|error|invalid|warning/i.test(x)
         )
-        .slice(0, 120);
+        .slice(0, 150);
 
       return {
         url: location.href,
         booking_number: bokMatch ? bokMatch[0].toUpperCase() : null,
         booking_id: urlMatch ? urlMatch[1] : null,
-        messages
+        validationMessages,
+        invalidInputs,
+        interestingText
       };
     });
 
     console.log("");
-    console.log("===== BOOKING SAVE RESULT =====");
-    console.log(JSON.stringify(saveResult, null, 2));
-    console.log("===== END BOOKING SAVE RESULT =====");
+    console.log("===== BOOKING SAVE DIAGNOSTICS =====");
+    console.log(JSON.stringify({
+      saveResult,
+      postTraffic
+    }, null, 2));
+    console.log("===== END BOOKING SAVE DIAGNOSTICS =====");
     console.log("");
     console.log("");
   } finally {
