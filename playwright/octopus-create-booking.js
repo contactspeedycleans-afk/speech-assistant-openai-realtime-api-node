@@ -269,7 +269,10 @@ await servicesDropdown.waitFor({
   timeout: 15000
 });
 
+await servicesDropdown.scrollIntoViewIfNeeded();
+
 await servicesDropdown.click({
+  force: true,
   timeout: 5000
 });
 
@@ -288,6 +291,7 @@ console.log(
 );
 
 await cleanAsDirected.click({
+  force: true,
   timeout: 5000
 });
 
