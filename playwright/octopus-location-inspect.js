@@ -236,13 +236,33 @@ async function main() {
 
     await inspectLocation(page, "AFTER TYPING");
 
-    console.log("Trying keyboard selection: ArrowDown then Enter...");
-    await addressInput.press("ArrowDown").catch(() => {});
-    await page.waitForTimeout(500);
-    await addressInput.press("Enter").catch(() => {});
-    await page.waitForTimeout(2500);
+    console.log("Clicking exact Octopus address result...");
 
-    await inspectLocation(page, "AFTER SELECTION");
+    const exactAddressResult = page
+      .getByText(
+        "123 Grand River Avenue, Howell, MI 48843, United States",
+        { exact: true }
+      )
+      .last();
+
+    await exactAddressResult.waitFor({
+      state: "visible",
+      timeout: 10000
+    });
+
+    console.log(
+      "Found address result:",
+      (await exactAddressResult.innerText()).replace(/\s+/g, " ").trim()
+    );
+
+    await exactAddressResult.click({
+      force: true,
+      timeout: 5000
+    });
+
+    await page.waitForTimeout(3000);
+
+    await inspectLocation(page, "AFTER EXACT CLICK");
 
     console.log("NO BOOKING WAS SAVED.");
   } finally {
