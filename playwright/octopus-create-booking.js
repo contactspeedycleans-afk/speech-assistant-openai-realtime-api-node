@@ -293,6 +293,34 @@ async function main() {
       );
     }
 
+    console.log("Confirming location modal...");
+
+    const locationModal = page.locator("#GLOBAL_ADD_LOCATION_MODAL_ID");
+
+    await locationModal.waitFor({
+      state: "visible",
+      timeout: 15000
+    });
+
+    const confirmLocationButton = locationModal
+      .getByRole("button", { name: "Confirm", exact: true });
+
+    await confirmLocationButton.waitFor({
+      state: "visible",
+      timeout: 10000
+    });
+
+    await confirmLocationButton.click({
+      timeout: 10000
+    });
+
+    await locationModal.waitFor({
+      state: "hidden",
+      timeout: 15000
+    });
+
+    console.log("Location confirmed.");
+
     console.log("Selecting One Time Clean as Directed...");
 
 const servicesDropdown = page.locator("#servicesdropdown").first();
@@ -529,39 +557,7 @@ console.log("Appointment date/time set.");
 
     console.log("");
     console.log("LOCATION + SERVICE + SCHEDULE VALIDATED.");
-    console.log("Attempting to save booking with diagnostics...");
-
-    const postTraffic = [];
-
-    page.on("request", request => {
-      if (request.method() === "POST") {
-        postTraffic.push({
-          type: "request",
-          method: request.method(),
-          url: request.url(),
-          postData: request.postData() || null
-        });
-      }
-    });
-
-    page.on("response", async response => {
-      const request = response.request();
-
-      if (request.method() === "POST") {
-        let body = null;
-
-        try {
-          body = await response.text();
-        } catch {}
-
-        postTraffic.push({
-          type: "response",
-          status: response.status(),
-          url: response.url(),
-          body: body ? body.slice(0, 5000) : null
-        });
-      }
-    });
+    console.log("Attempting to save booking...");
 
     const saveButton = page
       .getByText("Save changes", { exact: true })
@@ -572,103 +568,90 @@ console.log("Appointment date/time set.");
       timeout: 15000
     });
 
-    console.log(
-      "Save button disabled:",
-      await saveButton.isDisabled().catch(() => false)
-    );
-
-    await saveButton.scrollIntoViewIfNeeded();
-
     await saveButton.click({
       timeout: 10000
-    }).catch(async error => {
-      console.log("Normal save click failed:", error.message);
-      console.log("Trying forced save click...");
-      await saveButton.click({
-        force: true,
-        timeout: 10000
-      });
     });
 
     await page.waitForTimeout(8000);
 
-    const saveResult = await page.evaluate(() => {
+    const created = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
       const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
       const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
-
-      const visible = el => {
-        const rect = el.getBoundingClientRect();
-        const style = getComputedStyle(el);
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
-      };
-
-      const validationMessages = Array.from(
-        document.querySelectorAll(
-          '.alert, .alert-danger, .alert-warning, .invalid-feedback, .text-danger, [role="alert"], .toast, .notification, .error'
-        )
-      )
-        .filter(visible)
-        .map(el =>
-          String(el.innerText || el.textContent || "")
-            .replace(/\s+/g, " ")
-            .trim()
-        )
-        .filter(Boolean)
-        .slice(0, 100);
-
-      const invalidInputs = Array.from(
-        document.querySelectorAll("input, select, textarea")
-      )
-        .filter(el => {
-          try {
-            return !el.checkValidity();
-          } catch {
-            return false;
-          }
-        })
-        .map(el => ({
-          tag: el.tagName,
-          type: el.getAttribute("type") || "",
-          name: el.getAttribute("name") || "",
-          id: el.id || "",
-          value: "value" in el ? String(el.value || "") : "",
-          required: !!el.required,
-          validationMessage: el.validationMessage || ""
-        }))
-        .slice(0, 100);
-
-      const interestingText = bodyText
-        .split("\n")
-        .map(x => x.trim())
-        .filter(Boolean)
-        .filter(x =>
-          /BOK-|booking|created|success|saved|please|confirm|location|required|error|invalid|warning/i.test(x)
-        )
-        .slice(0, 150);
 
       return {
         url: location.href,
         booking_number: bokMatch ? bokMatch[0].toUpperCase() : null,
         booking_id: urlMatch ? urlMatch[1] : null,
-        validationMessages,
-        invalidInputs,
-        interestingText
+        body_excerpt: bodyText
+          .split("\n")
+          .map(x => x.trim())
+          .filter(Boolean)
+          .filter(x =>
+            /BOK-|Gina|Grand River|Howell|Clean as Directed|150|Aug|10:00|12:00|Upcoming/i.test(x)
+          )
+          .slice(0, 120)
       };
     });
 
     console.log("");
-    console.log("===== BOOKING SAVE DIAGNOSTICS =====");
-    console.log(JSON.stringify({
-      saveResult,
-      postTraffic
-    }, null, 2));
-    console.log("===== END BOOKING SAVE DIAGNOSTICS =====");
+    console.log("===== CREATED BOOKING RESULT =====");
+    console.log(JSON.stringify(created, null, 2));
+    console.log("===== END CREATED BOOKING RESULT =====");
+    console.log("");
+
+    if (!created.booking_number && !created.booking_id) {
+      throw new Error(
+        `BOOKING_NOT_CREATED: stayed at ${created.url}`
+      );
+    }
+
+    console.log("Booking created. Verifying booking page...");
+
+    if (created.booking_id) {
+      await page.goto(
+        `https://admin.octopuspro.com/booking/view/${created.booking_id}`,
+        {
+          waitUntil: "domcontentloaded",
+          timeout: 60000
+        }
+      );
+
+      await page.waitForTimeout(5000);
+    }
+
+    const verification = await page.evaluate(() => {
+      const bodyText = document.body?.innerText || "";
+
+      return {
+        url: location.href,
+        booking_number:
+          bodyText.match(/\bBOK-\d+\b/i)?.[0]?.toUpperCase() || null,
+        has_customer: /Gina Manciolini/i.test(bodyText),
+        has_address:
+          /123 Grand River (Avenue|Ave)/i.test(bodyText) &&
+          /Howell/i.test(bodyText) &&
+          /48843/i.test(bodyText),
+        has_service: /Clean as Directed/i.test(bodyText),
+        has_price: /\$?\s*150(?:\.00)?/.test(bodyText),
+        has_time:
+          /10:00\s*AM/i.test(bodyText) &&
+          /12:00\s*PM/i.test(bodyText),
+        excerpt: bodyText
+          .split("\n")
+          .map(x => x.trim())
+          .filter(Boolean)
+          .filter(x =>
+            /BOK-|Gina|Grand River|Howell|48843|Clean as Directed|150|10:00|12:00|Upcoming/i.test(x)
+          )
+          .slice(0, 160)
+      };
+    });
+
+    console.log("");
+    console.log("===== BOOKING VERIFICATION =====");
+    console.log(JSON.stringify(verification, null, 2));
+    console.log("===== END BOOKING VERIFICATION =====");
     console.log("");
     console.log("");
   } finally {
