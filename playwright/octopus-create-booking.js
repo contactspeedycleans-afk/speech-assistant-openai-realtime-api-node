@@ -1,0 +1,361 @@
+import { chromium } from "playwright";
+
+const OCTOPUS_EMAIL = process.env.OCTOPUS_EMAIL;
+const OCTOPUS_PASSWORD = process.env.OCTOPUS_PASSWORD;
+const ORGANIZATION_NAME =
+  process.env.OCTOPUS_ORGANIZATION_NAME || "SpeedyCleans";
+
+const TEST = {
+  customerName: "Gina Manciolini",
+  customerId: "1570670",
+  streetNumber: "123",
+  streetAddress: "Grand River Avenue",
+  suburb: "Howell",
+  state: "MI",
+  postcode: "48843",
+  serviceName: "Clean as Directed",
+  bookingDate: "2026-08-25",
+  startTime: "10:00",
+  endTime: "12:00",
+  price: "150.00"
+};
+
+if (!OCTOPUS_EMAIL) throw new Error("Missing OCTOPUS_EMAIL");
+if (!OCTOPUS_PASSWORD) throw new Error("Missing OCTOPUS_PASSWORD");
+
+async function selectOrganization(page) {
+  await page.waitForTimeout(2000);
+
+  const selects = page.locator("select");
+
+  for (let i = 0; i < await selects.count(); i++) {
+    const select = selects.nth(i);
+    const options = await select.locator("option").allTextContents();
+
+    const match = options.find(option =>
+      option.toLowerCase().includes(ORGANIZATION_NAME.toLowerCase())
+    );
+
+    if (match) {
+      await select.selectOption({ label: match.trim() });
+
+      const submit = page
+        .locator('button[type="submit"], input[type="submit"]')
+        .first();
+
+      if (await submit.isVisible().catch(() => false)) {
+        await submit.click();
+      } else {
+        await page.keyboard.press("Enter");
+      }
+
+      await page.waitForTimeout(4000);
+      return;
+    }
+  }
+
+  const organization = page
+    .getByText(ORGANIZATION_NAME, { exact: false })
+    .first();
+
+  if (await organization.isVisible().catch(() => false)) {
+    await organization.click();
+
+    const submit = page
+      .locator('button[type="submit"], input[type="submit"]')
+      .first();
+
+    if (await submit.isVisible().catch(() => false)) {
+      await submit.click();
+    } else {
+      await page.keyboard.press("Enter");
+    }
+
+    await page.waitForTimeout(4000);
+    return;
+  }
+
+  throw new Error(`Could not select organization ${ORGANIZATION_NAME}`);
+}
+
+async function login(page) {
+  console.log("Logging into OctopusPro...");
+
+  await page.goto("https://admin.octopuspro.com/login", {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+
+  const email = page
+    .locator(
+      'input[type="email"], input[name="email"], input[name="username"], #email'
+    )
+    .first();
+
+  const password = page
+    .locator('input[type="password"], input[name="password"], #password')
+    .first();
+
+  await email.waitFor({ state: "visible", timeout: 30000 });
+
+  await email.fill(OCTOPUS_EMAIL);
+  await password.fill(OCTOPUS_PASSWORD);
+
+  await page
+    .locator('button[type="submit"], input[type="submit"]')
+    .first()
+    .click();
+
+  await page.waitForTimeout(5000);
+
+  if (page.url().toLowerCase().includes("/checkuserinmulticompanies")) {
+    await selectOrganization(page);
+  }
+
+  if (page.url().toLowerCase().includes("/login")) {
+    throw new Error("OctopusPro login did not complete");
+  }
+}
+
+async function setValue(page, selector, value) {
+  const locator = page.locator(selector).first();
+
+  if ((await locator.count()) === 0) {
+    console.log(`Missing field: ${selector}`);
+    return false;
+  }
+
+  await locator.evaluate(
+    (element, nextValue) => {
+      const setter =
+        Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(element),
+          "value"
+        )?.set;
+
+      if (setter) {
+        setter.call(element, nextValue);
+      } else {
+        element.value = nextValue;
+      }
+
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    value
+  );
+
+  return true;
+}
+
+async function main() {
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+
+  try {
+    const context = await browser.newContext({
+      viewport: {
+        width: 1600,
+        height: 1000
+      }
+    });
+
+    const page = await context.newPage();
+
+    await login(page);
+
+    console.log("Opening real New Booking form...");
+
+    await page.goto("https://admin.octopuspro.com/booking/add", {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    });
+
+    await page.waitForTimeout(5000);
+
+    console.log("Filling customer...");
+
+    await setValue(
+      page,
+      'input[name="customer_id"]',
+      TEST.customerId
+    );
+
+    await setValue(
+      page,
+      'input[name="customers"]',
+      JSON.stringify([
+        {
+          id: TEST.customerId,
+          name: TEST.customerName
+        }
+      ])
+    );
+
+    console.log("Filling address...");
+
+    const bookingAddress = `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state} ${TEST.postcode}`;
+
+    const visibleBookingAddress = page
+      .locator('input[placeholder="Booking address"]')
+      .first();
+
+    if (await visibleBookingAddress.isVisible().catch(() => false)) {
+      await visibleBookingAddress.fill(bookingAddress);
+    }
+
+    await setValue(
+      page,
+      'input[name="address"]',
+      bookingAddress
+    );
+
+    await setValue(
+      page,
+      '#street_number_0',
+      TEST.streetNumber
+    );
+
+    await setValue(
+      page,
+      '#street_address_0',
+      TEST.streetAddress
+    );
+
+    await setValue(
+      page,
+      '#suburb_0',
+      TEST.suburb
+    );
+
+    await setValue(
+      page,
+      '#state_0',
+      TEST.state
+    );
+
+    await setValue(
+      page,
+      '#postcode_0',
+      TEST.postcode
+    );
+
+    await setValue(
+      page,
+      '#time_zone0',
+      "America/Detroit"
+    );
+
+    await setValue(
+      page,
+      '#booking_address_flag',
+      "1"
+    );
+
+    await setValue(
+      page,
+      '#booking_updates_flag',
+      "1"
+    );
+
+    console.log("Attempting to select service...");
+
+    const serviceInput = page
+      .locator('input[placeholder="Select services"]')
+      .first();
+
+    if (await serviceInput.count()) {
+      await serviceInput.click().catch(() => {});
+      await serviceInput.fill(TEST.serviceName).catch(() => {});
+      await page.waitForTimeout(1500);
+
+      const option = page
+        .getByText(TEST.serviceName, { exact: true })
+        .last();
+
+      if (await option.isVisible().catch(() => false)) {
+        await option.click();
+        console.log("Service selected.");
+      } else {
+        console.log("Could not visibly select service yet.");
+      }
+    }
+
+    await page.waitForTimeout(2000);
+
+    console.log("Setting price fields...");
+
+    await setValue(
+      page,
+      '#sub_total',
+      TEST.price
+    );
+
+    await setValue(
+      page,
+      '#total_qoute',
+      TEST.price
+    );
+
+    console.log("Reading current form state...");
+
+    const result = await page.evaluate(() => {
+      const read = selector =>
+        document.querySelector(selector)?.value ?? null;
+
+      return {
+        customer_id: read('input[name="customer_id"]'),
+        customers: read('input[name="customers"]'),
+
+        booking_address_visible:
+          document.querySelector(
+            'input[placeholder="Booking address"]'
+          )?.value ?? null,
+
+        address: read('input[name="address"]'),
+        street_number: read("#street_number_0"),
+        street_address: read("#street_address_0"),
+        suburb: read("#suburb_0"),
+        state: read("#state_0"),
+        postcode: read("#postcode_0"),
+        timezone: read("#time_zone0"),
+
+        booking_address_flag: read("#booking_address_flag"),
+        booking_updates_flag: read("#booking_updates_flag"),
+
+        source_id: read('input[name="source_id"]'),
+        business_address: read("#business_address"),
+
+        sub_total: read("#sub_total"),
+        total_quote: read("#total_qoute"),
+
+        page_text: document.body.innerText
+          .split("\n")
+          .map(x => x.trim())
+          .filter(Boolean)
+          .filter(x =>
+            /gina|grand river|howell|clean as directed|150|service|customer|location/i.test(
+              x
+            )
+          )
+          .slice(0, 100)
+      };
+    });
+
+    console.log("");
+    console.log("===== CREATE BOOKING DRY RUN =====");
+    console.log(JSON.stringify(result, null, 2));
+    console.log("SAVE WAS NOT CLICKED");
+    console.log("===== END CREATE BOOKING DRY RUN =====");
+    console.log("");
+  } finally {
+    await browser.close();
+  }
+}
+
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
