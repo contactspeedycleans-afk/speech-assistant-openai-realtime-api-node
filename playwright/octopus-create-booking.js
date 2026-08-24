@@ -618,7 +618,7 @@ console.log("Appointment date/time set.");
 
     await page.waitForTimeout(8000);
 
-    const result = await page.evaluate(() => {
+    const saveDiagnostics = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
       const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
       const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
@@ -697,13 +697,13 @@ console.log("Appointment date/time set.");
     console.log("");
     console.log("===== FULL SAVE DIAGNOSTICS =====");
     console.log(JSON.stringify({
-      result,
+      saveDiagnostics,
       postTraffic
     }, null, 2));
     console.log("===== END FULL SAVE DIAGNOSTICS =====");
     console.log("");
 
-    if (result.booking_number || result.booking_id) {
+    if (saveDiagnostics.booking_number || saveDiagnostics.booking_id) {
       console.log("BOOKING CREATED SUCCESSFULLY.");
     } else {
       console.log("BOOKING NOT CREATED - validation details printed above.");
