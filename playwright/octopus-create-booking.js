@@ -529,7 +529,50 @@ console.log("Appointment date/time set.");
 
     console.log("");
     console.log("LOCATION + SERVICE + SCHEDULE VALIDATED.");
-    console.log("SAVE WAS NOT CLICKED IN THIS VALIDATION RUN.");
+    console.log("Attempting to save booking...");
+
+    const saveButton = page
+      .getByText("Save changes", { exact: true })
+      .last();
+
+    await saveButton.waitFor({
+      state: "visible",
+      timeout: 15000
+    });
+
+    await saveButton.click({
+      force: true,
+      timeout: 10000
+    });
+
+    await page.waitForTimeout(6000);
+
+    const saveResult = await page.evaluate(() => {
+      const bodyText = document.body?.innerText || "";
+      const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
+      const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
+
+      const messages = bodyText
+        .split("\n")
+        .map(x => x.trim())
+        .filter(Boolean)
+        .filter(x =>
+          /BOK-|booking|created|success|saved|please|confirm location|error/i.test(x)
+        )
+        .slice(0, 120);
+
+      return {
+        url: location.href,
+        booking_number: bokMatch ? bokMatch[0].toUpperCase() : null,
+        booking_id: urlMatch ? urlMatch[1] : null,
+        messages
+      };
+    });
+
+    console.log("");
+    console.log("===== BOOKING SAVE RESULT =====");
+    console.log(JSON.stringify(saveResult, null, 2));
+    console.log("===== END BOOKING SAVE RESULT =====");
     console.log("");
     console.log("");
   } finally {
