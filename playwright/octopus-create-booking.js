@@ -1302,40 +1302,51 @@ console.log("Appointment date/time set.");
     }
 
     // FIELDWORKER / UNASSIGNED HANDLING
-    // "Unassigned Tasks Manager" is our placeholder meaning:
-    // create the booking WITHOUT assigning a real fieldworker yet.
-    // Octopus is allowed to save the appointment with a blank contractor id.
-    // The dispatch watcher will pick it up afterward as NEEDS CLEANER.
+    // Octopus requires a fieldworker on Save. "Unassigned Tasks Manager" is the
+    // real placeholder fieldworker account we use for jobs that still need a cleaner.
+    // Historical successful tests show its contractor ID is 47464.
     const shouldRemainUnassigned =
       /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
+    const UNASSIGNED_TASKS_MANAGER_ID = "47464";
 
     if (shouldRemainUnassigned) {
       console.log(
-        "Leaving appointment UNASSIGNED intentionally; no contractor id required."
+        "Assigning Octopus placeholder fieldworker: Unassigned Tasks Manager (47464)."
       );
 
-      const fieldworkerSearch = firstAppointment
-        .locator('input[placeholder="Select Fieldworker"]')
+      const contractorInput = firstAppointment
+        .locator('input[name^="contractor_"]')
         .first();
 
-      if (await fieldworkerSearch.isVisible().catch(() => false)) {
-        await fieldworkerSearch.fill("").catch(() => {});
-        await fieldworkerSearch.press("Tab").catch(() => {});
-      }
+      await contractorInput.waitFor({
+        state: "attached",
+        timeout: 10000
+      });
 
-      // Clear any accidental contractor value that may have been inherited
-      // during Octopus re-renders.
-      await firstAppointment
-        .locator('input[name^="contractor_"]')
-        .first()
-        .evaluate(el => {
-          el.value = "";
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-        })
-        .catch(() => {});
+      await contractorInput.evaluate((el, id) => {
+        const proto = Object.getPrototypeOf(el);
+        const descriptor =
+          Object.getOwnPropertyDescriptor(proto, "value") ||
+          Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype,
+            "value"
+          );
 
-      console.log("UNASSIGNED appointment state prepared.");
+        if (descriptor && descriptor.set) {
+          descriptor.set.call(el, id);
+        } else {
+          el.value = id;
+        }
+
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new Event("blur", { bubbles: true }));
+      }, UNASSIGNED_TASKS_MANAGER_ID);
+
+      console.log(
+        "UNASSIGNED placeholder contractor committed:",
+        await contractorInput.inputValue()
+      );
     } else {
       console.log("Selecting requested fieldworker with component-native input...");
 
@@ -1492,7 +1503,7 @@ console.log("Appointment date/time set.");
         };
 
         if (shouldRemainUnassigned && contractorEl) {
-          setNativeValue(contractorEl, "");
+          setNativeValue(contractorEl, "47464");
         }
 
         return {
@@ -1532,25 +1543,26 @@ console.log("Appointment date/time set.");
       );
     }
 
-    if (
-      !finalAppointmentState.fieldworkerId &&
-      !shouldRemainUnassigned
-    ) {
+    if (!finalAppointmentState.fieldworkerId) {
       throw new Error(
         `FIELDWORKER_ID_MISSING: ${JSON.stringify(finalAppointmentState)}`
       );
     }
 
-    if (!finalAppointmentState.fieldworkerId) {
-      console.log(
-        "No fieldworker id present by design. Booking will save UNASSIGNED."
-      );
-    } else {
-      console.log(
-        "Fieldworker id committed:",
-        finalAppointmentState.fieldworkerId
+    if (
+      shouldRemainUnassigned &&
+      finalAppointmentState.fieldworkerId !== UNASSIGNED_TASKS_MANAGER_ID
+    ) {
+      throw new Error(
+        `UNASSIGNED_PLACEHOLDER_NOT_COMMITTED: ${JSON.stringify(finalAppointmentState)}`
       );
     }
+
+    console.log(
+      "Fieldworker id committed:",
+      finalAppointmentState.fieldworkerId,
+      shouldRemainUnassigned ? "(Unassigned Tasks Manager placeholder)" : ""
+    );
 
     console.log("Required booking fields completed.");
 
