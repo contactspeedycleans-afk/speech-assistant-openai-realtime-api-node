@@ -18,6 +18,10 @@ import { buildSessionContext } from './lib/sessionContextBuilder.js';
 import { buildOpenAiSession } from './lib/openAiSessionBuilder.js';
 import { createTechnicianSearch } from './lib/technicianSearch.js';
 import { runSmsReceptionist } from './lib/smsReceptionist.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 
 dotenv.config();
@@ -204,121 +208,174 @@ fastify.post(
                 if (body.customerConfirmed !== true) {
                     return reply.send({
                         success: false,
-                        outcome:
-                            'confirmation_required',
+                        outcome: 'confirmation_required',
                         error:
                             'The customer must explicitly confirm the complete booking first.'
                     });
                 }
 
-                const createUrl =
-                    String(
-                        process.env
-                            .OCTOPUS_CREATE_BOOKING_WEBHOOK_URL ||
-                        ''
-                    ).trim();
+                const required = [
+                    ['customerName', body.customerName],
+                    ['streetNumber', body.streetNumber],
+                    ['street', body.street || body.streetAddress],
+                    ['city', body.city || body.suburb],
+                    ['state', body.state],
+                    ['zip', body.zip || body.postcode],
+                    ['requestedDate', body.requestedDate],
+                    ['requestedStartTime', body.requestedStartTime]
+                ];
 
-                if (!createUrl) {
+                const missing = required
+                    .filter(([, value]) => !String(value || '').trim())
+                    .map(([name]) => name);
+
+                if (missing.length) {
                     return reply.send({
                         success: false,
-                        outcome:
-                            'connector_not_configured',
+                        outcome: 'missing_booking_fields',
                         error:
-                            'The OctopusPro create-booking connector is not configured.'
+                            `Missing required booking fields: ${missing.join(', ')}`
                     });
                 }
 
-                const createSecret =
-                    String(
-                        process.env
-                            .OCTOPUS_CREATE_BOOKING_SECRET ||
-                        ''
-                    ).trim();
+                const { stdout, stderr } = await execFileAsync(
+                    process.execPath,
+                    ['playwright/octopus-create-booking.js'],
+                    {
+                        cwd: process.cwd(),
+                        env: {
+                            ...process.env,
+                            LISA_BOOKING_PAYLOAD: JSON.stringify(body)
+                        },
+                        timeout: 150000,
+                        maxBuffer: 10 * 1024 * 1024
+                    }
+                );
 
-                const createResponse =
-                    await fetch(
-                        createUrl,
-                        {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type':
-                                    'application/json',
-                                ...(createSecret
-                                    ? {
-                                        'X-Emma-Secret':
-                                            createSecret
-                                    }
-                                    : {})
-                            },
-                            body: JSON.stringify({
-                                ...body,
-                                action: undefined,
-                                source:
-                                    'LISA_VOICE'
-                            }),
-                            signal:
-                                AbortSignal.timeout(
-                                    45000
-                                )
-                        }
-                    );
-
-                const raw =
-                    await createResponse.text();
-
-                let result = {};
-
-                try {
-                    result =
-                        JSON.parse(raw || '{}');
-                } catch {
-                    result = {
-                        success: false,
-                        error:
-                            'Create-booking connector returned invalid JSON.'
-                    };
+                if (stderr) {
+                    console.log('Lisa direct booking stderr:', stderr);
                 }
 
-                const bookingId =
-                    result.bookingId ||
-                    result.booking_id ||
-                    result.octopusBookingId ||
-                    result.octopus_booking_id ||
-                    null;
+                console.log('Lisa direct booking stdout:', stdout);
 
-                const bookingNumber =
-                    result.bookingNumber ||
-                    result.booking_number ||
-                    result.bokNumber ||
-                    null;
+                const marker = stdout
+                    .split(/\r?\n/)
+                    .find((line) => line.startsWith('LISA_BOOKING_RESULT='));
 
+                if (!marker) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'playwright_booking_failed',
+                        error:
+                            'Octopus booking automation did not return a verified BOK.'
+                    });
+                }
+
+                const result = JSON.parse(
+                    marker.substring('LISA_BOOKING_RESULT='.length)
+                );
+
+                const bookingId = result.bookingId || result.booking_id || null;
+                const bookingNumber = result.bookingNumber || result.booking_number || null;
                 const verified =
-                    createResponse.ok &&
                     result.success === true &&
-                    Boolean(
-                        bookingId ||
-                        bookingNumber
+                    Boolean(bookingId && bookingNumber);
+
+                if (!verified) {
+                    return reply.send({
+                        ...result,
+                        success: false,
+                        verified_created_in_octopus: false,
+                        bookingId,
+                        bookingNumber,
+                        outcome: result.outcome || 'verification_failed',
+                        error:
+                            result.error ||
+                            'OctopusPro did not return both a verified booking ID and BOK number.'
+                    });
+                }
+
+                const successWebhookUrl = String(
+                    process.env.LISA_BOOKING_SUCCESS_WEBHOOK_URL || ''
+                ).trim();
+
+                if (successWebhookUrl) {
+                    const successPayload = {
+                        event: 'LISA_BOOKING_CREATED',
+                        bookingNumber,
+                        bookingId,
+                        customerName: body.customerName || '',
+                        customerPhone: body.customerPhone || body.phone || '',
+                        customerEmail: body.customerEmail || body.email || '',
+                        serviceAddress:
+                            body.serviceAddress ||
+                            [
+                                body.streetNumber,
+                                body.street || body.streetAddress,
+                                body.city || body.suburb,
+                                body.state,
+                                body.zip || body.postcode
+                            ]
+                                .filter(Boolean)
+                                .join(', '),
+                        streetNumber: body.streetNumber || '',
+                        street: body.street || body.streetAddress || '',
+                        city: body.city || body.suburb || '',
+                        state: body.state || '',
+                        zip: body.zip || body.postcode || '',
+                        requestedDate: body.requestedDate || '',
+                        requestedStartTime: body.requestedStartTime || '',
+                        arrivalWindow: body.arrivalWindow || '',
+                        durationMinutes:
+                            body.durationMinutes ||
+                            (Number(body.durationHours || 0) * 60 || ''),
+                        quotedPrice: body.quotedPrice || body.price || '',
+                        serviceType: body.serviceType || body.serviceName || '',
+                        recurringFrequency: body.recurringFrequency || '',
+                        source: 'LISA_VOICE',
+                        createdAt: new Date().toISOString()
+                    };
+
+                    try {
+                        const hookResponse = await fetch(successWebhookUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(successPayload),
+                            signal: AbortSignal.timeout(15000)
+                        });
+
+                        if (!hookResponse.ok) {
+                            console.error(
+                                'Lisa booking success webhook returned HTTP',
+                                hookResponse.status
+                            );
+                        } else {
+                            console.log(
+                                'Lisa booking success webhook delivered:',
+                                bookingNumber
+                            );
+                        }
+                    } catch (hookError) {
+                        console.error(
+                            'Lisa booking success webhook failed:',
+                            hookError?.message || hookError
+                        );
+                    }
+                } else {
+                    console.log(
+                        'LISA_BOOKING_SUCCESS_WEBHOOK_URL not configured; skipping success notification.'
                     );
+                }
 
                 return reply.send({
                     ...result,
-                    success: verified,
-                    verified_created_in_octopus:
-                        verified,
+                    success: true,
+                    verified_created_in_octopus: true,
                     bookingId,
                     bookingNumber,
-                    ...(
-                        verified
-                            ? {}
-                            : {
-                                outcome:
-                                    result.outcome ||
-                                    'verification_failed',
-                                error:
-                                    result.error ||
-                                    'OctopusPro did not return a verified booking ID.'
-                            }
-                    )
+                    outcome: 'created'
                 });
             }
 
@@ -2903,4 +2960,3 @@ fastify.listen(
         );
     }
 );
-
