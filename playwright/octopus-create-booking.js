@@ -1311,47 +1311,68 @@ console.log("Appointment date/time set.");
 
 if (shouldRemainUnassigned) {
   console.log(
-    "Booking should remain unassigned. Attempting Unassigned Tasks Manager placeholder."
+    "Selecting Unassigned Tasks Manager through Octopus fieldworker UI..."
   );
 
-  const contractorInput = firstAppointment
-    .locator('input[name^="contractor_"]')
+  const fieldworkerSearch = firstAppointment
+    .locator('input[placeholder="Select Fieldworker"]')
     .first();
 
-  const contractorInputExists = await contractorInput
-    .count()
-    .catch(() => 0);
+  await fieldworkerSearch.waitFor({
+    state: "visible",
+    timeout: 15000
+  });
 
-  if (contractorInputExists > 0) {
-    await contractorInput.evaluate((el, id) => {
-      const proto = Object.getPrototypeOf(el);
-      const descriptor =
-        Object.getOwnPropertyDescriptor(proto, "value") ||
-        Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype,
-          "value"
-        );
+  await fieldworkerSearch.scrollIntoViewIfNeeded();
+  await fieldworkerSearch.click({ force: true });
+  await fieldworkerSearch.fill("");
 
-      if (descriptor && descriptor.set) {
-        descriptor.set.call(el, id);
-      } else {
-        el.value = id;
-      }
+  await fieldworkerSearch.type("Unassigned Tasks Manager", {
+    delay: 35
+  });
 
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      el.dispatchEvent(new Event("blur", { bubbles: true }));
-    }, UNASSIGNED_TASKS_MANAGER_ID);
+  await page.waitForTimeout(1500);
 
-    console.log(
-      "UNASSIGNED placeholder contractor committed:",
-      await contractorInput.inputValue().catch(() => "")
-    );
-  } else {
-    console.log(
-      "No contractor_ input rendered by Octopus. Continuing without crashing so booking save can determine next step."
+  const workerOptions = page.locator(
+    '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
+  );
+
+  let selectedUnassigned = false;
+
+  for (let i = 0; i < await workerOptions.count(); i++) {
+    const option = workerOptions.nth(i);
+
+    const text = (await option.innerText().catch(() => ""))
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (/Unassigned Tasks Manager/i.test(text)) {
+      console.log(
+        "Selecting fieldworker option:",
+        text
+      );
+
+      await option.click({
+        force: true,
+        timeout: 10000
+      });
+
+      selectedUnassigned = true;
+      break;
+    }
+  }
+
+  if (!selectedUnassigned) {
+    throw new Error(
+      "UNASSIGNED_TASKS_MANAGER_OPTION_NOT_FOUND"
     );
   }
+
+  await page.waitForTimeout(1200);
+
+  console.log(
+    "Unassigned Tasks Manager selected through native Octopus UI."
+  );
 } else {
       console.log("Selecting requested fieldworker with component-native input...");
 
