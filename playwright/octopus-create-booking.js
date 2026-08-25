@@ -699,22 +699,22 @@ async function forceInputValue(selector, value) {
 
 await forceInputValue(
   'input[name^="multi_new_stpartdate_"][name$="_0[0]"]',
-  "Tuesday, 25 August 2026"
+  expectedAppointment.startDate
 );
 
 await forceInputValue(
   'input[name^="multi_new_stparttime_"][name$="_0[0]"]',
-  "10:00 AM"
+  expectedAppointment.startTime
 );
 
 await forceInputValue(
   'input[name^="multi_new_etpartdate_"][name$="_0[0]"]',
-  "Tuesday, 25 August 2026"
+  expectedAppointment.endDate
 );
 
 await forceInputValue(
   'input[name^="multi_new_etparttime_"][name$="_0[0]"]',
-  "12:00 PM"
+  expectedAppointment.endTime
 );
 
 await page.waitForTimeout(2000);
@@ -1128,7 +1128,7 @@ console.log("Appointment date/time set.");
           .map(x => x.trim())
           .filter(Boolean)
           .filter(x =>
-            /gina|grand river|howell|clean as directed|150|service|customer|location/i.test(
+            /service|customer|location|booking|address|standard cleaning/i.test(
               x
             )
           )
@@ -1185,7 +1185,7 @@ const appointmentSummaryBeforeSave = (
   .map(x => x.trim())
   .filter(Boolean)
   .filter(x =>
-    /Appointment time|25 Aug 2026|10:00 AM|12:00 PM|10:00|12:00/i.test(x)
+    /Appointment time|Start|End|AM|PM|booking|appointment/i.test(x)
   )
   .slice(-40);
 
