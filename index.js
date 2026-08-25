@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+﻿import Fastify from 'fastify';
 import WebSocket from 'ws';
 import dotenv from 'dotenv';
 import pg from 'pg';
@@ -73,7 +73,9 @@ const {
     handleTechnicianStatusTool,
     handleBillingLookupTool,
     handleCancelBookingTool,
-    handleRescheduleBookingTool
+    handleRescheduleBookingTool,
+    cancelBookingAction,
+    rescheduleBookingAction
 } = createOpenAiToolHandlers({
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
@@ -102,6 +104,254 @@ const fastify = Fastify();
 
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
+fastify.post(
+    '/lisa/booking-action',
+    async (request, reply) => {
+        const configuredSecret =
+            String(
+                process.env.LISA_ACTION_SECRET || ''
+            ).trim();
+
+        const suppliedSecret =
+            String(
+                request.headers['x-lisa-secret'] || ''
+            ).trim();
+
+        if (
+            !configuredSecret ||
+            suppliedSecret !== configuredSecret
+        ) {
+            return reply
+                .code(401)
+                .send({
+                    success: false,
+                    outcome: 'unauthorized',
+                    error: 'Unauthorized.'
+                });
+        }
+
+        const body =
+            request.body &&
+            typeof request.body === 'object'
+                ? request.body
+                : {};
+
+        const action =
+            String(body.action || '')
+                .trim()
+                .toLowerCase();
+
+        console.log(
+            'Lisa booking action request:',
+            {
+                action,
+                bookingId:
+                    body.bookingId || null
+            }
+        );
+
+        try {
+            if (action === 'cancel') {
+                const result =
+                    await cancelBookingAction({
+                        bookingId:
+                            body.bookingId,
+                        cancellationReason:
+                            body.cancellationReason ||
+                            'Other',
+                        customerConfirmed:
+                            body.customerConfirmed === true,
+                        cancellationScope:
+                            body.cancellationScope ||
+                            'single_visit',
+                        customerBookings:
+                            Array.isArray(
+                                body.customerBookings
+                            )
+                                ? body.customerBookings
+                                : []
+                    });
+
+                return reply.send(result);
+            }
+
+            if (action === 'reschedule') {
+                const result =
+                    await rescheduleBookingAction({
+                        bookingId:
+                            body.bookingId,
+                        requestedDate:
+                            body.requestedDate,
+                        requestedStartTime:
+                            body.requestedStartTime,
+                        customerConfirmed:
+                            body.customerConfirmed === true,
+                        rescheduleScope:
+                            body.rescheduleScope ||
+                            'single_visit',
+                        customerBookings:
+                            Array.isArray(
+                                body.customerBookings
+                            )
+                                ? body.customerBookings
+                                : []
+                    });
+
+                return reply.send(result);
+            }
+
+            if (action === 'create') {
+                if (body.customerConfirmed !== true) {
+                    return reply.send({
+                        success: false,
+                        outcome:
+                            'confirmation_required',
+                        error:
+                            'The customer must explicitly confirm the complete booking first.'
+                    });
+                }
+
+                const createUrl =
+                    String(
+                        process.env
+                            .OCTOPUS_CREATE_BOOKING_WEBHOOK_URL ||
+                        ''
+                    ).trim();
+
+                if (!createUrl) {
+                    return reply.send({
+                        success: false,
+                        outcome:
+                            'connector_not_configured',
+                        error:
+                            'The OctopusPro create-booking connector is not configured.'
+                    });
+                }
+
+                const createSecret =
+                    String(
+                        process.env
+                            .OCTOPUS_CREATE_BOOKING_SECRET ||
+                        ''
+                    ).trim();
+
+                const createResponse =
+                    await fetch(
+                        createUrl,
+                        {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type':
+                                    'application/json',
+                                ...(createSecret
+                                    ? {
+                                        'X-Emma-Secret':
+                                            createSecret
+                                    }
+                                    : {})
+                            },
+                            body: JSON.stringify({
+                                ...body,
+                                action: undefined,
+                                source:
+                                    'LISA_VOICE'
+                            }),
+                            signal:
+                                AbortSignal.timeout(
+                                    45000
+                                )
+                        }
+                    );
+
+                const raw =
+                    await createResponse.text();
+
+                let result = {};
+
+                try {
+                    result =
+                        JSON.parse(raw || '{}');
+                } catch {
+                    result = {
+                        success: false,
+                        error:
+                            'Create-booking connector returned invalid JSON.'
+                    };
+                }
+
+                const bookingId =
+                    result.bookingId ||
+                    result.booking_id ||
+                    result.octopusBookingId ||
+                    result.octopus_booking_id ||
+                    null;
+
+                const bookingNumber =
+                    result.bookingNumber ||
+                    result.booking_number ||
+                    result.bokNumber ||
+                    null;
+
+                const verified =
+                    createResponse.ok &&
+                    result.success === true &&
+                    Boolean(
+                        bookingId ||
+                        bookingNumber
+                    );
+
+                return reply.send({
+                    ...result,
+                    success: verified,
+                    verified_created_in_octopus:
+                        verified,
+                    bookingId,
+                    bookingNumber,
+                    ...(
+                        verified
+                            ? {}
+                            : {
+                                outcome:
+                                    result.outcome ||
+                                    'verification_failed',
+                                error:
+                                    result.error ||
+                                    'OctopusPro did not return a verified booking ID.'
+                            }
+                    )
+                });
+            }
+
+            return reply
+                .code(400)
+                .send({
+                    success: false,
+                    outcome:
+                        'unsupported_action',
+                    error:
+                        'Supported actions are create, cancel, and reschedule.'
+                });
+
+        } catch (error) {
+            console.error(
+                'Lisa booking-action endpoint failed:',
+                error
+            );
+
+            return reply
+                .code(500)
+                .send({
+                    success: false,
+                    outcome:
+                        'automation_error',
+                    error:
+                        error.message ||
+                        'Booking action failed.'
+                });
+        }
+    }
+);
+
 
 const VOICE = 'marin';
 const TEMPERATURE = 0.55;
@@ -1177,7 +1427,7 @@ Always follow this exact order:
 4. Ask only the single next missing question and stop to listen.
 
 EXISTING-CUSTOMER OVERRIDE:
-- If CUSTOMER DATABASE CONTEXT or BOOKING HISTORY shows an existing customer or booking, treat this as an account-service callâ€”not a new quote.
+- If CUSTOMER DATABASE CONTEXT or BOOKING HISTORY shows an existing customer or booking, treat this as an account-service callÃ¢â‚¬â€not a new quote.
 - Open with the specific reason for the call and the known appointment or recurring service details.
 - Never ask one-time versus recurring when their existing frequency or appointment is already known.
 - Never quote $150, pitch a first cleaning, or restart sales intake unless the customer explicitly asks to price or book a separate new cleaning.
@@ -1232,7 +1482,7 @@ Then ask:
 
 If they say no, end with:
 
-"Wonderful. Youâ€™re all set. Thank you for choosing Speedy Solutions. We look forward to helping you."
+"Wonderful. YouÃ¢â‚¬â„¢re all set. Thank you for choosing Speedy Solutions. We look forward to helping you."
 
 - Give only one final closing.
 - Do not repeat goodbye.
@@ -1338,18 +1588,18 @@ Say:
 
 "Thank you for calling SpeedyCleans. This is Emma. How can I help you today?"
 
-HUMAN-TRANSFER POLICY â€” FOLLOW EXACTLY:
+HUMAN-TRANSFER POLICY Ã¢â‚¬â€ FOLLOW EXACTLY:
 
 - Do not transfer the caller to a receptionist, manager, owner, dispatcher, technician, office worker, or any specifically requested person.
 - Do not claim that you are transferring the call.
 - Do not place the caller on hold for a person.
-- You are Emma, SpeedyCleans' 24/7 AI receptionist and primary inbound call taker—not a basic bot, phone menu, or transfer operator.
+- You are Emma, SpeedyCleans' 24/7 AI receptionist and primary inbound call takerâ€”not a basic bot, phone menu, or transfer operator.
 - You can handle real work, including quotes, scheduling, service questions, appointment updates, billing questions, customer requests, complaints, and technician messages.
 - Make one confident attempt to explain the advantage of immediate AI assistance. If the caller still wants a human, stop persuading and take a complete callback message.
 
 If the caller asks for a receptionist, representative, human, manager, owner, office staff, or transfer, say:
 
-"I'm Emma, SpeedyCleans' 24/7 AI receptionist. This isn't a basic bot or a transfer line—I'm built to actually handle things right here, including quotes, scheduling, service questions, appointment updates, billing questions, and customer requests. I'm continuously upgraded with our latest information and tools, so I can often help faster than waiting for a traditional receptionist. Tell me what you need, and let's take care of it now."
+"I'm Emma, SpeedyCleans' 24/7 AI receptionist. This isn't a basic bot or a transfer lineâ€”I'm built to actually handle things right here, including quotes, scheduling, service questions, appointment updates, billing questions, and customer requests. I'm continuously upgraded with our latest information and tools, so I can often help faster than waiting for a traditional receptionist. Tell me what you need, and let's take care of it now."
 
 Then ask:
 
@@ -1434,9 +1684,9 @@ Do NOT explain the weekly, biweekly, and monthly options unless the customer ask
 
 Only compare multiple recurring plans if the customer says something like:
 
-â€¢ "What are my options?"
-â€¢ "How much are they?"
-â€¢ "What's cheaper?"
+Ã¢â‚¬Â¢ "What are my options?"
+Ã¢â‚¬Â¢ "How much are they?"
+Ã¢â‚¬Â¢ "What's cheaper?"
 
 If the customer simply says:
 
@@ -2653,3 +2903,4 @@ fastify.listen(
         );
     }
 );
+

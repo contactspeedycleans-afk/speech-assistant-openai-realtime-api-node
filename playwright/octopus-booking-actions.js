@@ -7,15 +7,35 @@ const ORGANIZATION_NAME =
 
 const args = process.argv.slice(2);
 const requestedMode = args[0]?.toLowerCase();
-const mode = ["cancel", "reschedule", "capture-reschedule", "diagnose", "billing"].includes(requestedMode)
+const mode = [
+  "cancel",
+  "reschedule",
+  "capture-reschedule",
+  "capture-assign",
+  "diagnose",
+  "billing"
+].includes(requestedMode)
   ? requestedMode
   : "inspect";
+
 const bookingId = mode === "inspect" ? args[0] : args[1];
+
 const requestedReason =
   mode === "cancel" ? args.slice(2).join(" ").trim() || "Other" : "";
+
 const isRescheduleMode = ["reschedule", "capture-reschedule"].includes(mode);
 const requestedDate = isRescheduleMode ? args[2] : "";
 const requestedStartTime = isRescheduleMode ? args[3] : "";
+
+const requestedFieldworkerId =
+  mode === "capture-assign"
+    ? String(args[2] || "").trim()
+    : "";
+
+const requestedCleaner =
+  mode === "capture-assign"
+    ? args.slice(3).join(" ").trim()
+    : "";
 
 if (!OCTOPUS_EMAIL) throw new Error("Missing OCTOPUS_EMAIL");
 if (!OCTOPUS_PASSWORD) throw new Error("Missing OCTOPUS_PASSWORD");
@@ -38,6 +58,24 @@ if (
 ) {
   throw new Error(
     "Rescheduling requires a start time in 24-hour HH:MM format."
+  );
+}
+
+if (
+  mode === "capture-assign" &&
+  !/^\d+$/.test(requestedFieldworkerId)
+) {
+  throw new Error(
+    'capture-assign requires a numeric Octopus fieldworker ID. Example: node playwright/octopus-booking-actions.js capture-assign 567999 77302 "Stephanie Rau"'
+  );
+}
+
+if (
+  mode === "capture-assign" &&
+  !requestedCleaner
+) {
+  throw new Error(
+    'capture-assign requires a cleaner name. Example: node playwright/octopus-booking-actions.js capture-assign 567999 77302 "Stephanie Rau"'
   );
 }
 
@@ -1445,6 +1483,1221 @@ async function rescheduleBooking(page) {
   });
 }
 
+
+function summarizeAssignmentWrite(request) {
+  const rawBody = request.postData() || "";
+  const contentType = request.headers()["content-type"] || "";
+  const fields = {};
+  const fieldNames = [];
+
+  try {
+    if (/multipart\/form-data/i.test(contentType)) {
+      const parts = rawBody.split(/\r?\n--[^\r\n]+/);
+
+      for (const part of parts) {
+        const nameMatch = part.match(/name="([^"]+)"/i);
+        if (!nameMatch) continue;
+
+        const key = nameMatch[1];
+        const value = (part.split(/\r?\n\r?\n/)[1] || "")
+          .replace(/\r?\n--?$/, "")
+          .trim();
+
+        fieldNames.push(key);
+
+        if (
+          /fieldworker|worker|technician|tech|staff|assignee|assign|booking|service|appointment|task/i.test(
+            key
+          ) ||
+          /unassigned|stephanie/i.test(value)
+        ) {
+          fields[key] = value.slice(0, 1000);
+        }
+      }
+    } else {
+      const params = new URLSearchParams(rawBody);
+
+      for (const [key, value] of params.entries()) {
+        fieldNames.push(key);
+
+        if (
+          /fieldworker|worker|technician|tech|staff|assignee|assign|booking|service|appointment|task/i.test(
+            key
+          ) ||
+          /unassigned|stephanie/i.test(value)
+        ) {
+          fields[key] = value.slice(0, 1000);
+        }
+      }
+    }
+  } catch {}
+
+  return {
+    method: request.method(),
+    url: request.url(),
+    content_type: contentType,
+    field_names: [...new Set(fieldNames)],
+    relevant_fields: fields,
+    body_length: rawBody.length,
+    body_preview: rawBody.slice(0, 4000)
+  };
+}
+
+
+async function clickAssignmentControl(page) {
+  const exactMatches = page.getByText("Unassigned Tasks Manager", {
+    exact: true
+  });
+
+  const candidates = [];
+
+  for (
+    let index = 0;
+    index < (await exactMatches.count());
+    index += 1
+  ) {
+    const match = exactMatches.nth(index);
+
+    if (
+      !(await match
+        .isVisible()
+        .catch(() => false))
+    ) {
+      continue;
+    }
+
+    const box =
+      await match.boundingBox();
+
+    if (!box) continue;
+
+    candidates.push({
+      match,
+      box
+    });
+  }
+
+  if (candidates.length === 0) {
+    throw new Error(
+      "Could not find the visible Unassigned Tasks Manager assignment control."
+    );
+  }
+
+  // Prefer the assignment shown in the Services / Appointments side of the page.
+  candidates.sort(
+    (a, b) =>
+      b.box.x - a.box.x ||
+      a.box.y - b.box.y
+  );
+
+  const target =
+    candidates[0].match;
+
+  await target.scrollIntoViewIfNeeded();
+  await target.click({
+    timeout: 10000
+  });
+
+  await page.waitForTimeout(1200);
+}
+
+
+async function chooseCleanerFromOpenAssignmentUi(
+  page,
+  cleanerName
+) {
+  const visibleInputs =
+    page.locator("input:visible");
+
+  let searchInput = null;
+
+  for (
+    let index = 0;
+    index < (await visibleInputs.count());
+    index += 1
+  ) {
+    const input =
+      visibleInputs.nth(index);
+
+    const identity = [
+      await input
+        .getAttribute("placeholder")
+        .catch(() => ""),
+      await input
+        .getAttribute("aria-label")
+        .catch(() => ""),
+      await input
+        .getAttribute("name")
+        .catch(() => ""),
+      await input
+        .getAttribute("id")
+        .catch(() => "")
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    if (
+      /search|fieldworker|worker|technician|staff|assignee|assign/i.test(
+        identity
+      )
+    ) {
+      searchInput = input;
+      break;
+    }
+  }
+
+  if (searchInput) {
+    await searchInput.fill(
+      cleanerName
+    );
+
+    await page.waitForTimeout(
+      1500
+    );
+  }
+
+  let cleaner =
+    page.getByText(
+      cleanerName,
+      {
+        exact: true
+      }
+    );
+
+  if (
+    (await cleaner.count()) === 0
+  ) {
+    cleaner =
+      page.getByText(
+        new RegExp(
+          cleanerName
+            .split(/\s+/)
+            .filter(Boolean)
+            .map(
+              (part) =>
+                part.replace(
+                  /[.*+?^${}()|[\]\\]/g,
+                  "\\$&"
+                )
+            )
+            .join(".*"),
+          "i"
+        )
+      );
+  }
+
+  let selected = null;
+
+  for (
+    let index = 0;
+    index < (await cleaner.count());
+    index += 1
+  ) {
+    const candidate =
+      cleaner.nth(index);
+
+    if (
+      await candidate
+        .isVisible()
+        .catch(() => false)
+    ) {
+      selected = candidate;
+      break;
+    }
+  }
+
+  if (!selected) {
+    const bodyPreview =
+      (await page
+        .locator("body")
+        .innerText()
+        .catch(() => ""))
+        .split(/\r?\n/)
+        .map((line) =>
+          line.trim()
+        )
+        .filter(Boolean)
+        .filter((line) =>
+          /fieldworker|worker|technician|staff|unassigned|available/i.test(
+            line
+          )
+        )
+        .slice(0, 80);
+
+    throw new Error(
+      `Could not find cleaner "${cleanerName}" in the open assignment UI. Relevant page text: ${JSON.stringify(
+        bodyPreview
+      )}`
+    );
+  }
+
+  await selected.scrollIntoViewIfNeeded();
+  await selected.click({
+    timeout: 10000
+  });
+
+  await page.waitForTimeout(
+    1200
+  );
+}
+
+
+async function captureAssignCleaner(page) {
+  const initialState =
+    await getPageState(page);
+
+  if (initialState.cancelled) {
+    logResult({
+      ok: false,
+      action: "capture-assign",
+      booking_id: Number(bookingId),
+      outcome: "blocked_cancelled_booking",
+      changed: false
+    });
+    return;
+  }
+
+  if (initialState.unsafeState) {
+    logResult({
+      ok: false,
+      action: "capture-assign",
+      booking_id: Number(bookingId),
+      outcome: "blocked_active_booking",
+      reason:
+        `Booking is already in ${initialState.unsafeState}.`,
+      changed: false
+    });
+    return;
+  }
+
+  // Octopus sometimes renders the visible TO DO badge after our first page-state read.
+  // For capture-assign, verify TO DO using both visible text and Octopus's hidden status fields.
+  const bookingStatusSnapshot =
+    await page.evaluate(() => {
+      const visibleText =
+        String(document.body?.innerText || "");
+
+      const bookingStatus =
+        document.querySelector(
+          'input[name="bookingStatus"], #bookingStatus'
+        )?.value || "";
+
+      const previousStatus =
+        document.querySelector(
+          'input[name="previous_status_val"], #previous_status_value'
+        )?.value || "";
+
+      return {
+        visible_todo:
+          /(^|\n|\r)\s*TO DO\s*($|\n|\r)/i.test(
+            visibleText
+          ),
+        booking_status:
+          String(bookingStatus),
+        previous_status:
+          String(previousStatus)
+      };
+    });
+
+  const todoConfirmed =
+    Boolean(initialState.toDo) ||
+    bookingStatusSnapshot.visible_todo ||
+    bookingStatusSnapshot.booking_status === "4" ||
+    bookingStatusSnapshot.previous_status === "4";
+
+  if (!todoConfirmed) {
+    logResult({
+      ok: false,
+      action: "capture-assign",
+      booking_id: Number(bookingId),
+      outcome: "blocked_not_todo",
+      initial_state_todo:
+        Boolean(initialState.toDo),
+      status_snapshot:
+        bookingStatusSnapshot,
+      changed: false
+    });
+    return;
+  }
+
+  console.log(
+    `TO DO confirmed. Visible=${bookingStatusSnapshot.visible_todo}, bookingStatus=${bookingStatusSnapshot.booking_status || "blank"}, previous_status=${bookingStatusSnapshot.previous_status || "blank"}.`
+  );
+
+  console.log(
+    "Waiting for Octopus fieldworker assignment controls to finish rendering..."
+  );
+
+  const contractorField =
+    page.locator('input[name="contractor_0"]').first();
+
+  let contractorFieldFound = false;
+
+  try {
+    await contractorField.waitFor({
+      state: "attached",
+      timeout: 15000
+    });
+
+    contractorFieldFound = true;
+  } catch {}
+
+  if (!contractorFieldFound) {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await page.evaluate(() => {
+        window.scrollBy(0, 500);
+
+        for (const element of document.querySelectorAll("*")) {
+          if (element.scrollHeight > element.clientHeight + 20) {
+            element.scrollTop = Math.min(
+              element.scrollTop + 500,
+              element.scrollHeight
+            );
+
+            element.dispatchEvent(
+              new Event("scroll", {
+                bubbles: true
+              })
+            );
+          }
+        }
+      });
+
+      await page.waitForTimeout(750);
+
+      if (
+        await contractorField
+          .count()
+          .catch(() => 0)
+      ) {
+        contractorFieldFound = true;
+        break;
+      }
+    }
+  }
+
+  if (!contractorFieldFound) {
+    logResult({
+      ok: false,
+      action: "capture-assign",
+      booking_id: Number(bookingId),
+      outcome: "fieldworker_controls_not_rendered",
+      requested_cleaner:
+        requestedCleaner,
+      requested_fieldworker_id:
+        requestedFieldworkerId,
+      wait_seconds: 24,
+      changed: false
+    });
+
+    return;
+  }
+
+  const currentAssignment =
+    String(
+      await contractorField
+        .inputValue()
+        .catch(() => "")
+    ).trim() || null;
+
+  const bodyText =
+    await page
+      .locator("body")
+      .innerText();
+
+  const unassignedByText =
+    /Unassigned Tasks Manager|Unassigned Fieldworkers?/i.test(
+      bodyText
+    );
+
+  const knownUnassignedIds =
+    new Set([
+      "47464"
+    ]);
+
+  const unassignedByContractorId =
+    currentAssignment
+      ? knownUnassignedIds.has(
+          String(currentAssignment)
+        )
+      : false;
+
+  if (
+    !unassignedByText &&
+    !unassignedByContractorId
+  ) {
+    logResult({
+      ok: false,
+      action: "capture-assign",
+      booking_id: Number(bookingId),
+      outcome: "blocked_not_unassigned",
+      requested_cleaner:
+        requestedCleaner,
+      requested_fieldworker_id:
+        requestedFieldworkerId,
+      current_contractor_id:
+        currentAssignment,
+      unassigned_text_found:
+        unassignedByText,
+      known_unassigned_id_match:
+        unassignedByContractorId,
+      changed: false
+    });
+
+    return;
+  }
+
+  console.log(
+    `Fieldworker controls ready. Current contractor ID: ${currentAssignment}. Unassigned confirmed: ${unassignedByText || unassignedByContractorId}.`
+  );
+
+  const capturedRequests = [];
+
+  // SAFETY:
+  // After the page is fully loaded, block EVERY outgoing browser request.
+  // We only want to learn what Octopus would send.
+  await page.route(
+    "**/*",
+    async (route) => {
+      const request =
+        route.request();
+
+      // Allow read-only traffic so Octopus can finish rendering.
+      if (
+        ["GET", "HEAD", "OPTIONS"].includes(
+          request.method()
+        )
+      ) {
+        await route.continue();
+        return;
+      }
+
+      const rawBody =
+        request.postData() || "";
+
+      const summary = {
+        method:
+          request.method(),
+        url:
+          request.url(),
+        resource_type:
+          request.resourceType(),
+        content_type:
+          request.headers()["content-type"] || "",
+        body_length:
+          rawBody.length,
+        body_preview:
+          rawBody.slice(0, 20000)
+      };
+
+      if (rawBody) {
+        try {
+          const contentType =
+            request.headers()["content-type"] || "";
+
+          const relevant = {};
+          const fieldNames = [];
+
+          if (/multipart\/form-data/i.test(contentType)) {
+            const parts =
+              rawBody.split(/\r?\n--[^\r\n]+/);
+
+            for (const part of parts) {
+              const nameMatch =
+                part.match(/name="([^"]+)"/i);
+
+              if (!nameMatch) continue;
+
+              const key =
+                nameMatch[1];
+
+              const value =
+                (part.split(/\r?\n\r?\n/)[1] || "")
+                  .replace(/\r?\n--?$/, "")
+                  .trim();
+
+              fieldNames.push(key);
+
+              if (
+                /contractor|fieldworker|booking|service|assign|update|appointment/i.test(
+                  key
+                ) ||
+                String(value) ===
+                  String(requestedFieldworkerId)
+              ) {
+                relevant[key] =
+                  String(value).slice(
+                    0,
+                    2000
+                  );
+              }
+            }
+          } else {
+            const params =
+              new URLSearchParams(
+                rawBody
+              );
+
+            for (
+              const [key, value]
+              of params.entries()
+            ) {
+              fieldNames.push(key);
+
+              if (
+                /contractor|fieldworker|booking|service|assign|update|appointment/i.test(
+                  key
+                ) ||
+                String(value) ===
+                  String(requestedFieldworkerId)
+              ) {
+                relevant[key] =
+                  String(value).slice(
+                    0,
+                    2000
+                  );
+              }
+            }
+          }
+
+          summary.field_names =
+            [...new Set(fieldNames)];
+
+          summary.relevant_fields =
+            relevant;
+        } catch {}
+      }
+
+      capturedRequests.push(
+        summary
+      );
+
+      // SAFETY: the actual write never reaches Octopus.
+      await route.abort(
+        "blockedbyclient"
+      );
+    }
+  );
+
+  console.log(
+    `SAFE CAPTURE ONLY: preparing fieldworker ${requestedFieldworkerId} (${requestedCleaner}) for booking ${bookingId}. ALL outgoing requests are blocked.`
+  );
+
+  const mutation =
+    await page.evaluate(
+      ({
+        fieldworkerId,
+        previousContractorId
+      }) => {
+        const result = {
+          contractor_0_found:
+            false,
+          contractor_ids_found:
+            [],
+          booking_updates_flag_found:
+            false,
+          previous_contractor_id:
+            previousContractorId,
+          target_fieldworker_id:
+            fieldworkerId
+        };
+
+        const contractor =
+          document.querySelector(
+            'input[name="contractor_0"]'
+          );
+
+        if (contractor) {
+          result.contractor_0_found =
+            true;
+
+          const setter =
+            Object.getOwnPropertyDescriptor(
+              HTMLInputElement.prototype,
+              "value"
+            )?.set;
+
+          if (setter) {
+            setter.call(
+              contractor,
+              fieldworkerId
+            );
+          } else {
+            contractor.value =
+              fieldworkerId;
+          }
+
+          contractor.dispatchEvent(
+            new Event(
+              "input",
+              { bubbles: true }
+            )
+          );
+
+          contractor.dispatchEvent(
+            new Event(
+              "change",
+              { bubbles: true }
+            )
+          );
+        }
+
+        for (
+          const field of document.querySelectorAll(
+            'input[id^="contractor_ids_"]'
+          )
+        ) {
+          result.contractor_ids_found.push({
+            id:
+              field.id,
+            previous:
+              field.value
+          });
+
+          const setter =
+            Object.getOwnPropertyDescriptor(
+              HTMLInputElement.prototype,
+              "value"
+            )?.set;
+
+          if (setter) {
+            setter.call(
+              field,
+              fieldworkerId
+            );
+          } else {
+            field.value =
+              fieldworkerId;
+          }
+
+          field.dispatchEvent(
+            new Event(
+              "input",
+              { bubbles: true }
+            )
+          );
+
+          field.dispatchEvent(
+            new Event(
+              "change",
+              { bubbles: true }
+            )
+          );
+        }
+
+        const updateFlag =
+          document.querySelector(
+            "#booking_updates_flag"
+          );
+
+        if (updateFlag) {
+          result.booking_updates_flag_found =
+            true;
+
+          updateFlag.value =
+            "1";
+
+          updateFlag.dispatchEvent(
+            new Event(
+              "change",
+              { bubbles: true }
+            )
+          );
+        }
+
+        return result;
+      },
+      {
+        fieldworkerId:
+          requestedFieldworkerId,
+        previousContractorId:
+          currentAssignment
+      }
+    );
+
+  await page.waitForTimeout(
+    500
+  );
+
+  const saveChangesButton =
+    await waitForLargestVisibleExactText(
+      page,
+      "Save changes",
+      10000
+    );
+
+  if (!saveChangesButton) {
+    throw new Error(
+      "Could not find the visible Save changes button."
+    );
+  }
+
+  const formSnapshot =
+    await page.evaluate(
+      ({
+        fieldworkerId,
+        cleanerName
+      }) => {
+        const contractor =
+          document.querySelector(
+            'input[name="contractor_0"]'
+          );
+
+        const form =
+          contractor?.closest("form") ||
+          document.querySelector(
+            'form input[name="booking_id"][value="' +
+              String(
+                document.querySelector(
+                  'input[name="booking_id"]'
+                )?.value || ""
+              ) +
+              '"]'
+          )?.closest("form");
+
+        if (!form) {
+          return {
+            found: false
+          };
+        }
+
+        const formData =
+          new FormData(form);
+
+        const relevantFields = {};
+        const allFieldNames = [];
+
+        for (
+          const [key, value]
+          of formData.entries()
+        ) {
+          allFieldNames.push(
+            key
+          );
+
+          const stringValue =
+            typeof value === "string"
+              ? value
+              : "[binary]";
+
+          if (
+            /contractor|fieldworker|booking|service|assign|update|appointment/i.test(
+              key
+            ) ||
+            String(stringValue) ===
+              String(fieldworkerId)
+          ) {
+            if (
+              Object.prototype.hasOwnProperty.call(
+                relevantFields,
+                key
+              )
+            ) {
+              const existing =
+                relevantFields[key];
+
+              relevantFields[key] =
+                Array.isArray(existing)
+                  ? [
+                      ...existing,
+                      stringValue
+                    ]
+                  : [
+                      existing,
+                      stringValue
+                    ];
+            } else {
+              relevantFields[key] =
+                stringValue;
+            }
+          }
+        }
+
+        const submitters =
+          Array.from(
+            form.querySelectorAll(
+              'button, input[type="submit"], input[type="button"]'
+            )
+          ).map(
+            (element) => ({
+              tag:
+                element.tagName,
+              type:
+                element.getAttribute(
+                  "type"
+                ) || "",
+              name:
+                element.getAttribute(
+                  "name"
+                ) || "",
+              id:
+                element.id || "",
+              value:
+                element.getAttribute(
+                  "value"
+                ) || "",
+              text:
+                String(
+                  element.innerText ||
+                  element.textContent ||
+                  ""
+                )
+                  .replace(
+                    /\s+/g,
+                    " "
+                  )
+                  .trim()
+                  .slice(
+                    0,
+                    300
+                  ),
+              visible:
+                Boolean(
+                  element.offsetWidth ||
+                  element.offsetHeight ||
+                  element.getClientRects()
+                    .length
+                )
+            })
+          );
+
+        return {
+          found:
+            true,
+          action:
+            form.getAttribute(
+              "action"
+            ) || "",
+          method:
+            (
+              form.getAttribute(
+                "method"
+              ) || "GET"
+            ).toUpperCase(),
+          enctype:
+            form.getAttribute(
+              "enctype"
+            ) || "",
+          cleaner_name:
+            cleanerName,
+          target_fieldworker_id:
+            fieldworkerId,
+          all_field_names:
+            [
+              ...new Set(
+                allFieldNames
+              )
+            ],
+          relevant_fields:
+            relevantFields,
+          submitters
+        };
+      },
+      {
+        fieldworkerId:
+          requestedFieldworkerId,
+        cleanerName:
+          requestedCleaner
+      }
+    );
+
+  console.log(
+    "Form snapshot prepared:",
+    JSON.stringify(
+      formSnapshot,
+      null,
+      2
+    )
+  );
+
+  let submitTriggered =
+    false;
+
+  let applyClicked =
+    false;
+
+  const applyButton =
+    await waitForLargestVisibleExactText(
+      page,
+      "Apply",
+      8000
+    );
+
+  if (applyButton) {
+    try {
+      await applyButton.click({
+        timeout: 8000
+      });
+
+      applyClicked = true;
+
+      console.log(
+        "Clicked Octopus Apply button for fieldworker selection."
+      );
+
+      await page.waitForTimeout(
+        1500
+      );
+    } catch (error) {
+      console.log(
+        "Apply button click did not complete:",
+        error?.message || String(error)
+      );
+    }
+  } else {
+    console.log(
+      "No visible Apply button found; continuing to Save changes."
+    );
+  }
+
+  const stateAfterApply =
+    await page.evaluate(() => {
+      const contractor =
+        document.querySelector(
+          'input[name="contractor_0"]'
+        );
+
+      const contractorIds =
+        Array.from(
+          document.querySelectorAll(
+            'input[id^="contractor_ids_"]'
+          )
+        ).map(
+          (field) => ({
+            id:
+              field.id,
+            value:
+              field.value
+          })
+        );
+
+      return {
+        contractor_0:
+          contractor?.value || null,
+        contractor_ids:
+          contractorIds,
+        booking_updates_flag:
+          document.querySelector(
+            "#booking_updates_flag"
+          )?.value || null
+      };
+    });
+
+  console.log(
+    "State after Apply:",
+    JSON.stringify(
+      stateAfterApply,
+      null,
+      2
+    )
+  );
+
+  // IMPORTANT:
+  // Save changes is a type=button JavaScript control, not a normal form submit.
+  // Click Octopus's actual button so its own save handler runs.
+  // CAPTURE ASSIGN DIAGNOSTIC:
+  // Restore contractor IDs after Apply and immediately before Save.
+  const stateBeforeSave =
+    await page.evaluate(
+      (fieldworkerId) => {
+        const setter =
+          Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            "value"
+          )?.set;
+
+        const setValue = (field, value) => {
+          if (!field) return;
+
+          if (setter) {
+            setter.call(field, value);
+          } else {
+            field.value = value;
+          }
+
+          field.dispatchEvent(
+            new Event("input", { bubbles: true })
+          );
+
+          field.dispatchEvent(
+            new Event("change", { bubbles: true })
+          );
+        };
+
+        const contractor =
+          document.querySelector(
+            'input[name="contractor_0"]'
+          );
+
+        setValue(
+          contractor,
+          fieldworkerId
+        );
+
+        const contractorIds = [];
+
+        for (
+          const field of document.querySelectorAll(
+            'input[id^="contractor_ids_"]'
+          )
+        ) {
+          setValue(
+            field,
+            fieldworkerId
+          );
+
+          contractorIds.push({
+            id: field.id,
+            value: field.value
+          });
+        }
+
+        const updateFlag =
+          document.querySelector(
+            "#booking_updates_flag"
+          );
+
+        setValue(
+          updateFlag,
+          "1"
+        );
+
+        return {
+          contractor_0:
+            contractor?.value || null,
+          contractor_ids:
+            contractorIds,
+          booking_updates_flag:
+            updateFlag?.value || null
+        };
+      },
+      requestedFieldworkerId
+    );
+
+  console.log(
+    "State immediately before Save:",
+    JSON.stringify(
+      stateBeforeSave,
+      null,
+      2
+    )
+  );
+  const realSaveButton =
+    page.locator(
+      "#save_booking_btn_id"
+    ).first();
+
+  if (
+    await realSaveButton
+      .isVisible()
+      .catch(() => false)
+  ) {
+    console.log(
+      "Clicking Octopus #save_booking_btn_id. Any write request will be captured and blocked."
+    );
+
+    await realSaveButton.click({
+      timeout: 10000
+    });
+
+    
+    console.log(
+      "Visible Save changes clicked. Now testing hidden #formSubmitButton in SAFE CAPTURE mode."
+    );
+
+    await page.waitForTimeout(1000);
+
+    const hiddenSubmit =
+      page.locator("#formSubmitButton").first();
+
+    if (
+      await hiddenSubmit
+        .count()
+        .catch(() => 0)
+    ) {
+      console.log(
+        "Triggering hidden #formSubmitButton. Any write request remains captured and blocked."
+      );
+
+      await hiddenSubmit.evaluate(
+        (element) => element.click()
+      );
+    }
+
+    submitTriggered =
+      true;
+  } else {
+    console.log(
+      "#save_booking_btn_id was not visibly available; using visible Save changes text as fallback."
+    );
+
+    await saveChangesButton.click({
+      timeout: 10000
+    }).catch(
+      async () => {
+        await saveChangesButton.evaluate(
+          (element) =>
+            element.click()
+        );
+      }
+    );
+
+    submitTriggered =
+      true;
+  }
+
+  await page.waitForTimeout(
+    10000
+  );
+
+  logResult({
+    ok:
+      capturedRequests.some(
+        (request) =>
+          !["GET", "HEAD", "OPTIONS"].includes(
+            request.method
+          )
+      ),
+    action:
+      "capture-assign",
+    booking_id:
+      Number(bookingId),
+    requested_cleaner:
+      requestedCleaner,
+    requested_fieldworker_id:
+      requestedFieldworkerId,
+    previous_contractor_id:
+      currentAssignment,
+    todo_status_snapshot:
+      bookingStatusSnapshot,
+    outcome:
+      capturedRequests.some(
+        (request) =>
+          !["GET", "HEAD", "OPTIONS"].includes(
+            request.method
+          )
+      )
+        ? "assignment_write_captured_and_blocked"
+        : "no_assignment_write_detected",
+    browser_form_mutation:
+      mutation,
+    form_snapshot:
+      formSnapshot,
+    apply_clicked:
+      applyClicked,
+    state_after_apply:
+      stateAfterApply,
+    submit_triggered:
+      submitTriggered,
+    captured_requests:
+      capturedRequests,
+    safety:
+      "GET/HEAD/OPTIONS requests were allowed so Octopus could render. Every non-read request was captured and blocked before reaching Octopus.",
+    changed:
+      false
+  });
+}
+
 async function diagnoseBookingPage(page) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     await page.evaluate(() => {
@@ -1542,6 +2795,7 @@ async function main() {
 
     if (mode === "cancel") await cancelBooking(page);
     else if (["reschedule", "capture-reschedule"].includes(mode)) await rescheduleBooking(page);
+    else if (mode === "capture-assign") await captureAssignCleaner(page);
     else if (mode === "diagnose") await diagnoseBookingPage(page);
     else if (mode === "billing") await inspectBilling(page);
     else await inspectBooking(page);
@@ -1555,3 +2809,6 @@ async function main() {
 }
 
 main();
+
+
+

@@ -552,7 +552,64 @@ return {
   durationMinutes
 };
 }
+async function seedMissingDispatchBookings() {
+  const result = await pool.query(
+    `
+    INSERT INTO public.booking_tracking (
+      booking_number,
+      tracking_token,
+      status,
+      octopus_booking_id,
+      octopus_booking_url,
+      updated_at
+    )
+    SELECT
+      dispatch.booking_number,
+      md5(
+        dispatch.booking_number
+        || '-'
+        || COALESCE(dispatch.octopus_booking_id::text, '')
+        || '-'
+        || NOW()::text
+        || '-'
+        || random()::text
+      ),
+      dispatch.assignment_status,
+      dispatch.octopus_booking_id,
+      dispatch.octopus_booking_url,
+      NOW()
+    FROM public.booking_dispatch_state AS dispatch
+    LEFT JOIN public.booking_tracking AS tracking
+      ON tracking.booking_number = dispatch.booking_number
+    WHERE
+      tracking.booking_number IS NULL
+      AND dispatch.assignment_status = 'NEEDS CLEANER'
+      AND dispatch.octopus_booking_id IS NOT NULL
+      AND dispatch.octopus_booking_url IS NOT NULL
+    ON CONFLICT (booking_number)
+    DO UPDATE SET
+      octopus_booking_id = COALESCE(
+        EXCLUDED.octopus_booking_id,
+        public.booking_tracking.octopus_booking_id
+      ),
+      octopus_booking_url = COALESCE(
+        EXCLUDED.octopus_booking_url,
+        public.booking_tracking.octopus_booking_url
+      ),
+      updated_at = NOW()
+    RETURNING booking_number;
+    `
+  );
 
+  if (result.rowCount > 0) {
+    console.log(
+      `Seeded ${result.rowCount} missing dispatch booking(s) into booking_tracking:`,
+      result.rows.map((row) => row.booking_number)
+    );
+  }
+
+  return result.rows;
+}
 async function loadBookingsToSync() {
   const result = await pool.query(
     `
@@ -712,6 +769,8 @@ async function syncBooking(page, booking) {
 }
 
 async function runSyncCycle(page) {
+  await seedMissingDispatchBookings();
+
   const bookings = await loadBookingsToSync();
 
   if (bookings.length === 0) {
