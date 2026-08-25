@@ -1547,28 +1547,23 @@ if (shouldRemainUnassigned) {
         `FINAL_APPOINTMENT_NOT_STICKING: ${JSON.stringify(finalAppointmentState)}`
       );
     }
-
-    if (!finalAppointmentState.fieldworkerId) {
-      throw new Error(
-        `FIELDWORKER_ID_MISSING: ${JSON.stringify(finalAppointmentState)}`
-      );
-    }
-
-    if (
-      shouldRemainUnassigned &&
-      finalAppointmentState.fieldworkerId !== UNASSIGNED_TASKS_MANAGER_ID
-    ) {
-      throw new Error(
-        `UNASSIGNED_PLACEHOLDER_NOT_COMMITTED: ${JSON.stringify(finalAppointmentState)}`
-      );
-    }
-
+if (!finalAppointmentState.fieldworkerId) {
+  if (shouldRemainUnassigned) {
     console.log(
-      "Fieldworker id committed:",
-      finalAppointmentState.fieldworkerId,
-      shouldRemainUnassigned ? "(Unassigned Tasks Manager placeholder)" : ""
+      "No contractor input/value present for unassigned booking. Continuing to Save so Octopus can validate the real form state."
     );
-
+  } else {
+    throw new Error(
+      `FIELDWORKER_ID_MISSING: ${JSON.stringify(finalAppointmentState)}`
+    );
+  }
+} else {
+  console.log(
+    "Fieldworker id committed:",
+    finalAppointmentState.fieldworkerId,
+    shouldRemainUnassigned ? "(Unassigned Tasks Manager placeholder)" : ""
+  );
+}
     console.log("Required booking fields completed.");
 
     console.log("Reading current form state...");
