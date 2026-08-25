@@ -1127,7 +1127,38 @@ if (bookingIdBeforeSave !== "0") {
 }
 
 console.log("Deposit skipped - not required.");
-    console.log("Attempting to save booking with full validation capture...");
+    
+console.log("Installing network-level booking_id=0 patch...");
+
+await page.route("**/booking-add?old=1", async route => {
+  const request = route.request();
+  let postData = request.postData();
+
+  if (
+    request.method() === "POST" &&
+    typeof postData === "string" &&
+    postData.includes('name="booking_id"')
+  ) {
+    const before = postData;
+
+    // Replace ONLY the blank booking_id multipart value with 0.
+    postData = postData.replace(
+      /(name="booking_id"\r?\n\r?\n)\r?\n/,
+      "$10\r\n"
+    );
+
+    console.log(
+      "Network booking_id patch applied:",
+      before !== postData
+    );
+  }
+
+  await route.continue({
+    postData
+  });
+});
+
+console.log("Attempting to save booking with full validation capture...");
 
     const postTraffic = [];
 
@@ -1209,117 +1240,10 @@ console.log("Deposit skipped - not required.");
       console.log("Normal save response:", normalSaveBody);
     }
 
-    const bookingIdNullError =
-      /Column\s+'booking_id'\s+cannot\s+be\s+null/i.test(normalSaveBody);
-
-    if (bookingIdNullError) {
-      console.log(
-        "Octopus returned blank booking_id error; retrying as true NEW booking without booking_id field..."
+    if (/booking_id'\s+cannot\s+be\s+null/i.test(normalSaveBody)) {
+      throw new Error(
+        `BOOKING_ID_STILL_NULL_AFTER_NETWORK_PATCH: ${normalSaveBody}`
       );
-
-      const latestSaveRequest = [...postTraffic]
-        .reverse()
-        .find(item =>
-          item.kind === "request" &&
-          /\/booking-add\?old=1/i.test(item.url) &&
-          typeof item.postData === "string" &&
-          item.postData.includes('name="booking_id"')
-        );
-
-      if (!latestSaveRequest?.postData) {
-        throw new Error("NEW_BOOKING_RETRY_NO_CAPTURED_POST");
-      }
-
-      const contentType = normalSaveResponse
-        ?.request()
-        ?.headers()
-        ?.["content-type"] || "";
-
-      const boundaryMatch = contentType.match(/boundary=(.+)$/i);
-
-      if (!boundaryMatch) {
-        throw new Error(
-          `NEW_BOOKING_RETRY_NO_MULTIPART_BOUNDARY: ${contentType}`
-        );
-      }
-
-      const boundary = boundaryMatch[1];
-      const rawParts = latestSaveRequest.postData.split(`--${boundary}`);
-
-      const filteredParts = rawParts.filter(part => {
-        if (!part || part === "--\r\n" || part === "--") return true;
-        return !/name="booking_id"\r?\n\r?\n\s*\r?\n/i.test(part);
-      });
-
-      const retryBody = filteredParts.join(`--${boundary}`);
-
-      const retryResult = await page.evaluate(
-        async ({ body, contentType }) => {
-          const response = await fetch("/booking-add?old=1", {
-            method: "POST",
-            credentials: "include",
-            headers: {
-              "Content-Type": contentType,
-              "X-Requested-With": "XMLHttpRequest"
-            },
-            body
-          });
-
-          const responseText = await response.text();
-
-          return {
-            status: response.status,
-            responseText
-          };
-        },
-        {
-          body: retryBody,
-          contentType
-        }
-      );
-
-      console.log(
-        "NEW BOOKING RETRY RESPONSE:",
-        JSON.stringify(retryResult)
-      );
-
-      let parsedRetry = null;
-      try {
-        parsedRetry = JSON.parse(retryResult.responseText);
-      } catch {}
-
-      if (
-        parsedRetry?.IsSuccess === true ||
-        /BOK-\d+/i.test(retryResult.responseText)
-      ) {
-        console.log("NEW BOOKING RETRY SUCCEEDED.");
-
-        await page.waitForTimeout(1500);
-
-        // If the endpoint returns a booking URL/id in JSON, navigate to it so the
-        // existing success diagnostics can capture the booking number/id.
-        const possibleUrl =
-          parsedRetry?.RedirectUrl ||
-          parsedRetry?.redirect_url ||
-          parsedRetry?.Url ||
-          parsedRetry?.url ||
-          null;
-
-        if (possibleUrl && typeof possibleUrl === "string") {
-          const absoluteUrl = possibleUrl.startsWith("http")
-            ? possibleUrl
-            : new URL(possibleUrl, page.url()).href;
-
-          await page.goto(absoluteUrl, {
-            waitUntil: "domcontentloaded",
-            timeout: 30000
-          }).catch(() => {});
-        }
-      } else {
-        throw new Error(
-          `NEW_BOOKING_RETRY_FAILED: ${retryResult.responseText}`
-        );
-      }
     }
 
     // Manual Octopus behavior: Save creates the booking first, then opens
