@@ -1665,14 +1665,22 @@ console.log("Attempting to save booking with full validation capture...");
     // save returns the specific "booking_id cannot be null" error, replay the exact
     // same form data WITHOUT the blank booking_id field.
     let normalSaveResponse = null;
+    let normalSaveRequest = null;
+    let normalSaveBody = "";
+
+    const normalSaveRequestPromise = page.waitForRequest(
+      request =>
+        request.method() === "POST" &&
+        /\/booking-add\?old=1/i.test(request.url()),
+      { timeout: 15000 }
+    ).catch(() => null);
 
     const normalSaveResponsePromise = page.waitForResponse(
       response =>
         response.request().method() === "POST" &&
         /\/booking-add\?old=1/i.test(response.url()),
-      { timeout: 15000 }
+      { timeout: 20000 }
     ).catch(() => null);
-
 
     await saveButton.click({
       timeout: 10000
@@ -1685,24 +1693,134 @@ console.log("Attempting to save booking with full validation capture...");
       });
     });
 
-
+    normalSaveRequest = await normalSaveRequestPromise;
     normalSaveResponse = await normalSaveResponsePromise;
 
-    let normalSaveBody = "";
     if (normalSaveResponse) {
       normalSaveBody = await normalSaveResponse.text().catch(() => "");
-      console.log("Normal save response:", normalSaveBody);
+      console.log("Normal save response:", normalSaveBody.slice(0, 12000));
+    } else {
+      console.log("Normal save produced no matching response within timeout.");
     }
 
-    // Manual Octopus behavior: Save creates the booking first, then opens
-    // a "Notify Customer" modal. That modal is NOT required to create the BOK.
+    // First give normal browser behavior a short chance to complete.
     await Promise.race([
-      page.waitForURL(/\/booking\/view\/\d+/i, { timeout: 12000 }).catch(() => null),
+      page.waitForURL(/\/booking\/view\/\d+/i, { timeout: 8000 }).catch(() => null),
       page.getByText("Notify Customer", { exact: true })
-        .waitFor({ state: "visible", timeout: 12000 })
+        .waitFor({ state: "visible", timeout: 8000 })
         .catch(() => null),
-      page.waitForTimeout(12000)
+      page.waitForTimeout(8000)
     ]);
+
+    // Some Octopus versions POST the exact form but fail because a blank booking_id
+    // makes the legacy endpoint think this is an update. If that happens, replay
+    // the exact browser-generated form body WITHOUT booking_id.
+    const pageAlreadyLooksCreated = await page.evaluate(() => {
+      const bodyText = document.body?.innerText || "";
+      return (
+        /\/booking\/view\/\d+/i.test(location.href) ||
+        /\bBOK-\d+\b/i.test(bodyText) ||
+        Array.from(document.querySelectorAll("body *")).some(el => {
+          const text = String(el.innerText || el.textContent || "")
+            .replace(/\s+/g, " ")
+            .trim();
+          const r = el.getBoundingClientRect();
+          const s = getComputedStyle(el);
+          return text === "Notify Customer" &&
+                 s.display !== "none" &&
+                 s.visibility !== "hidden" &&
+                 r.width > 0 &&
+                 r.height > 0;
+        })
+      );
+    });
+
+    const shouldReplayWithoutBookingId =
+      !pageAlreadyLooksCreated &&
+      normalSaveRequest &&
+      (
+        !normalSaveResponse ||
+        /booking[_ ]?id.{0,80}(null|blank|required|missing|cannot)/i.test(normalSaveBody) ||
+        /cannot be null/i.test(normalSaveBody)
+      );
+
+    if (shouldReplayWithoutBookingId) {
+      console.log("Normal save did not create booking. Replaying form WITHOUT blank booking_id...");
+
+      const originalPostData = normalSaveRequest.postData() || "";
+      const params = new URLSearchParams(originalPostData);
+
+      params.delete("booking_id");
+
+      // Remove any weird bracketed / duplicate booking_id fields if Octopus emitted them.
+      for (const key of [...params.keys()]) {
+        if (/^booking_id(?:\[.*\])?$/i.test(key)) {
+          params.delete(key);
+        }
+      }
+
+      const replayBody = params.toString();
+      console.log("Replay form body length:", replayBody.length);
+
+      const replayResult = await page.evaluate(
+        async ({ url, body }) => {
+          const response = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+              "X-Requested-With": "XMLHttpRequest"
+            },
+            credentials: "include",
+            body
+          });
+
+          const text = await response.text();
+
+          return {
+            ok: response.ok,
+            status: response.status,
+            url: response.url,
+            text: text.slice(0, 12000)
+          };
+        },
+        {
+          url: normalSaveRequest.url(),
+          body: replayBody
+        }
+      );
+
+      console.log("Replay save result:", JSON.stringify(replayResult));
+
+      // If replay returned JSON/HTML containing a booking id or redirect URL,
+      // navigate to it so the normal diagnostics below can verify creation.
+      const replayBookingNumber =
+        replayResult.text.match(/\bBOK-\d+\b/i)?.[0]?.toUpperCase() || null;
+
+      const replayBookingId =
+        replayResult.text.match(/\/booking\/view\/(\d+)/i)?.[1] ||
+        replayResult.text.match(/["']booking_id["']\s*[:=]\s*["']?(\d+)/i)?.[1] ||
+        null;
+
+      if (replayBookingId && !/\/booking\/view\/\d+/i.test(page.url())) {
+        await page.goto(
+          `https://admin.octopuspro.com/booking/view/${replayBookingId}`,
+          {
+            waitUntil: "domcontentloaded",
+            timeout: 30000
+          }
+        ).catch(() => {});
+      } else if (replayBookingNumber) {
+        console.log("Replay returned booking number:", replayBookingNumber);
+      }
+
+      await Promise.race([
+        page.waitForURL(/\/booking\/view\/\d+/i, { timeout: 10000 }).catch(() => null),
+        page.getByText("Notify Customer", { exact: true })
+          .waitFor({ state: "visible", timeout: 10000 })
+          .catch(() => null),
+        page.waitForTimeout(10000)
+      ]);
+    }
 
     await page.waitForTimeout(1200);
 
@@ -1846,7 +1964,9 @@ console.log("Attempting to save booking with full validation capture...");
       }
     } else {
       throw new Error(
-        `BOOKING_NOT_CREATED: ${JSON.stringify(saveDiagnostics.visibleAlerts)}`
+        `BOOKING_NOT_CREATED: alerts=${JSON.stringify(saveDiagnostics.visibleAlerts)} ` +
+        `invalid=${JSON.stringify(saveDiagnostics.invalidFields)} ` +
+        `normalSaveBody=${JSON.stringify(normalSaveBody.slice(0, 4000))}`
       );
     }
 
