@@ -227,24 +227,8 @@ async function main() {
     });
 
     await page.waitForTimeout(1200);
-
-    // Keep hidden values synchronized after the real UI selection.
-    await setValue(
-      page,
-      'input[name="customer_id"]',
-      TEST.customerId
-    );
-
-    await setValue(
-      page,
-      'input[name="customers"]',
-      JSON.stringify([
-        {
-          id: TEST.customerId,
-          name: TEST.customerName
-        }
-      ])
-    );
+    // IMPORTANT: do not overwrite customer_id/customers.
+    // Octopus fills these with its full customer object after the real UI selection.
 
     const customerState = await page.evaluate((customerName) => {
       const visible = el => {
@@ -1104,60 +1088,22 @@ console.log(
   JSON.stringify(appointmentSummaryBeforeSave)
 );
 
-console.log("Setting NEW booking_id = 0...");
+console.log("Leaving booking_id blank exactly like successful manual Octopus save.");
 
-await setValue(
-  page,
-  'input[name="booking_id"]',
-  "0"
-);
+const nativeCustomerPayload = await page.locator('input[name="customers"]').first().inputValue().catch(() => "");
+console.log("Native customers payload length:", nativeCustomerPayload.length);
+console.log("Native customers payload preview:", nativeCustomerPayload.slice(0, 300));
 
-const bookingIdBeforeSave = await page
-  .locator('input[name="booking_id"]')
-  .first()
-  .inputValue()
-  .catch(() => "");
-
-console.log("booking_id before Save:", bookingIdBeforeSave);
-
-if (bookingIdBeforeSave !== "0") {
+if (!nativeCustomerPayload || nativeCustomerPayload.length < 100) {
   throw new Error(
-    `BOOKING_ID_NOT_ZERO_BEFORE_SAVE: ${bookingIdBeforeSave}`
+    `CUSTOMER_PAYLOAD_NOT_FULL_OBJECT: ${nativeCustomerPayload}`
   );
 }
 
+
+
 console.log("Deposit skipped - not required.");
     
-console.log("Installing network-level booking_id=0 patch...");
-
-await page.route("**/booking-add?old=1", async route => {
-  const request = route.request();
-  let postData = request.postData();
-
-  if (
-    request.method() === "POST" &&
-    typeof postData === "string" &&
-    postData.includes('name="booking_id"')
-  ) {
-    const before = postData;
-
-    // Replace ONLY the blank booking_id multipart value with 0.
-    postData = postData.replace(
-      /(name="booking_id"\r?\n\r?\n)\r?\n/,
-      "$10\r\n"
-    );
-
-    console.log(
-      "Network booking_id patch applied:",
-      before !== postData
-    );
-  }
-
-  await route.continue({
-    postData
-  });
-});
-
 console.log("Attempting to save booking with full validation capture...");
 
     const postTraffic = [];
@@ -1238,12 +1184,6 @@ console.log("Attempting to save booking with full validation capture...");
     if (normalSaveResponse) {
       normalSaveBody = await normalSaveResponse.text().catch(() => "");
       console.log("Normal save response:", normalSaveBody);
-    }
-
-    if (/booking_id'\s+cannot\s+be\s+null/i.test(normalSaveBody)) {
-      throw new Error(
-        `BOOKING_ID_STILL_NULL_AFTER_NETWORK_PATCH: ${normalSaveBody}`
-      );
     }
 
     // Manual Octopus behavior: Save creates the booking first, then opens
