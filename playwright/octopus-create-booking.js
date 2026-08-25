@@ -1418,47 +1418,108 @@ console.log("Appointment date/time set.");
 
     console.log("Re-applying appointment after fieldworker render...");
 
-    const liveFirstAppointment = page.locator('[id^="booking_visits_"]').first();
+    // FAST/STABLE FINAL APPOINTMENT SET:
+    // Do not use click/type here. Octopus can re-render these controls after
+    // the fieldworker area changes, and Playwright can sit on stale/reactive
+    // inputs for 30+ seconds per field. Set the live DOM values directly and
+    // dispatch the same input/change/blur events Octopus listens for.
+    const finalAppointmentState = await page.evaluate(
+      ({ expectedAppointment, shouldRemainUnassigned }) => {
+        const appointment = document.querySelector('[id^="booking_visits_"]');
 
-    const liveStartDate = liveFirstAppointment.locator(
-      'input[name^="multi_new_stpartdate_"]'
-    ).first();
+        if (!appointment) {
+          return {
+            error: "NO_LIVE_APPOINTMENT_BLOCK",
+            startDate: "",
+            startTime: "",
+            endDate: "",
+            endTime: "",
+            fieldworkerId: ""
+          };
+        }
 
-    const liveStartTime = liveFirstAppointment.locator(
-      'input[name^="multi_new_stparttime_"]'
-    ).first();
+        const find = prefix =>
+          appointment.querySelector(`input[name^="${prefix}"]`);
 
-    const liveEndDate = liveFirstAppointment.locator(
-      'input[name^="multi_new_etpartdate_"]'
-    ).first();
+        const setNativeValue = (el, value) => {
+          if (!el) return false;
 
-    const liveEndTime = liveFirstAppointment.locator(
-      'input[name^="multi_new_etparttime_"]'
-    ).first();
+          const proto = Object.getPrototypeOf(el);
+          const descriptor =
+            Object.getOwnPropertyDescriptor(proto, "value") ||
+            Object.getOwnPropertyDescriptor(
+              window.HTMLInputElement.prototype,
+              "value"
+            );
 
-    await setFirstAppointmentValue(liveStartDate, expectedAppointment.startDate);
-    await setFirstAppointmentValue(liveStartTime, expectedAppointment.startTime);
-    await setFirstAppointmentValue(liveEndDate, expectedAppointment.endDate);
-    await setFirstAppointmentValue(liveEndTime, expectedAppointment.endTime);
+          if (descriptor && descriptor.set) {
+            descriptor.set.call(el, value);
+          } else {
+            el.value = value;
+          }
 
-    await page.waitForTimeout(500);
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          el.dispatchEvent(new Event("blur", { bubbles: true }));
+          return true;
+        };
 
-    const finalAppointmentState = {
-      startDate: await liveStartDate.inputValue(),
-      startTime: await liveStartTime.inputValue(),
-      endDate: await liveEndDate.inputValue(),
-      endTime: await liveEndTime.inputValue(),
-      fieldworkerId: await liveFirstAppointment
-        .locator('input[name^="contractor_"]')
-        .first()
-        .inputValue()
-        .catch(() => "")
-    };
+        const startDateEl = find("multi_new_stpartdate_");
+        const startTimeEl = find("multi_new_stparttime_");
+        const endDateEl = find("multi_new_etpartdate_");
+        const endTimeEl = find("multi_new_etparttime_");
+        const contractorEl = appointment.querySelector(
+          'input[name^="contractor_"]'
+        );
+
+        const applied = {
+          startDate: setNativeValue(
+            startDateEl,
+            expectedAppointment.startDate
+          ),
+          startTime: setNativeValue(
+            startTimeEl,
+            expectedAppointment.startTime
+          ),
+          endDate: setNativeValue(
+            endDateEl,
+            expectedAppointment.endDate
+          ),
+          endTime: setNativeValue(
+            endTimeEl,
+            expectedAppointment.endTime
+          )
+        };
+
+        if (shouldRemainUnassigned && contractorEl) {
+          setNativeValue(contractorEl, "");
+        }
+
+        return {
+          applied,
+          startDate: startDateEl?.value || "",
+          startTime: startTimeEl?.value || "",
+          endDate: endDateEl?.value || "",
+          endTime: endTimeEl?.value || "",
+          fieldworkerId: contractorEl?.value || ""
+        };
+      },
+      {
+        expectedAppointment,
+        shouldRemainUnassigned
+      }
+    );
 
     console.log(
       "FINAL appointment + fieldworker state:",
       JSON.stringify(finalAppointmentState)
     );
+
+    if (finalAppointmentState.error) {
+      throw new Error(
+        `FINAL_APPOINTMENT_DOM_ERROR: ${JSON.stringify(finalAppointmentState)}`
+      );
+    }
 
     if (
       finalAppointmentState.startDate !== expectedAppointment.startDate ||
@@ -1473,7 +1534,7 @@ console.log("Appointment date/time set.");
 
     if (
       !finalAppointmentState.fieldworkerId &&
-      !/unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""))
+      !shouldRemainUnassigned
     ) {
       throw new Error(
         `FIELDWORKER_ID_MISSING: ${JSON.stringify(finalAppointmentState)}`
