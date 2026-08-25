@@ -220,61 +220,114 @@ async function main() {
 
     let customerSelected = false;
 
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      console.log(`Customer lookup attempt ${attempt}...`);
+    // Lisa live bookings may refer to an existing Octopus customer whose displayed
+    // name is not an exact text match. Search several identifiers and select a
+    // visible result that contains the customer's name/phone/email.
+    const customerLookupTerms = [
+      livePayload?.customerPhone,
+      livePayload?.phone,
+      livePayload?.customerEmail,
+      livePayload?.email,
+      TEST.customerName
+    ]
+      .map(value => String(value || "").trim())
+      .filter((value, index, arr) => value && arr.indexOf(value) === index);
 
-      await customerSearch.click({ force: true }).catch(() => {});
-      await customerSearch.fill("").catch(() => {});
-      await customerSearch.type(TEST.customerName, {
-        delay: 35
-      }).catch(() => {});
+    for (const lookupTerm of customerLookupTerms) {
+      if (customerSelected) break;
 
-      await page.waitForTimeout(1500 + (attempt * 600));
+      console.log(`Customer lookup using: ${lookupTerm}`);
 
-      const exactMatches = page.getByText(TEST.customerName, {
-        exact: true
-      });
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await customerSearch.click({ force: true }).catch(() => {});
+        await customerSearch.fill("").catch(() => {});
+        await customerSearch.type(lookupTerm, { delay: 35 }).catch(() => {});
+        await page.waitForTimeout(1400 + attempt * 500);
 
-      const exactCount = await exactMatches.count().catch(() => 0);
+        const candidates = page.locator(
+          '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
+        );
 
-      for (let i = exactCount - 1; i >= 0; i--) {
-        const candidate = exactMatches.nth(i);
+        const candidateCount = await candidates.count().catch(() => 0);
 
-        if (await candidate.isVisible().catch(() => false)) {
+        for (let i = 0; i < candidateCount; i++) {
+          const candidate = candidates.nth(i);
+          const text = (await candidate.innerText().catch(() => ""))
+            .replace(/\s+/g, " ")
+            .trim();
+
+          if (!text) continue;
+
+          const normalized = text.toLowerCase();
+          const name = String(TEST.customerName || "").toLowerCase();
+          const phone = String(
+            livePayload?.customerPhone || livePayload?.phone || ""
+          ).replace(/\D/g, "");
+          const email = String(
+            livePayload?.customerEmail || livePayload?.email || ""
+          ).toLowerCase();
+          const candidateDigits = text.replace(/\D/g, "");
+
+          const matchesName = name && normalized.includes(name);
+          const matchesEmail = email && normalized.includes(email);
+          const matchesPhone =
+            phone &&
+            candidateDigits &&
+            (candidateDigits.includes(phone) || phone.includes(candidateDigits));
+
+          if (matchesName || matchesEmail || matchesPhone) {
+            console.log("Selecting customer option:", text);
+            await candidate.click({ force: true, timeout: 10000 });
+            customerSelected = true;
+            break;
+          }
+        }
+
+        if (customerSelected) break;
+
+        // Some Octopus customer selectors return one filtered result whose text
+        // formatting differs from our payload. If exactly one plausible dropdown
+        // option remains, select it.
+        const visiblePlausible = [];
+        for (let i = 0; i < candidateCount; i++) {
+          const candidate = candidates.nth(i);
+          const text = (await candidate.innerText().catch(() => ""))
+            .replace(/\s+/g, " ")
+            .trim();
+          if (
+            text &&
+            !/no results|no options|create new|add customer/i.test(text) &&
+            text.length < 500
+          ) {
+            visiblePlausible.push({ candidate, text });
+          }
+        }
+
+        if (visiblePlausible.length === 1) {
           console.log(
-            "Selecting customer option:",
-            (await candidate.innerText().catch(() => TEST.customerName))
-              .replace(/\s+/g, " ")
-              .trim()
+            "Selecting sole filtered customer option:",
+            visiblePlausible[0].text
           );
-
-          await candidate.click({
+          await visiblePlausible[0].candidate.click({
             force: true,
             timeout: 10000
           });
-
           customerSelected = true;
           break;
         }
-      }
 
-      if (customerSelected) {
-        break;
+        await customerSearch.fill("").catch(() => {});
+        await page.locator("body").click({
+          position: { x: 30, y: 30 },
+          force: true
+        }).catch(() => {});
+        await page.waitForTimeout(600);
       }
-
-      // Retry by clearing the search and briefly clicking away so Octopus
-      // reopens/reloads the customer result list on the next attempt.
-      await customerSearch.fill("").catch(() => {});
-      await page.locator("body").click({
-        position: { x: 30, y: 30 },
-        force: true
-      }).catch(() => {});
-      await page.waitForTimeout(700);
     }
 
     if (!customerSelected) {
       throw new Error(
-        `CUSTOMER_OPTION_NOT_FOUND_AFTER_RETRIES: ${TEST.customerName}`
+        `CUSTOMER_OPTION_NOT_FOUND_AFTER_PHONE_EMAIL_NAME: ${TEST.customerName}`
       );
     }
 
