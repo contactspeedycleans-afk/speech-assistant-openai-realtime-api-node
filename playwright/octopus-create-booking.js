@@ -1309,45 +1309,50 @@ console.log("Appointment date/time set.");
       /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
     const UNASSIGNED_TASKS_MANAGER_ID = "47464";
 
-    if (shouldRemainUnassigned) {
-      console.log(
-        "Assigning Octopus placeholder fieldworker: Unassigned Tasks Manager (47464)."
-      );
+if (shouldRemainUnassigned) {
+  console.log(
+    "Booking should remain unassigned. Attempting Unassigned Tasks Manager placeholder."
+  );
 
-      const contractorInput = firstAppointment
-        .locator('input[name^="contractor_"]')
-        .first();
+  const contractorInput = firstAppointment
+    .locator('input[name^="contractor_"]')
+    .first();
 
-      await contractorInput.waitFor({
-        state: "attached",
-        timeout: 10000
-      });
+  const contractorInputExists = await contractorInput
+    .count()
+    .catch(() => 0);
 
-      await contractorInput.evaluate((el, id) => {
-        const proto = Object.getPrototypeOf(el);
-        const descriptor =
-          Object.getOwnPropertyDescriptor(proto, "value") ||
-          Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype,
-            "value"
-          );
+  if (contractorInputExists > 0) {
+    await contractorInput.evaluate((el, id) => {
+      const proto = Object.getPrototypeOf(el);
+      const descriptor =
+        Object.getOwnPropertyDescriptor(proto, "value") ||
+        Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          "value"
+        );
 
-        if (descriptor && descriptor.set) {
-          descriptor.set.call(el, id);
-        } else {
-          el.value = id;
-        }
+      if (descriptor && descriptor.set) {
+        descriptor.set.call(el, id);
+      } else {
+        el.value = id;
+      }
 
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        el.dispatchEvent(new Event("blur", { bubbles: true }));
-      }, UNASSIGNED_TASKS_MANAGER_ID);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+    }, UNASSIGNED_TASKS_MANAGER_ID);
 
-      console.log(
-        "UNASSIGNED placeholder contractor committed:",
-        await contractorInput.inputValue()
-      );
-    } else {
+    console.log(
+      "UNASSIGNED placeholder contractor committed:",
+      await contractorInput.inputValue().catch(() => "")
+    );
+  } else {
+    console.log(
+      "No contractor_ input rendered by Octopus. Continuing without crashing so booking save can determine next step."
+    );
+  }
+} else {
       console.log("Selecting requested fieldworker with component-native input...");
 
       const fieldworkerSearch = firstAppointment
