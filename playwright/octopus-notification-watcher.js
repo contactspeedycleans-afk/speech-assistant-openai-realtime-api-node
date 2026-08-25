@@ -4798,13 +4798,19 @@ function startHttpServer() {
       return;
     }
 
-    if (req.method !== "POST" || req.url !== "/needs-cleaner") {
-      sendJson(404, {
-        status: "error",
-        message: "Not found"
-      });
-      return;
-    }
+ if (
+  req.method !== "POST" ||
+  (
+    req.url !== "/needs-cleaner" &&
+    req.url !== "/lisa/booking-action"
+  )
+) {
+  sendJson(404, {
+    status: "error",
+    message: "Not found"
+  });
+  return;
+}
 
     try {
       let rawBody = "";
@@ -4820,7 +4826,160 @@ function startHttpServer() {
       const body = rawBody
         ? JSON.parse(rawBody)
         : {};
+if (req.url === "/lisa/booking-action") {
+  const configuredSecret = String(
+    process.env.LISA_ACTION_SECRET || ""
+  ).trim();
 
+  const suppliedSecret = String(
+    req.headers["x-lisa-secret"] || ""
+  ).trim();
+
+  if (
+    !configuredSecret ||
+    suppliedSecret !== configuredSecret
+  ) {
+    sendJson(401, {
+      success: false,
+      outcome: "unauthorized",
+      error: "Unauthorized."
+    });
+    return;
+  }
+
+  const action = String(
+    body.action || ""
+  ).trim().toLowerCase();
+
+  console.log(
+    "Lisa booking action request:",
+    {
+      action,
+      bookingId: body.bookingId || null
+    }
+  );
+
+  if (action !== "create") {
+    sendJson(400, {
+      success: false,
+      outcome: "unsupported_action",
+      error: "Only create is enabled on this endpoint right now."
+    });
+    return;
+  }
+
+  if (body.customerConfirmed !== true) {
+    sendJson(200, {
+      success: false,
+      outcome: "confirmation_required",
+      error:
+        "The customer must explicitly confirm the complete booking first."
+    });
+    return;
+  }
+
+  const createUrl = String(
+    process.env.OCTOPUS_CREATE_BOOKING_WEBHOOK_URL || ""
+  ).trim();
+
+  if (!createUrl) {
+    sendJson(200, {
+      success: false,
+      outcome: "connector_not_configured",
+      error:
+        "The OctopusPro create-booking connector is not configured."
+    });
+    return;
+  }
+
+  const createSecret = String(
+    process.env.OCTOPUS_CREATE_BOOKING_SECRET || ""
+  ).trim();
+
+  const outboundBody = {
+    ...body,
+    source: "LISA_VOICE"
+  };
+
+  delete outboundBody.action;
+
+  const createResponse = await fetch(
+    createUrl,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(createSecret
+          ? {
+              "X-Emma-Secret":
+                createSecret
+            }
+          : {})
+      },
+      body: JSON.stringify(outboundBody),
+      signal: AbortSignal.timeout(45000)
+    }
+  );
+
+  const responseText =
+    await createResponse.text();
+
+  let result = {};
+
+  try {
+    result = JSON.parse(
+      responseText || "{}"
+    );
+  } catch {
+    result = {
+      success: false,
+      error:
+        "Create-booking connector returned invalid JSON."
+    };
+  }
+
+  const bookingId =
+    result.bookingId ||
+    result.booking_id ||
+    result.octopusBookingId ||
+    result.octopus_booking_id ||
+    null;
+
+  const bookingNumber =
+    result.bookingNumber ||
+    result.booking_number ||
+    result.bokNumber ||
+    null;
+
+  const verified =
+    createResponse.ok &&
+    result.success === true &&
+    Boolean(
+      bookingId ||
+      bookingNumber
+    );
+
+  sendJson(200, {
+    ...result,
+    success: verified,
+    verified_created_in_octopus:
+      verified,
+    bookingId,
+    bookingNumber,
+    ...(verified
+      ? {}
+      : {
+          outcome:
+            result.outcome ||
+            "verification_failed",
+          error:
+            result.error ||
+            "OctopusPro did not return a verified booking ID."
+        })
+  });
+
+  return;
+}
       const bookingNumber = String(
         body.booking_number || ""
       ).trim().toUpperCase();
