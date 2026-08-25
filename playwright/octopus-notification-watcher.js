@@ -1,6 +1,10 @@
 import { chromium } from "playwright";
 import http from "http";
 import pg from "pg";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const { Pool } = pg;
 
@@ -4851,13 +4855,12 @@ if (req.url === "/lisa/booking-action") {
     body.action || ""
   ).trim().toLowerCase();
 
-  console.log(
-    "Lisa booking action request:",
-    {
-      action,
-      bookingId: body.bookingId || null
-    }
-  );
+  console.log("Lisa booking action request:", {
+    action,
+    customerName: body.customerName || null,
+    requestedDate: body.requestedDate || null,
+    requestedStartTime: body.requestedStartTime || null
+  });
 
   if (action !== "create") {
     sendJson(400, {
@@ -4872,70 +4875,131 @@ if (req.url === "/lisa/booking-action") {
     sendJson(200, {
       success: false,
       outcome: "confirmation_required",
-      error:
-        "The customer must explicitly confirm the complete booking first."
+      error: "The customer must explicitly confirm the complete booking first."
     });
     return;
   }
 
-  const createUrl = String(
-    process.env.OCTOPUS_CREATE_BOOKING_WEBHOOK_URL || ""
-  ).trim();
+  const requiredFields = [
+    ["customerName", body.customerName],
+    ["streetNumber", body.streetNumber],
+    ["street", body.street || body.streetAddress],
+    ["city", body.city || body.suburb],
+    ["state", body.state],
+    ["zip", body.zip || body.postcode],
+    ["requestedDate", body.requestedDate],
+    ["requestedStartTime", body.requestedStartTime]
+  ];
 
-  if (!createUrl) {
+  const missingFields = requiredFields
+    .filter(([, value]) => !String(value || "").trim())
+    .map(([name]) => name);
+
+  if (missingFields.length > 0) {
     sendJson(200, {
       success: false,
-      outcome: "connector_not_configured",
-      error:
-        "The OctopusPro create-booking connector is not configured."
+      outcome: "missing_booking_fields",
+      error: `Missing required booking fields: ${missingFields.join(", ")}`
     });
     return;
   }
 
-  const createSecret = String(
-    process.env.OCTOPUS_CREATE_BOOKING_SECRET || ""
-  ).trim();
-
-  const outboundBody = {
-    ...body,
-    source: "LISA_VOICE"
-  };
-
-  delete outboundBody.action;
-
-  const createResponse = await fetch(
-    createUrl,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(createSecret
-          ? {
-              "X-Emma-Secret":
-                createSecret
-            }
-          : {})
-      },
-      body: JSON.stringify(outboundBody),
-      signal: AbortSignal.timeout(45000)
-    }
+  console.log(
+    "Lisa direct booking: launching Playwright creator for",
+    body.customerName
   );
 
-  const responseText =
-    await createResponse.text();
-
-  let result = {};
+  let stdout = "";
+  let stderr = "";
 
   try {
-    result = JSON.parse(
-      responseText || "{}"
+    const childResult = await execFileAsync(
+      process.execPath,
+      ["playwright/octopus-create-booking.js"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          LISA_BOOKING_PAYLOAD: JSON.stringify({
+            ...body,
+            source: "LISA_VOICE"
+          })
+        },
+        timeout: 180000,
+        maxBuffer: 10 * 1024 * 1024
+      }
     );
-  } catch {
-    result = {
+
+    stdout = String(childResult.stdout || "");
+    stderr = String(childResult.stderr || "");
+  } catch (error) {
+    stdout = String(error?.stdout || "");
+    stderr = String(error?.stderr || "");
+
+    console.error(
+      "Lisa direct booking Playwright process failed:",
+      error?.message || error
+    );
+
+    if (stdout) {
+      console.log("Lisa direct booking stdout before failure:", stdout.slice(-12000));
+    }
+    if (stderr) {
+      console.error("Lisa direct booking stderr before failure:", stderr.slice(-12000));
+    }
+
+    sendJson(200, {
       success: false,
-      error:
-        "Create-booking connector returned invalid JSON."
-    };
+      verified_created_in_octopus: false,
+      outcome: "playwright_booking_failed",
+      error: error?.killed
+        ? "Direct Octopus booking timed out."
+        : (error?.message || "Direct Octopus booking failed.")
+    });
+    return;
+  }
+
+  if (stderr.trim()) {
+    console.log(
+      "Lisa direct booking stderr:",
+      stderr.slice(-12000)
+    );
+  }
+
+  console.log(
+    "Lisa direct booking stdout:",
+    stdout.slice(-16000)
+  );
+
+  const resultLine = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .reverse()
+    .find((line) => line.startsWith("LISA_BOOKING_RESULT="));
+
+  if (!resultLine) {
+    sendJson(200, {
+      success: false,
+      verified_created_in_octopus: false,
+      outcome: "playwright_booking_failed",
+      error: "Octopus booking automation finished without returning a verified BOK."
+    });
+    return;
+  }
+
+  let result;
+  try {
+    result = JSON.parse(
+      resultLine.slice("LISA_BOOKING_RESULT=".length)
+    );
+  } catch (error) {
+    sendJson(200, {
+      success: false,
+      verified_created_in_octopus: false,
+      outcome: "invalid_booking_result",
+      error: "Direct Octopus booking returned an unreadable result."
+    });
+    return;
   }
 
   const bookingId =
@@ -4952,34 +5016,99 @@ if (req.url === "/lisa/booking-action") {
     null;
 
   const verified =
-    createResponse.ok &&
     result.success === true &&
-    Boolean(
-      bookingId ||
-      bookingNumber
+    Boolean(bookingId) &&
+    /^BOK-\d+$/i.test(String(bookingNumber || ""));
+
+  if (!verified) {
+    sendJson(200, {
+      ...result,
+      success: false,
+      verified_created_in_octopus: false,
+      bookingId,
+      bookingNumber,
+      outcome: result.outcome || "verification_failed",
+      error: result.error || "OctopusPro did not return both a verified booking ID and BOK number."
+    });
+    return;
+  }
+
+  const successWebhookUrl = String(
+    process.env.LISA_BOOKING_SUCCESS_WEBHOOK_URL || ""
+  ).trim();
+
+  if (successWebhookUrl) {
+    const successPayload = {
+      event: "LISA_BOOKING_CREATED",
+      bookingNumber,
+      bookingId,
+      customerName: body.customerName || "",
+      customerFirstName: body.customerFirstName || "",
+      customerLastName: body.customerLastName || "",
+      customerPhone: body.customerPhone || body.phone || "",
+      customerEmail: body.customerEmail || body.email || "",
+      serviceAddress: body.serviceAddress || body.address || "",
+      streetNumber: body.streetNumber || "",
+      street: body.street || body.streetAddress || "",
+      city: body.city || body.suburb || "",
+      state: body.state || "",
+      zip: body.zip || body.postcode || "",
+      serviceName: body.serviceName || "Standard Cleaning",
+      serviceType: body.serviceType || "",
+      recurringFrequency: body.recurringFrequency || body.frequency || "",
+      requestedDate: body.requestedDate || "",
+      requestedStartTime: body.requestedStartTime || "",
+      arrivalWindow: body.arrivalWindow || "",
+      durationMinutes: body.durationMinutes || "",
+      quotedPrice: body.quotedPrice ?? body.price ?? "",
+      source: "LISA_VOICE",
+      createdAt: new Date().toISOString()
+    };
+
+    try {
+      const notifyResponse = await fetch(successWebhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(successPayload),
+        signal: AbortSignal.timeout(15000)
+      });
+
+      const notifyText = await notifyResponse.text();
+
+      if (!notifyResponse.ok) {
+        console.error(
+          `Lisa booking success webhook failed (${notifyResponse.status}): ${notifyText}`
+        );
+      } else {
+        console.log(
+          `Lisa booking success webhook delivered for ${bookingNumber}.`
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Lisa booking success webhook error:",
+        error?.message || error
+      );
+    }
+  } else {
+    console.log(
+      "LISA_BOOKING_SUCCESS_WEBHOOK_URL is not configured; booking was created but success notification was skipped."
     );
+  }
 
   sendJson(200, {
     ...result,
-    success: verified,
-    verified_created_in_octopus:
-      verified,
+    success: true,
+    verified_created_in_octopus: true,
     bookingId,
     bookingNumber,
-    ...(verified
-      ? {}
-      : {
-          outcome:
-            result.outcome ||
-            "verification_failed",
-          error:
-            result.error ||
-            "OctopusPro did not return a verified booking ID."
-        })
+    outcome: "created"
   });
-
   return;
 }
+
       const bookingNumber = String(
         body.booking_number || ""
       ).trim().toUpperCase();
