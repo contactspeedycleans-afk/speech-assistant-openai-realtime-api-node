@@ -14,6 +14,28 @@ const TEST = livePayload
       customerName:
         livePayload.customerName ||
         `${livePayload.customerFirstName || ""} ${livePayload.customerLastName || ""}`.trim(),
+      customerFirstName: String(
+        livePayload.customerFirstName ||
+        livePayload.firstName ||
+        String(livePayload.customerName || "").trim().split(/\s+/)[0] ||
+        ""
+      ),
+      customerLastName: String(
+        livePayload.customerLastName ||
+        livePayload.lastName ||
+        String(livePayload.customerName || "").trim().split(/\s+/).slice(1).join(" ") ||
+        ""
+      ),
+      customerPhone: String(
+        livePayload.customerPhone ||
+        livePayload.phone ||
+        ""
+      ),
+      customerEmail: String(
+        livePayload.customerEmail ||
+        livePayload.email ||
+        ""
+      ),
       customerId: String(livePayload.customerId || ""),
       streetNumber: String(livePayload.streetNumber || ""),
       streetAddress: String(livePayload.street || livePayload.streetAddress || ""),
@@ -34,6 +56,10 @@ const TEST = livePayload
     }
   : {
       customerName: "Gina Manciolini",
+      customerFirstName: "Gina",
+      customerLastName: "Manciolini",
+      customerPhone: "",
+      customerEmail: "",
       customerId: "1570670",
       streetNumber: "123",
       streetAddress: "Grand River Avenue",
@@ -178,6 +204,312 @@ async function setValue(page, selector, value) {
   );
 
   return true;
+}
+
+
+async function fillFirstVisible(page, selectors, value) {
+  const clean = String(value || "").trim();
+  if (!clean) return false;
+
+  for (const selector of selectors) {
+    const loc = page.locator(selector).filter({ visible: true }).first();
+    if ((await loc.count().catch(() => 0)) < 1) continue;
+    if (!(await loc.isVisible().catch(() => false))) continue;
+
+    try {
+      await loc.scrollIntoViewIfNeeded().catch(() => {});
+      await loc.click({ force: true }).catch(() => {});
+      await loc.fill(clean);
+      await loc.dispatchEvent("input").catch(() => {});
+      await loc.dispatchEvent("change").catch(() => {});
+      await loc.dispatchEvent("blur").catch(() => {});
+      return true;
+    } catch {}
+  }
+
+  return false;
+}
+
+async function createNewCustomerInOctopus(page) {
+  console.log("Existing customer not found. Starting NEW CUSTOMER creation...");
+
+  const firstName = String(TEST.customerFirstName || "").trim();
+  const lastName = String(TEST.customerLastName || "").trim();
+  const fullName = String(TEST.customerName || `${firstName} ${lastName}`).trim();
+  const phone = String(TEST.customerPhone || "").trim();
+  const email = String(TEST.customerEmail || "").trim();
+
+  if (!firstName) {
+    throw new Error("NEW_CUSTOMER_FIRST_NAME_MISSING");
+  }
+  if (!phone) {
+    throw new Error("NEW_CUSTOMER_PHONE_MISSING");
+  }
+
+  // First try the customer selector's own "create/add customer" action.
+  const createPatterns = [
+    /create new customer/i,
+    /add new customer/i,
+    /new customer/i,
+    /add customer/i,
+    /create customer/i
+  ];
+
+  let createClicked = false;
+
+  for (const pattern of createPatterns) {
+    const candidates = page
+      .getByText(pattern)
+      .filter({ visible: true });
+
+    const count = await candidates.count().catch(() => 0);
+    if (count > 0) {
+      const candidate = candidates.last();
+      console.log(
+        "Clicking new-customer UI:",
+        (await candidate.innerText().catch(() => String(pattern)))
+          .replace(/\s+/g, " ")
+          .trim()
+      );
+      await candidate.click({ force: true, timeout: 10000 });
+      createClicked = true;
+      break;
+    }
+  }
+
+  // Some Octopus builds expose the add action only after typing a value.
+  if (!createClicked) {
+    const customerSearch = page.locator(
+      'input[placeholder="Find customer"]'
+    ).first();
+
+    await customerSearch.click({ force: true }).catch(() => {});
+    await customerSearch.fill("").catch(() => {});
+    await customerSearch.type(fullName || firstName, { delay: 35 }).catch(() => {});
+    await page.waitForTimeout(1200);
+
+    for (const pattern of createPatterns) {
+      const candidates = page
+        .getByText(pattern)
+        .filter({ visible: true });
+
+      if ((await candidates.count().catch(() => 0)) > 0) {
+        const candidate = candidates.last();
+        console.log(
+          "Clicking new-customer UI after search:",
+          (await candidate.innerText().catch(() => String(pattern)))
+            .replace(/\s+/g, " ")
+            .trim()
+        );
+        await candidate.click({ force: true, timeout: 10000 });
+        createClicked = true;
+        break;
+      }
+    }
+  }
+
+  if (!createClicked) {
+    // Last-resort generic visible button/link scan.
+    const generic = page.locator('button:visible, a:visible, [role="button"]:visible');
+    const count = await generic.count().catch(() => 0);
+
+    for (let i = 0; i < count; i++) {
+      const el = generic.nth(i);
+      const text = (await el.innerText().catch(() => ""))
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (/^(create|add|new).{0,25}customer$/i.test(text)) {
+        console.log("Clicking generic new-customer control:", text);
+        await el.click({ force: true, timeout: 10000 });
+        createClicked = true;
+        break;
+      }
+    }
+  }
+
+  if (!createClicked) {
+    throw new Error("NEW_CUSTOMER_CREATE_CONTROL_NOT_FOUND");
+  }
+
+  await page.waitForTimeout(1500);
+
+  // Fill the visible customer form using broad selectors so this survives
+  // Octopus UI naming differences.
+  const firstOk = await fillFirstVisible(page, [
+    'input[name="first_name"]',
+    'input[name="firstname"]',
+    'input[name="firstName"]',
+    'input[id*="first_name" i]',
+    'input[id*="firstname" i]',
+    'input[placeholder*="First name" i]',
+    'input[placeholder*="First Name" i]'
+  ], firstName);
+
+  const lastOk = await fillFirstVisible(page, [
+    'input[name="last_name"]',
+    'input[name="lastname"]',
+    'input[name="lastName"]',
+    'input[id*="last_name" i]',
+    'input[id*="lastname" i]',
+    'input[placeholder*="Last name" i]',
+    'input[placeholder*="Last Name" i]'
+  ], lastName);
+
+  const phoneOk = await fillFirstVisible(page, [
+    'input[name="phone"]',
+    'input[name="mobile"]',
+    'input[name="mobile_phone"]',
+    'input[name="phone_number"]',
+    'input[type="tel"]',
+    'input[id*="phone" i]',
+    'input[id*="mobile" i]',
+    'input[placeholder*="Phone" i]',
+    'input[placeholder*="Mobile" i]'
+  ], phone);
+
+  const emailOk = email
+    ? await fillFirstVisible(page, [
+        'input[name="email"]',
+        'input[type="email"]',
+        'input[id*="email" i]',
+        'input[placeholder*="Email" i]'
+      ], email)
+    : true;
+
+  console.log(
+    "New customer form fields:",
+    JSON.stringify({
+      firstName: firstOk,
+      lastName: lastOk,
+      phone: phoneOk,
+      email: emailOk
+    })
+  );
+
+  if (!firstOk || !phoneOk) {
+    const visibleInputs = await page.locator('input:visible').evaluateAll(inputs =>
+      inputs.map(input => ({
+        name: input.getAttribute("name") || "",
+        id: input.id || "",
+        type: input.getAttribute("type") || "",
+        placeholder: input.getAttribute("placeholder") || "",
+        value: input.value || ""
+      }))
+    ).catch(() => []);
+
+    throw new Error(
+      `NEW_CUSTOMER_REQUIRED_FIELDS_NOT_FOUND: ${JSON.stringify(visibleInputs)}`
+    );
+  }
+
+  // Find the save/create/confirm action inside whichever visible dialog/form opened.
+  const visibleDialogs = page.locator(
+    '[role="dialog"]:visible, .modal:visible, .modal-dialog:visible'
+  );
+
+  let scope = page;
+  if ((await visibleDialogs.count().catch(() => 0)) > 0) {
+    scope = visibleDialogs.last();
+  }
+
+  const saveNames = [
+    /^save$/i,
+    /^create$/i,
+    /^add$/i,
+    /^confirm$/i,
+    /save customer/i,
+    /create customer/i,
+    /add customer/i
+  ];
+
+  let saveClicked = false;
+
+  for (const name of saveNames) {
+    const button = scope
+      .getByRole("button", { name })
+      .filter({ visible: true })
+      .last();
+
+    if ((await button.count().catch(() => 0)) > 0 &&
+        await button.isVisible().catch(() => false)) {
+      console.log(
+        "Saving new customer with:",
+        (await button.innerText().catch(() => String(name)))
+          .replace(/\s+/g, " ")
+          .trim()
+      );
+      await button.click({ force: true, timeout: 10000 });
+      saveClicked = true;
+      break;
+    }
+  }
+
+  if (!saveClicked) {
+    const fallbackSave = scope
+      .locator(
+        'button[type="submit"]:visible, input[type="submit"]:visible, .save-btn:visible'
+      )
+      .last();
+
+    if ((await fallbackSave.count().catch(() => 0)) > 0) {
+      console.log("Saving new customer with generic submit/save control...");
+      await fallbackSave.click({ force: true, timeout: 10000 });
+      saveClicked = true;
+    }
+  }
+
+  if (!saveClicked) {
+    throw new Error("NEW_CUSTOMER_SAVE_CONTROL_NOT_FOUND");
+  }
+
+  // Wait for Octopus to close the customer form and commit the selected customer.
+  await page.waitForTimeout(2200);
+
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    const state = await page.evaluate((customerName) => {
+      const customerId =
+        document.querySelector('input[name="customer_id"]')?.value || "";
+      const customers =
+        document.querySelector('input[name="customers"]')?.value || "";
+      const bodyText = document.body?.innerText || "";
+
+      return {
+        customer_id: customerId,
+        customers,
+        bodyHasCustomer: customerName
+          ? bodyText.toLowerCase().includes(customerName.toLowerCase())
+          : false
+      };
+    }, fullName);
+
+    if (state.customer_id && state.customers) {
+      console.log(
+        "NEW CUSTOMER CREATED AND COMMITTED:",
+        JSON.stringify({
+          customer_id: state.customer_id,
+          customersLength: state.customers.length,
+          bodyHasCustomer: state.bodyHasCustomer
+        })
+      );
+      return state;
+    }
+
+    await page.waitForTimeout(700);
+  }
+
+  const finalState = await page.evaluate(() => ({
+    customer_id:
+      document.querySelector('input[name="customer_id"]')?.value || "",
+    customers:
+      document.querySelector('input[name="customers"]')?.value || "",
+    url: location.href,
+    text: (document.body?.innerText || "").slice(0, 4000)
+  }));
+
+  throw new Error(
+    `NEW_CUSTOMER_NOT_COMMITTED_AFTER_SAVE: ${JSON.stringify(finalState)}`
+  );
 }
 
 async function main() {
@@ -326,9 +658,13 @@ async function main() {
     }
 
     if (!customerSelected) {
-      throw new Error(
-        `CUSTOMER_OPTION_NOT_FOUND_AFTER_PHONE_EMAIL_NAME: ${TEST.customerName}`
+      console.log(
+        `No existing Octopus customer matched phone/email/name for ${TEST.customerName}.`
       );
+      console.log("Treating caller as a NEW CUSTOMER instead of rejecting booking.");
+
+      await createNewCustomerInOctopus(page);
+      customerSelected = true;
     }
 
     await page.waitForTimeout(1600);
@@ -367,8 +703,7 @@ async function main() {
 
     if (
       !customerState.customer_id ||
-      !customerState.customers ||
-      !customerState.bodyHasCustomer
+      !customerState.customers
     ) {
       throw new Error(
         `CUSTOMER_NOT_COMMITTED: ${JSON.stringify(customerState)}`
