@@ -5,24 +5,52 @@ const OCTOPUS_PASSWORD = process.env.OCTOPUS_PASSWORD;
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME || "SpeedyCleans";
 
-const TEST = {
-  customerName: "Gina Manciolini",
-  customerId: "1570670",
-  streetNumber: "123",
-  streetAddress: "Grand River Avenue",
-  suburb: "Howell",
-  state: "MI",
-  postcode: "48843",
-  serviceName: "Standard Cleaning",
-  bookingDate: "2026-08-25",
-  startTime: "10:00",
-  endTime: "12:00",
-  durationHours: 2,
-  price: "82.50",
-  fieldworkerName: "Unassigned Tasks Manager",
-  specialNotes: ".",
-  accessInstructions: "."
-};
+const livePayload = process.env.LISA_BOOKING_PAYLOAD
+  ? JSON.parse(process.env.LISA_BOOKING_PAYLOAD)
+  : null;
+
+const TEST = livePayload
+  ? {
+      customerName:
+        livePayload.customerName ||
+        `${livePayload.customerFirstName || ""} ${livePayload.customerLastName || ""}`.trim(),
+      customerId: String(livePayload.customerId || ""),
+      streetNumber: String(livePayload.streetNumber || ""),
+      streetAddress: String(livePayload.street || livePayload.streetAddress || ""),
+      suburb: String(livePayload.city || livePayload.suburb || ""),
+      state: String(livePayload.state || ""),
+      postcode: String(livePayload.zip || livePayload.postcode || ""),
+      serviceName: livePayload.serviceName || "Standard Cleaning",
+      bookingDate: livePayload.requestedDate || livePayload.bookingDate,
+      startTime: livePayload.requestedStartTime || livePayload.startTime,
+      durationHours: Number(
+        livePayload.durationHours ||
+        (Number(livePayload.durationMinutes || 120) / 60)
+      ),
+      price: String(livePayload.quotedPrice || livePayload.price || "150"),
+      fieldworkerName: livePayload.fieldworkerName || "Unassigned Tasks Manager",
+      specialNotes: livePayload.specialNotes || ".",
+      accessInstructions: livePayload.accessInstructions || "."
+    }
+  : {
+      customerName: "Gina Manciolini",
+      customerId: "1570670",
+      streetNumber: "123",
+      streetAddress: "Grand River Avenue",
+      suburb: "Howell",
+      state: "MI",
+      postcode: "48843",
+      serviceName: "Standard Cleaning",
+      bookingDate: "2026-08-25",
+      startTime: "10:00",
+      durationHours: 2,
+      price: "82.50",
+      fieldworkerName: "Unassigned Tasks Manager",
+      specialNotes: ".",
+      accessInstructions: "."
+    };
+
+let FINAL_BOOKING_RESULT = null;
 
 if (!OCTOPUS_EMAIL) throw new Error("Missing OCTOPUS_EMAIL");
 if (!OCTOPUS_PASSWORD) throw new Error("Missing OCTOPUS_PASSWORD");
@@ -1337,6 +1365,18 @@ console.log("Attempting to save booking with full validation capture...");
           booking_id: saveDiagnostics.booking_id,
           url: saveDiagnostics.url
         })
+      );
+
+      FINAL_BOOKING_RESULT = {
+        success: true,
+        bookingNumber: saveDiagnostics.booking_number,
+        bookingId: saveDiagnostics.booking_id,
+        url: saveDiagnostics.url
+      };
+
+      console.log(
+        "LISA_BOOKING_RESULT=" +
+        JSON.stringify(FINAL_BOOKING_RESULT)
       );
 
       // We do not need to send Octopus notifications here.
