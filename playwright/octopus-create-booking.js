@@ -187,48 +187,70 @@ async function main() {
 
     await customerSearch.waitFor({
       state: "visible",
-      timeout: 15000
+      timeout: 20000
     });
 
-    await customerSearch.click();
-    await customerSearch.fill("");
-    await customerSearch.type(TEST.customerName, {
-      delay: 35
-    });
+    let customerSelected = false;
 
-    await page.waitForTimeout(1800);
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      console.log(`Customer lookup attempt ${attempt}...`);
 
-    let customerOption = page
-      .getByText(TEST.customerName, { exact: true })
-      .filter({ visible: true })
-      .last();
+      await customerSearch.click({ force: true }).catch(() => {});
+      await customerSearch.fill("").catch(() => {});
+      await customerSearch.type(TEST.customerName, {
+        delay: 35
+      }).catch(() => {});
 
-    if (!(await customerOption.isVisible().catch(() => false))) {
-      customerOption = page
-        .getByText(new RegExp(TEST.customerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"))
-        .filter({ visible: true })
-        .last();
+      await page.waitForTimeout(1500 + (attempt * 600));
+
+      const exactMatches = page.getByText(TEST.customerName, {
+        exact: true
+      });
+
+      const exactCount = await exactMatches.count().catch(() => 0);
+
+      for (let i = exactCount - 1; i >= 0; i--) {
+        const candidate = exactMatches.nth(i);
+
+        if (await candidate.isVisible().catch(() => false)) {
+          console.log(
+            "Selecting customer option:",
+            (await candidate.innerText().catch(() => TEST.customerName))
+              .replace(/\s+/g, " ")
+              .trim()
+          );
+
+          await candidate.click({
+            force: true,
+            timeout: 10000
+          });
+
+          customerSelected = true;
+          break;
+        }
+      }
+
+      if (customerSelected) {
+        break;
+      }
+
+      // Retry by clearing the search and briefly clicking away so Octopus
+      // reopens/reloads the customer result list on the next attempt.
+      await customerSearch.fill("").catch(() => {});
+      await page.locator("body").click({
+        position: { x: 30, y: 30 },
+        force: true
+      }).catch(() => {});
+      await page.waitForTimeout(700);
     }
 
-    if (!(await customerOption.isVisible().catch(() => false))) {
+    if (!customerSelected) {
       throw new Error(
-        `CUSTOMER_OPTION_NOT_FOUND: ${TEST.customerName}`
+        `CUSTOMER_OPTION_NOT_FOUND_AFTER_RETRIES: ${TEST.customerName}`
       );
     }
 
-    console.log(
-      "Selecting customer option:",
-      (await customerOption.innerText()).replace(/\s+/g, " ").trim()
-    );
-
-    await customerOption.click({
-      force: true,
-      timeout: 10000
-    });
-
-    await page.waitForTimeout(1200);
-    // IMPORTANT: do not overwrite customer_id/customers.
-    // Octopus fills these with its full customer object after the real UI selection.
+    await page.waitForTimeout(1600);
 
     const customerState = await page.evaluate((customerName) => {
       const visible = el => {
@@ -271,6 +293,9 @@ async function main() {
         `CUSTOMER_NOT_COMMITTED: ${JSON.stringify(customerState)}`
       );
     }
+
+    // IMPORTANT: do not overwrite customer_id/customers.
+    // Octopus fills these with its full native customer object after the real UI selection.
 
     console.log("Selecting booking location...");
 
