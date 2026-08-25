@@ -731,26 +731,114 @@ async function main() {
 
     await page.waitForTimeout(3500);
 
-    const exactAddressText =
-      `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state} ${TEST.postcode}, United States`;
+    // Google/Octopus address suggestions frequently expand abbreviations
+    // (Ct -> Court, Rd -> Road, St -> Street) or change punctuation. Do NOT
+    // require one exact rendered string. Select the best visible suggestion
+    // using street number + ZIP + city, with state/street tokens as tie-breakers.
+    console.log("Looking for tolerant address autocomplete match...");
 
-    const exactAddressResult = page
-      .getByText(exactAddressText, { exact: true })
-      .last();
+    const normalizeAddressText = value =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/\bcourt\b/g, "ct")
+        .replace(/\bstreet\b/g, "st")
+        .replace(/\broad\b/g, "rd")
+        .replace(/\bavenue\b/g, "ave")
+        .replace(/\bdrive\b/g, "dr")
+        .replace(/\blane\b/g, "ln")
+        .replace(/\bboulevard\b/g, "blvd")
+        .replace(/\bplace\b/g, "pl")
+        .replace(/\bterrace\b/g, "ter")
+        .replace(/\bhighway\b/g, "hwy")
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
 
-    await exactAddressResult.waitFor({
-      state: "visible",
-      timeout: 10000
-    });
+    const targetStreet = normalizeAddressText(
+      `${TEST.streetNumber} ${TEST.streetAddress}`
+    );
+    const targetCity = normalizeAddressText(TEST.suburb);
+    const targetState = normalizeAddressText(TEST.state);
+    const targetZip = String(TEST.postcode || "").replace(/\D/g, "");
+    const targetNumber = String(TEST.streetNumber || "").replace(/\D/g, "");
 
-    console.log(
-      "Found address result:",
-      (await exactAddressResult.innerText()).replace(/\s+/g, " ").trim()
+    // Wait briefly for autocomplete options to appear.
+    await page.waitForTimeout(1200);
+
+    const addressCandidates = page.locator(
+      '[role="option"]:visible, .pac-item:visible, .vs__dropdown-option:visible, li:visible'
     );
 
-    await exactAddressResult.click({
+    let bestAddressCandidate = null;
+    let bestAddressText = "";
+    let bestScore = -1;
+
+    const addressCandidateCount = await addressCandidates.count().catch(() => 0);
+
+    for (let i = 0; i < addressCandidateCount; i++) {
+      const candidate = addressCandidates.nth(i);
+      const rawText = (await candidate.innerText().catch(() => ""))
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (!rawText) continue;
+
+      const norm = normalizeAddressText(rawText);
+      const digits = rawText.replace(/\D/g, "");
+
+      let score = 0;
+
+      if (targetNumber && digits.includes(targetNumber)) score += 4;
+      if (targetZip && digits.includes(targetZip)) score += 5;
+      if (targetCity && norm.includes(targetCity)) score += 4;
+      if (targetState && norm.includes(targetState)) score += 2;
+
+      const streetTokens = targetStreet
+        .split(" ")
+        .filter(token => token.length >= 2);
+
+      const matchedStreetTokens = streetTokens.filter(token =>
+        norm.includes(token)
+      ).length;
+
+      score += matchedStreetTokens;
+
+      if (
+        score > bestScore &&
+        targetNumber &&
+        digits.includes(targetNumber) &&
+        targetCity &&
+        norm.includes(targetCity)
+      ) {
+        bestScore = score;
+        bestAddressCandidate = candidate;
+        bestAddressText = rawText;
+      }
+    }
+
+    if (!bestAddressCandidate) {
+      const visibleAddressTexts = [];
+      for (let i = 0; i < Math.min(addressCandidateCount, 50); i++) {
+        const txt = (await addressCandidates.nth(i).innerText().catch(() => ""))
+          .replace(/\s+/g, " ")
+          .trim();
+        if (txt && /\d/.test(txt)) visibleAddressTexts.push(txt);
+      }
+
+      throw new Error(
+        `ADDRESS_AUTOCOMPLETE_NO_MATCH: target=${bookingAddress} options=${JSON.stringify(visibleAddressTexts)}`
+      );
+    }
+
+    console.log(
+      "Found tolerant address result:",
+      bestAddressText,
+      "score=" + bestScore
+    );
+
+    await bestAddressCandidate.click({
       force: true,
-      timeout: 5000
+      timeout: 10000
     });
 
     await page.waitForTimeout(3000);
@@ -1213,155 +1301,120 @@ console.log("Appointment date/time set.");
       );
     }
 
-    // Select fieldworker inside the FIRST appointment only.
-    // Use the fieldworker component's keyboard selection first because a raw LI click
-    // was visually finding the worker but was not committing the Vue/select state.
-    console.log("Selecting placeholder fieldworker with component-native input...");
+    // FIELDWORKER / UNASSIGNED HANDLING
+    // "Unassigned Tasks Manager" is our placeholder meaning:
+    // create the booking WITHOUT assigning a real fieldworker yet.
+    // Octopus is allowed to save the appointment with a blank contractor id.
+    // The dispatch watcher will pick it up afterward as NEEDS CLEANER.
+    const shouldRemainUnassigned =
+      /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
 
-    const fieldworkerSearch = firstAppointment
-      .locator('input[placeholder="Select Fieldworker"]')
-      .first();
-
-    await fieldworkerSearch.waitFor({
-      state: "visible",
-      timeout: 15000
-    });
-
-    await fieldworkerSearch.scrollIntoViewIfNeeded();
-    await fieldworkerSearch.click({ force: true });
-    await fieldworkerSearch.fill("");
-
-    // Type normally so Octopus/Vue receives keyboard/input events.
-    await fieldworkerSearch.type(TEST.fieldworkerName, {
-      delay: 35
-    });
-
-    await page.waitForTimeout(1500);
-
-    const visibleWorkerOptions = page.locator(
-      '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
-    );
-
-    const workerOptionsBefore = [];
-    for (let i = 0; i < await visibleWorkerOptions.count(); i++) {
-      const option = visibleWorkerOptions.nth(i);
-      const txt = (await option.innerText().catch(() => ""))
-        .replace(/\s+/g, " ")
-        .trim();
-
-      if (txt && /Unassigned Tasks Manager/i.test(txt)) {
-        workerOptionsBefore.push(txt);
-      }
-    }
-
-    console.log(
-      "Matching fieldworker options:",
-      JSON.stringify(workerOptionsBefore)
-    );
-
-    // Preferred path: keyboard selection. This lets the actual select component
-    // commit its internal value instead of only clicking visible text.
-    await fieldworkerSearch.press("ArrowDown").catch(() => {});
-    await page.waitForTimeout(250);
-    await fieldworkerSearch.press("Enter").catch(() => {});
-    await page.waitForTimeout(1000);
-
-    let fieldworkerSearchValue =
-      await fieldworkerSearch.inputValue().catch(() => "");
-
-    let firstAppointmentText = (
-      await firstAppointment.innerText().catch(() => "")
-    )
-      .replace(/\s+/g, " ")
-      .trim();
-
-    let pageHasWorker =
-      /Unassigned Tasks Manager/i.test(firstAppointmentText) ||
-      /Unassigned Tasks Manager/i.test(
-        await page.locator("body").innerText().catch(() => "")
+    if (shouldRemainUnassigned) {
+      console.log(
+        "Leaving appointment UNASSIGNED intentionally; no contractor id required."
       );
 
-    // Fallback: if keyboard selection did not visibly commit, click the exact
-    // matching visible option and then press Tab to commit/blur the component.
-    if (!pageHasWorker && !fieldworkerSearchValue) {
-      const exactWorkerOption = page
-        .getByText(/Unassigned Tasks Manager/i)
-        .filter({ visible: true })
-        .last();
+      const fieldworkerSearch = firstAppointment
+        .locator('input[placeholder="Select Fieldworker"]')
+        .first();
 
-      if (await exactWorkerOption.isVisible().catch(() => false)) {
-        console.log(
-          "Keyboard commit not visible; clicking exact fieldworker option..."
-        );
-
-        await exactWorkerOption.click({
-          force: true,
-          timeout: 10000
-        });
-
-        await page.waitForTimeout(700);
+      if (await fieldworkerSearch.isVisible().catch(() => false)) {
+        await fieldworkerSearch.fill("").catch(() => {});
         await fieldworkerSearch.press("Tab").catch(() => {});
-        await page.waitForTimeout(700);
       }
+
+      // Clear any accidental contractor value that may have been inherited
+      // during Octopus re-renders.
+      await firstAppointment
+        .locator('input[name^="contractor_"]')
+        .first()
+        .evaluate(el => {
+          el.value = "";
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        })
+        .catch(() => {});
+
+      console.log("UNASSIGNED appointment state prepared.");
+    } else {
+      console.log("Selecting requested fieldworker with component-native input...");
+
+      const fieldworkerSearch = firstAppointment
+        .locator('input[placeholder="Select Fieldworker"]')
+        .first();
+
+      await fieldworkerSearch.waitFor({
+        state: "visible",
+        timeout: 15000
+      });
+
+      await fieldworkerSearch.scrollIntoViewIfNeeded();
+      await fieldworkerSearch.click({ force: true });
+      await fieldworkerSearch.fill("");
+
+      await fieldworkerSearch.type(TEST.fieldworkerName, {
+        delay: 35
+      });
+
+      await page.waitForTimeout(1500);
+
+      const visibleWorkerOptions = page.locator(
+        '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
+      );
+
+      const workerOptionsBefore = [];
+      for (let i = 0; i < await visibleWorkerOptions.count(); i++) {
+        const option = visibleWorkerOptions.nth(i);
+        const txt = (await option.innerText().catch(() => ""))
+          .replace(/\s+/g, " ")
+          .trim();
+
+        if (
+          txt &&
+          String(TEST.fieldworkerName || "")
+            .toLowerCase()
+            .split(/\s+/)
+            .every(part => txt.toLowerCase().includes(part))
+        ) {
+          workerOptionsBefore.push(txt);
+        }
+      }
+
+      console.log(
+        "Matching fieldworker options:",
+        JSON.stringify(workerOptionsBefore)
+      );
+
+      await fieldworkerSearch.press("ArrowDown").catch(() => {});
+      await page.waitForTimeout(250);
+      await fieldworkerSearch.press("Enter").catch(() => {});
+      await page.waitForTimeout(1000);
+
+      let fieldworkerSearchValue =
+        await fieldworkerSearch.inputValue().catch(() => "");
+
+      if (!fieldworkerSearchValue) {
+        const exactWorkerOption = page
+          .getByText(TEST.fieldworkerName, { exact: false })
+          .filter({ visible: true })
+          .last();
+
+        if (await exactWorkerOption.isVisible().catch(() => false)) {
+          await exactWorkerOption.click({
+            force: true,
+            timeout: 10000
+          });
+          await page.waitForTimeout(700);
+          await fieldworkerSearch.press("Tab").catch(() => {});
+          await page.waitForTimeout(700);
+        }
+      }
+
+      console.log(
+        "Requested fieldworker selection attempt completed:",
+        TEST.fieldworkerName
+      );
     }
-
-    fieldworkerSearchValue =
-      await fieldworkerSearch.inputValue().catch(() => "");
-
-    firstAppointmentText = (
-      await firstAppointment.innerText().catch(() => "")
-    )
-      .replace(/\s+/g, " ")
-      .trim();
-
-    const fieldworkerDomState = await firstAppointment.evaluate(el => {
-      const allInputs = Array.from(
-        el.querySelectorAll("input")
-      ).map(input => ({
-        type: input.getAttribute("type") || "",
-        name: input.getAttribute("name") || "",
-        id: input.id || "",
-        placeholder: input.getAttribute("placeholder") || "",
-        value: input.value || "",
-        checked:
-          input.type === "checkbox" || input.type === "radio"
-            ? !!input.checked
-            : null
-      }));
-
-      const selectedLike = Array.from(
-        el.querySelectorAll(
-          '.vs__selected, [aria-selected="true"], .selected, .active'
-        )
-      ).map(node =>
-        String(node.innerText || node.textContent || "")
-          .replace(/\s+/g, " ")
-          .trim()
-      ).filter(Boolean);
-
-      return {
-        text: String(el.innerText || el.textContent || "")
-          .replace(/\s+/g, " ")
-          .trim(),
-        allInputs,
-        selectedLike
-      };
-    });
-
-    console.log(
-      "Fieldworker search value:",
-      JSON.stringify(fieldworkerSearchValue)
-    );
-
-    console.log(
-      "First appointment fieldworker DOM state:",
-      JSON.stringify(fieldworkerDomState)
-    );
-
-    // Do not abort here based only on visible text. The Octopus component may keep
-    // the selected worker in Vue state without rendering the name in this container.
-    // The final Save validation below is the authoritative test.
-    console.log("Fieldworker selection attempt completed.");
 
     console.log("Re-applying appointment after fieldworker render...");
 
@@ -1418,9 +1471,23 @@ console.log("Appointment date/time set.");
       );
     }
 
-    if (!finalAppointmentState.fieldworkerId) {
+    if (
+      !finalAppointmentState.fieldworkerId &&
+      !/unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""))
+    ) {
       throw new Error(
         `FIELDWORKER_ID_MISSING: ${JSON.stringify(finalAppointmentState)}`
+      );
+    }
+
+    if (!finalAppointmentState.fieldworkerId) {
+      console.log(
+        "No fieldworker id present by design. Booking will save UNASSIGNED."
+      );
+    } else {
+      console.log(
+        "Fieldworker id committed:",
+        finalAppointmentState.fieldworkerId
       );
     }
 
