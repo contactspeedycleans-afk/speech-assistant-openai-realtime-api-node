@@ -78,6 +78,27 @@ const TEST = livePayload
 
 let FINAL_BOOKING_RESULT = null;
 
+// ============================================================
+// LISA BOOKING PERFORMANCE TIMING
+// Diagnostic only: does not change booking behavior.
+// ============================================================
+const LISA_TIMER_START = Date.now();
+let LISA_TIMER_LAST = LISA_TIMER_START;
+
+function lisaTiming(stage, extra = "") {
+  const now = Date.now();
+  const total = ((now - LISA_TIMER_START) / 1000).toFixed(1);
+  const step = ((now - LISA_TIMER_LAST) / 1000).toFixed(1);
+
+  console.log(
+    `[LISA_TIMING] ${stage} | total=${total}s | step=${step}s${extra ? ` | ${extra}` : ""}`
+  );
+
+  LISA_TIMER_LAST = now;
+}
+
+lisaTiming("SCRIPT_START");
+
 if (!OCTOPUS_EMAIL) throw new Error("Missing OCTOPUS_EMAIL");
 if (!OCTOPUS_PASSWORD) throw new Error("Missing OCTOPUS_PASSWORD");
 
@@ -518,6 +539,8 @@ async function main() {
     args: ["--no-sandbox", "--disable-setuid-sandbox"]
   });
 
+  lisaTiming("BROWSER_LAUNCHED");
+
   try {
     const context = await browser.newContext({
       viewport: {
@@ -529,6 +552,7 @@ async function main() {
     const page = await context.newPage();
 
     await login(page);
+    lisaTiming("OCTOPUS_LOGIN_READY");
 
     console.log("Opening real New Booking form...");
 
@@ -538,6 +562,7 @@ async function main() {
     });
 
     await page.waitForTimeout(5000);
+    lisaTiming("BOOKING_PAGE_LOADED");
 
     console.log("Filling customer through the visible Octopus selector...");
 
@@ -709,6 +734,8 @@ async function main() {
         `CUSTOMER_NOT_COMMITTED: ${JSON.stringify(customerState)}`
       );
     }
+
+    lisaTiming("CUSTOMER_FOUND_OR_CREATED", `customerId=${customerState.customer_id}`);
 
     // IMPORTANT: do not overwrite customer_id/customers.
     // Octopus fills these with its full native customer object after the real UI selection.
@@ -963,6 +990,7 @@ async function main() {
     });
 
     console.log("Location confirmed.");
+    lisaTiming("ADDRESS_SELECTED", `address=${bookingAddress}`);
 
     console.log("Selecting One Time Standard Cleaning...");
 
@@ -1088,6 +1116,7 @@ if (
 }
 
 console.log("Service selected: true");
+lisaTiming("SERVICE_SELECTED");
 
 function parseLocalDateTime(dateIso, time24) {
   const [y, m, d] = dateIso.split("-").map(Number);
@@ -1179,6 +1208,7 @@ await forceInputValue(
 await page.waitForTimeout(2000);
 
 console.log("Appointment date/time set.");
+lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
 
 
     await setValue(
@@ -1622,6 +1652,7 @@ if (!finalAppointmentState.fieldworkerId) {
   );
 }
     console.log("Required booking fields completed.");
+    lisaTiming("REQUIRED_FIELDS_COMPLETE");
 
     console.log("Reading current form state...");
 
@@ -1743,6 +1774,7 @@ if (!nativeCustomerPayload || nativeCustomerPayload.length < 100) {
 console.log("Deposit skipped - not required.");
     
 console.log("Attempting to save booking with full validation capture...");
+lisaTiming("FINAL_SUBMIT_START");
 
     const postTraffic = [];
 
@@ -1822,6 +1854,8 @@ console.log("Attempting to save booking with full validation capture...");
         timeout: 10000
       });
     });
+
+    lisaTiming("FINAL_SUBMIT_CLICKED");
 
     normalSaveRequest = await normalSaveRequestPromise;
     normalSaveResponse = await normalSaveResponsePromise;
@@ -2077,6 +2111,11 @@ console.log("Attempting to save booking with full validation capture...");
         url: saveDiagnostics.url
       };
 
+      lisaTiming(
+        "BOK_RECEIVED",
+        `bookingNumber=${FINAL_BOOKING_RESULT.bookingNumber || "UNKNOWN"}`
+      );
+
       console.log(
         "LISA_BOOKING_RESULT=" +
         JSON.stringify(FINAL_BOOKING_RESULT)
@@ -2092,6 +2131,8 @@ console.log("Attempting to save booking with full validation capture...");
         await cancelNotify.click({ force: true }).catch(() => {});
         console.log("Notify Customer modal closed without sending.");
       }
+
+      lisaTiming("SCRIPT_COMPLETE");
     } else {
       throw new Error(
         `BOOKING_NOT_CREATED: alerts=${JSON.stringify(saveDiagnostics.visibleAlerts)} ` +
