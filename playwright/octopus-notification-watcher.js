@@ -4783,6 +4783,182 @@ async function upsertNeedsCleanerFromHttp({
   );
 }
 
+
+// ============================================================
+// LISA ASYNC BOOKING JOB STORE
+// ============================================================
+
+const lisaBookingJobs = new Map();
+
+function createLisaBookingRequestId() {
+  return `lisa-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function cleanupLisaBookingJobs() {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+
+  for (const [requestId, job] of lisaBookingJobs.entries()) {
+    if ((job.updatedAt || job.createdAt || 0) < cutoff) {
+      lisaBookingJobs.delete(requestId);
+    }
+  }
+}
+
+setInterval(cleanupLisaBookingJobs, 10 * 60 * 1000).unref();
+
+async function runLisaBookingInBackground(requestId, body) {
+  const existing = lisaBookingJobs.get(requestId);
+  if (!existing) return;
+
+  lisaBookingJobs.set(requestId, {
+    ...existing,
+    status: "processing",
+    updatedAt: Date.now()
+  });
+
+  console.log("Lisa async booking background job started:", requestId);
+
+  let stdout = "";
+  let stderr = "";
+
+  try {
+    const childResult = await execFileAsync(
+      process.execPath,
+      ["playwright/octopus-create-booking.js"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          LISA_BOOKING_PAYLOAD: JSON.stringify({
+            ...body,
+            source: "LISA_VOICE"
+          })
+        },
+        timeout: 300000,
+        maxBuffer: 10 * 1024 * 1024
+      }
+    );
+
+    stdout = String(childResult.stdout || "");
+    stderr = String(childResult.stderr || "");
+  } catch (error) {
+    stdout = String(error?.stdout || "");
+    stderr = String(error?.stderr || "");
+
+    console.error(
+      "Lisa async booking Playwright process failed:",
+      requestId,
+      error?.message || error
+    );
+
+    if (stdout) console.log("Lisa async booking stdout before failure:", stdout.slice(-12000));
+    if (stderr) console.error("Lisa async booking stderr before failure:", stderr.slice(-12000));
+
+    lisaBookingJobs.set(requestId, {
+      requestId,
+      status: "failed",
+      success: false,
+      verified_created_in_octopus: false,
+      outcome: "playwright_booking_failed",
+      error: error?.killed
+        ? "Octopus booking timed out."
+        : (error?.message || "Octopus booking failed."),
+      createdAt: existing.createdAt,
+      updatedAt: Date.now()
+    });
+    return;
+  }
+
+  if (stderr.trim()) {
+    console.log("Lisa async booking stderr:", stderr.slice(-12000));
+  }
+
+  console.log("Lisa async booking stdout:", stdout.slice(-16000));
+
+  const resultLine = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .reverse()
+    .find((line) => line.startsWith("LISA_BOOKING_RESULT="));
+
+  if (!resultLine) {
+    lisaBookingJobs.set(requestId, {
+      requestId,
+      status: "failed",
+      success: false,
+      verified_created_in_octopus: false,
+      outcome: "playwright_booking_failed",
+      error: "Octopus booking automation finished without returning a verified BOK.",
+      createdAt: existing.createdAt,
+      updatedAt: Date.now()
+    });
+    return;
+  }
+
+  let result;
+  try {
+    result = JSON.parse(resultLine.slice("LISA_BOOKING_RESULT=".length));
+  } catch {
+    lisaBookingJobs.set(requestId, {
+      requestId,
+      status: "failed",
+      success: false,
+      verified_created_in_octopus: false,
+      outcome: "invalid_booking_result",
+      error: "Octopus booking returned an unreadable result.",
+      createdAt: existing.createdAt,
+      updatedAt: Date.now()
+    });
+    return;
+  }
+
+  const bookingNumber = String(
+    result.bookingNumber || result.booking_number || ""
+  ).trim();
+
+  const bookingId =
+    result.bookingId ||
+    result.booking_id ||
+    result.octopusBookingId ||
+    result.octopus_booking_id ||
+    null;
+
+  const verified =
+    result.success === true &&
+    Boolean(bookingNumber) &&
+    bookingNumber.toUpperCase().startsWith("BOK-");
+
+  if (!verified) {
+    lisaBookingJobs.set(requestId, {
+      requestId,
+      status: "failed",
+      success: false,
+      verified_created_in_octopus: false,
+      outcome: result.outcome || "verification_failed",
+      error: result.error || "Octopus did not return a verified booking number.",
+      rawResult: result,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now()
+    });
+    return;
+  }
+
+  lisaBookingJobs.set(requestId, {
+    ...result,
+    requestId,
+    status: "created",
+    success: true,
+    verified_created_in_octopus: true,
+    bookingNumber,
+    bookingId,
+    outcome: "created",
+    createdAt: existing.createdAt,
+    updatedAt: Date.now()
+  });
+
+  console.log("Lisa async booking completed:", requestId, bookingNumber);
+}
+
 function startHttpServer() {
   const port = Number(process.env.PORT || 3000);
 
@@ -4802,7 +4978,47 @@ function startHttpServer() {
       return;
     }
 
- if (
+    // LISA ASYNC BOOKING STATUS
+    if (req.method === "GET" && req.url.startsWith("/lisa/booking-status/")) {
+      const configuredSecret = String(
+        process.env.LISA_ACTION_SECRET || ""
+      ).trim();
+
+      const suppliedSecret = String(
+        req.headers["x-lisa-secret"] || ""
+      ).trim();
+
+      if (!configuredSecret || suppliedSecret !== configuredSecret) {
+        sendJson(401, {
+          success: false,
+          status: "unauthorized",
+          outcome: "unauthorized",
+          error: "Unauthorized."
+        });
+        return;
+      }
+
+      const requestId = decodeURIComponent(
+        req.url.substring("/lisa/booking-status/".length)
+      ).trim();
+
+      const job = lisaBookingJobs.get(requestId);
+
+      if (!job) {
+        sendJson(404, {
+          success: false,
+          status: "unknown",
+          outcome: "request_not_found",
+          requestId
+        });
+        return;
+      }
+
+      sendJson(200, { ...job, requestId });
+      return;
+    }
+
+    if (
   req.method !== "POST" ||
   (
     req.url !== "/needs-cleaner" &&
@@ -4903,7 +5119,76 @@ if (req.url === "/lisa/booking-action") {
     });
     return;
   }
+// ============================================================
+// ASYNC LISA BOOKING MODE
+// ============================================================
 
+if (body.asyncMode === true) {
+  const requestId =
+    createLisaBookingRequestId();
+
+  lisaBookingJobs.set(requestId, {
+    requestId,
+    status: "queued",
+    success: false,
+    verified_created_in_octopus: false,
+    outcome: "processing",
+    customerName:
+      body.customerName || null,
+    requestedDate:
+      body.requestedDate || null,
+    requestedStartTime:
+      body.requestedStartTime || null,
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  });
+
+  console.log(
+    "Lisa async booking accepted:",
+    requestId,
+    body.customerName
+  );
+
+  // Intentionally do NOT await this.
+  // The HTTP request returns immediately while Playwright continues.
+  runLisaBookingInBackground(
+    requestId,
+    { ...body }
+  ).catch(error => {
+    console.error(
+      "Unhandled Lisa async booking background error:",
+      requestId,
+      error
+    );
+
+    const previous =
+      lisaBookingJobs.get(requestId) || {};
+
+    lisaBookingJobs.set(requestId, {
+      ...previous,
+      requestId,
+      status: "failed",
+      success: false,
+      verified_created_in_octopus: false,
+      outcome: "automation_error",
+      error:
+        error?.message ||
+        "Unexpected booking automation error.",
+      updatedAt: Date.now()
+    });
+  });
+
+  sendJson(202, {
+    accepted: true,
+    success: false,
+    verified_created_in_octopus: false,
+    status: "processing",
+    outcome: "processing",
+    requestId
+  });
+
+  return;
+}
   console.log(
     "Lisa direct booking: launching Playwright creator for",
     body.customerName
