@@ -1,5 +1,6 @@
 import { chromium } from "playwright";
 import http from "http";
+import twilio from "twilio";
 import pg from "pg";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -5022,7 +5023,8 @@ function startHttpServer() {
   req.method !== "POST" ||
   (
     req.url !== "/needs-cleaner" &&
-    req.url !== "/lisa/booking-action"
+    req.url !== "/lisa/booking-action" &&
+    req.url !== "/outbound-call"
   )
 ) {
   sendJson(404, {
@@ -5046,6 +5048,139 @@ function startHttpServer() {
       const body = rawBody
         ? JSON.parse(rawBody)
         : {};
+
+      // ============================================================
+      // OUTBOUND CONFIRMATION CALL LAUNCHER
+      // Make.com POSTs here. This process creates the real Twilio call,
+      // then hands the answered call to the existing Emma/Lisa realtime
+      // outbound-answer route that already preserves the sheet row and
+      // confirmation instructions.
+      // ============================================================
+      if (req.url === "/outbound-call") {
+        const phone = String(
+          body.phone || body.customer_phone || ""
+        ).trim();
+
+        const customerName = String(
+          body.customer_name || body.customerName || body.name || ""
+        ).trim();
+
+        const instructions = String(
+          body.instructions || body.customInstructions || ""
+        ).trim();
+
+        const sheetRowNumber = String(
+          body.sheet_row_number || body.sheetRowNumber || ""
+        ).trim();
+
+        let callPurpose = String(
+          body.call_purpose || body.callPurpose || ""
+        ).trim().toUpperCase();
+
+        // Backward-compatible inference so the existing Make scenarios do not
+        // need another field just to distinguish same-day vs next-day calls.
+        if (!callPurpose) {
+          const instructionUpper = instructions.toUpperCase();
+          if (instructionUpper.includes("SAME-DAY APPOINTMENT CONFIRMATION")) {
+            callPurpose = "SAME_DAY_CONFIRMATION";
+          } else if (
+            instructionUpper.includes("NEXT-DAY APPOINTMENT CONFIRMATION") ||
+            instructionUpper.includes("NEXT DAY APPOINTMENT CONFIRMATION")
+          ) {
+            callPurpose = "NEXT_DAY_CONFIRMATION";
+          }
+        }
+
+        if (!phone) {
+          sendJson(400, {
+            success: false,
+            error: "Phone number is required."
+          });
+          return;
+        }
+
+        if (!instructions) {
+          sendJson(400, {
+            success: false,
+            error: "Instructions are required."
+          });
+          return;
+        }
+
+        const accountSid = String(
+          process.env.TWILIO_ACCT_SID || process.env.TWILIO_ACCOUNT_SID || ""
+        ).trim();
+        const authToken = String(
+          process.env.TWILIO_AUTH_TOKEN || ""
+        ).trim();
+        const fromNumber = String(
+          process.env.TWILIO_PHONE_NUMBER || ""
+        ).trim();
+
+        if (!accountSid || !authToken || !fromNumber) {
+          sendJson(500, {
+            success: false,
+            error: "Twilio credentials or TWILIO_PHONE_NUMBER are missing on octopus-watcher."
+          });
+          return;
+        }
+
+        try {
+          const answerBase = String(
+            process.env.OUTBOUND_ANSWER_URL ||
+            "https://emma-development-production.up.railway.app/outbound-custom-answer"
+          ).trim();
+
+          const answerUrl = new URL(answerBase);
+          answerUrl.searchParams.set("phone", phone);
+          answerUrl.searchParams.set("customer_name", customerName);
+          answerUrl.searchParams.set("instructions", instructions);
+          answerUrl.searchParams.set("sheet_row_number", sheetRowNumber);
+          answerUrl.searchParams.set("call_purpose", callPurpose);
+
+          const client = twilio(accountSid, authToken);
+          const call = await client.calls.create({
+            to: phone,
+            from: fromNumber,
+            url: answerUrl.toString(),
+            method: "POST",
+            record: true,
+            recordingChannels: "dual",
+            machineDetection: "DetectMessageEnd",
+            machineDetectionTimeout: 30,
+            machineDetectionSpeechThreshold: 2400,
+            machineDetectionSpeechEndThreshold: 1200,
+            machineDetectionSilenceTimeout: 5000
+          });
+
+          console.log("Outbound confirmation call started:", {
+            callSid: call.sid,
+            phone,
+            customerName,
+            sheetRowNumber,
+            callPurpose,
+            answerHost: answerUrl.host
+          });
+
+          sendJson(200, {
+            success: true,
+            call_sid: call.sid,
+            status: call.status,
+            phone,
+            customer_name: customerName,
+            sheet_row_number: sheetRowNumber,
+            call_purpose: callPurpose
+          });
+          return;
+        } catch (error) {
+          console.error("POST /outbound-call failed:", error);
+          sendJson(500, {
+            success: false,
+            error: String(error?.message || error)
+          });
+          return;
+        }
+      }
 if (req.url === "/lisa/booking-action") {
   const configuredSecret = String(
     process.env.LISA_ACTION_SECRET || ""
@@ -5460,7 +5595,7 @@ if (body.asyncMode === true) {
 
   server.listen(port, "0.0.0.0", () => {
     console.log(
-      `HTTP endpoint listening on port ${port}. POST /needs-cleaner is ready.`
+      `HTTP endpoint listening on port ${port}. POST /needs-cleaner, POST /outbound-call, and Lisa booking endpoints are ready.`
     );
   });
 
