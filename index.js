@@ -1,4 +1,4 @@
-﻿import Fastify from 'fastify';
+import Fastify from 'fastify';
 import WebSocket from 'ws';
 import dotenv from 'dotenv';
 import pg from 'pg';
@@ -76,6 +76,7 @@ const {
     handleKnowledgeTool,
     handleTechnicianStatusTool,
     handleBillingLookupTool,
+    handleCreateBookingTool,
     handleCancelBookingTool,
     handleRescheduleBookingTool,
     cancelBookingAction,
@@ -83,6 +84,7 @@ const {
 } = createOpenAiToolHandlers({
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
+    createBookingAction: executeLisaCreateBooking,
     db
 });
 
@@ -1681,21 +1683,13 @@ EXISTING-CUSTOMER OVERRIDE:
 STRONG BOOKING CLOSE:
 
 - Before ending, clearly summarize the agreed service, price, date, arrival window, and next step.
-- If the customer agreed to the service and scheduling details, speak confidently and treat the appointment as confirmed for the purpose of the call.
+- If the customer agrees to the service, price, date, time, and booking, call create_octopus_booking before claiming the appointment exists.
+- Customer agreement alone is NOT a completed booking.
+- While the tool runs, allow the existing hold music to play.
+- Only after success=true, verified_created_in_octopus=true, and a real BOK- number is returned may you say the customer is officially booked.
+- On verified success, thank them for holding, confirm the service/date/time, and read the BOK number twice.
+- If no verified BOK is returned, do not invent one and do not claim the appointment is confirmed.
 - Do not end with vague wording such as "we'll see," "someone may call," "hopefully," or "we'll try."
-- Say exactly what happens next.
-
-Use a close like:
-
-Perfect, [first name]. Everything is all set.
-
-I have you scheduled for [service] on [date] during the [arrival window].
-
-Your starting price will be [price].
-
-We'll send your appointment confirmation and service authorization by text or email shortly, and your technician will call when she's on the way.
-
-We look forward to seeing you!
 Then ask:
 
 "Is there anything else I can help you with before we finish?"
@@ -2107,11 +2101,11 @@ Do not leave the appointment status vague or open-ended.
 
 CONFIRMATION RULE:
 
-If the customer clearly agreed to the appointment date and arrival window and provided the required booking information, treat the appointment as booked for the purpose of the call.
+If the customer clearly agreed to the appointment date and arrival window and provided the required booking information, call create_octopus_booking. Agreement authorizes the booking attempt but does not itself mean the appointment exists.
 
-Say:
+Only after the tool returns success=true, verified_created_in_octopus=true, and a real bookingNumber beginning BOK- may you say:
 
-"You are booked and fully confirmed for [full appointment date] with the [selected arrival window]. We will send your appointment details and required service authorization information by text or email."
+"You are officially booked for [full appointment date] with the [selected arrival window]. Your confirmation number is [BOK]. Again, that's [BOK]. We will also send your appointment details and required service authorization information by text or email."
 
 Use the actual date and arrival window selected by the caller.
 
@@ -2753,6 +2747,7 @@ const toolsThatMayTakeTime = new Set([
     'search_company_knowledge',
     'record_technician_status_update',
     'lookup_octopus_billing',
+    'create_octopus_booking',
     'cancel_octopus_booking',
     'reschedule_octopus_booking'
 ]);
@@ -2791,21 +2786,53 @@ try {
                 });
 
             if (!billingHandled) {
-                const cancellationHandled =
-                    await handleCancelBookingTool({
+                const createBookingHandled =
+                    await handleCreateBookingTool({
                         response,
                         openAiWs,
                         WebSocket,
-                        customerBookings
+                        callerPhone,
+                        bookingDefaults: {
+                            customerName:
+                                outboundCustomerName ||
+                                [customer?.first_name, customer?.last_name].filter(Boolean).join(' '),
+                            customerFirstName: customer?.first_name || '',
+                            customerLastName: customer?.last_name || '',
+                            customerPhone: callerPhone,
+                            customerEmail: outboundCustomerEmail || customer?.email || '',
+                            serviceAddress: outboundCustomerAddress || customer?.address || '',
+                            streetNumber: outboundStreetNumber || customer?.street_number || '',
+                            street: outboundStreet || customer?.street || customer?.street_address || '',
+                            city: outboundCity || customer?.city || customer?.suburb || '',
+                            state: outboundState || customer?.state || '',
+                            zip: outboundZip || customer?.zip || customer?.postcode || '',
+                            serviceType: outboundServiceType,
+                            recurringFrequency: outboundRecurringFrequency,
+                            requestedDate: outboundRequestedDate,
+                            requestedStartTime: outboundRequestedStartTime,
+                            arrivalWindow: outboundArrivalWindow,
+                            durationMinutes: outboundDurationMinutes || 120,
+                            specialNotes: customInstructions
+                        }
                     });
 
-                if (!cancellationHandled) {
-                    await handleRescheduleBookingTool({
-                        response,
-                        openAiWs,
-                        WebSocket,
-                        customerBookings
-                    });
+                if (!createBookingHandled) {
+                    const cancellationHandled =
+                        await handleCancelBookingTool({
+                            response,
+                            openAiWs,
+                            WebSocket,
+                            customerBookings
+                        });
+
+                    if (!cancellationHandled) {
+                        await handleRescheduleBookingTool({
+                            response,
+                            openAiWs,
+                            WebSocket,
+                            customerBookings
+                        });
+                    }
                 }
             }
         }
