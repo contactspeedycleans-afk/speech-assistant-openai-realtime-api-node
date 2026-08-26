@@ -42,21 +42,7 @@ const TEST = livePayload
       suburb: String(livePayload.city || livePayload.suburb || ""),
       state: String(livePayload.state || ""),
       postcode: String(livePayload.zip || livePayload.postcode || ""),
-      unit: String(
-        livePayload.unit ||
-        livePayload.apartment ||
-        livePayload.suite ||
-        livePayload.addressLine2 ||
-        ""
-      ),
-      serviceName:
-        livePayload.serviceName ||
-        livePayload.serviceType ||
-        "Standard Cleaning",
-      recurringFrequency:
-        livePayload.recurringFrequency ||
-        livePayload.frequency ||
-        "one_time",
+      serviceName: livePayload.serviceName || "Standard Cleaning",
       bookingDate: livePayload.requestedDate || livePayload.bookingDate,
       startTime: livePayload.requestedStartTime || livePayload.startTime,
       durationHours: Number(
@@ -80,9 +66,7 @@ const TEST = livePayload
       suburb: "Howell",
       state: "MI",
       postcode: "48843",
-      unit: "",
       serviceName: "Standard Cleaning",
-      recurringFrequency: "one_time",
       bookingDate: "2026-08-25",
       startTime: "10:00",
       durationHours: 2,
@@ -791,8 +775,14 @@ async function main() {
 
     const addressCandidateCount = await addressCandidates.count().catch(() => 0);
 
+    const streetTokens = targetStreet
+      .split(" ")
+      .map(token => token.trim())
+      .filter(token => token.length >= 2);
+
     for (let i = 0; i < addressCandidateCount; i++) {
       const candidate = addressCandidates.nth(i);
+
       const rawText = (await candidate.innerText().catch(() => ""))
         .replace(/\s+/g, " ")
         .trim();
@@ -802,30 +792,58 @@ async function main() {
       const norm = normalizeAddressText(rawText);
       const digits = rawText.replace(/\D/g, "");
 
-      let score = 0;
+      const hasNumber =
+        !targetNumber || digits.includes(targetNumber);
 
-      if (targetNumber && digits.includes(targetNumber)) score += 4;
-      if (targetZip && digits.includes(targetZip)) score += 5;
-      if (targetCity && norm.includes(targetCity)) score += 4;
-      if (targetState && norm.includes(targetState)) score += 2;
+      const hasZip =
+        !targetZip || digits.includes(targetZip);
 
-      const streetTokens = targetStreet
-        .split(" ")
-        .filter(token => token.length >= 2);
+      const hasCity =
+        !targetCity || norm.includes(targetCity);
+
+      const hasState =
+        !targetState || norm.includes(targetState);
 
       const matchedStreetTokens = streetTokens.filter(token =>
         norm.includes(token)
       ).length;
 
-      score += matchedStreetTokens;
+      const streetMatchRatio =
+        streetTokens.length > 0
+          ? matchedStreetTokens / streetTokens.length
+          : 0;
 
-      if (
-        score > bestScore &&
-        targetNumber &&
-        digits.includes(targetNumber) &&
-        targetCity &&
-        norm.includes(targetCity)
-      ) {
+      let score = 0;
+
+      if (targetNumber && hasNumber) score += 6;
+      if (targetZip && hasZip) score += 6;
+      if (targetCity && hasCity) score += 4;
+      if (targetState && hasState) score += 2;
+
+      score += matchedStreetTokens * 2;
+
+      const strongStreetLevelMatch =
+        streetMatchRatio >= 0.5 &&
+        hasCity &&
+        hasState &&
+        hasZip;
+
+      const strongFullAddressMatch =
+        hasNumber &&
+        streetMatchRatio >= 0.5 &&
+        (hasCity || hasZip);
+
+      const strongZipStreetMatch =
+        streetMatchRatio >= 0.5 &&
+        hasState &&
+        hasZip;
+
+      const credibleMatch =
+        strongFullAddressMatch ||
+        strongStreetLevelMatch ||
+        strongZipStreetMatch;
+
+      if (credibleMatch && score > bestScore) {
         bestScore = score;
         bestAddressCandidate = candidate;
         bestAddressText = rawText;
@@ -834,11 +852,13 @@ async function main() {
 
     if (!bestAddressCandidate) {
       const visibleAddressTexts = [];
+
       for (let i = 0; i < Math.min(addressCandidateCount, 50); i++) {
         const txt = (await addressCandidates.nth(i).innerText().catch(() => ""))
           .replace(/\s+/g, " ")
           .trim();
-        if (txt && /\d/.test(txt)) visibleAddressTexts.push(txt);
+
+        if (txt) visibleAddressTexts.push(txt);
       }
 
       throw new Error(
@@ -858,26 +878,6 @@ async function main() {
     });
 
     await page.waitForTimeout(3000);
-
-    if (TEST.unit) {
-      console.log("Applying apartment/suite/unit to Address Line 2:", TEST.unit);
-
-      const addressLine2 = page
-        .locator('input[placeholder="Address Line 2"]')
-        .filter({ visible: true })
-        .first();
-
-      if ((await addressLine2.count().catch(() => 0)) > 0) {
-        await addressLine2.fill(TEST.unit);
-        await addressLine2.dispatchEvent("input").catch(() => {});
-        await addressLine2.dispatchEvent("change").catch(() => {});
-        await addressLine2.dispatchEvent("blur").catch(() => {});
-      } else {
-        console.log(
-          "Address Line 2 field was not visible; unit remains preserved in the Lisa payload."
-        );
-      }
-    }
 
     const selectedLocation = await page.evaluate(() => {
       const bookingAddressInput =
@@ -964,14 +964,7 @@ async function main() {
 
     console.log("Location confirmed.");
 
-    console.log(
-      "Selecting Standard Cleaning service for requested booking:",
-      JSON.stringify({
-        serviceName: TEST.serviceName,
-        recurringFrequency: TEST.recurringFrequency,
-        price: TEST.price
-      })
-    );
+    console.log("Selecting One Time Standard Cleaning...");
 
 const servicesDropdown = page.locator("#servicesdropdown").first();
 
@@ -1004,6 +997,7 @@ await page.waitForTimeout(2000);
 
 const cleanAsDirected = page
   .locator('li[role="option"][aria-label="Standard Cleaning"]')
+  .filter({ hasText: "$82.5" })
   .first();
 
 await cleanAsDirected.waitFor({
@@ -1201,209 +1195,49 @@ console.log("Appointment date/time set.");
 
     console.log("Completing required booking fields with exact DOM inspection...");
 
-    // DYNAMIC FREQUENCY MODE.
-    // Use Lisa's requested recurrence instead of forcing every booking to One Time.
-    const requestedFrequencyRaw = String(
-      TEST.recurringFrequency ||
-      livePayload?.recurringFrequency ||
-      livePayload?.frequency ||
-      TEST.serviceName ||
-      ""
-    ).trim();
+    // ONE-TIME ONLY MODE.
+    // IMPORTANT: set the hidden checkbox ONCE and do NOT dispatch a click event.
+    // A synthetic click on a checkbox toggles it back off.
+    console.log("SETTING ONE TIME CLEANING = TRUE...");
 
-    const normalizeFrequency = value =>
-      String(value || "")
-        .toLowerCase()
-        .replace(/[_-]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+    const oneTimeInput = page.locator(
+      'input[name="attribute_8087013985[]"][value="37558"]'
+    ).first();
 
-    const requestedFrequency = normalizeFrequency(requestedFrequencyRaw);
+    await oneTimeInput.waitFor({
+      state: "attached",
+      timeout: 10000
+    });
 
-    const frequencyAliases = (() => {
-      if (
-        !requestedFrequency ||
-        /one time|one-time|onetime|single/.test(requestedFrequency)
-      ) {
-        return ["one time", "one-time", "single"];
+    await oneTimeInput.evaluate(el => {
+      const proto = Object.getPrototypeOf(el);
+      const checkedSetter =
+        Object.getOwnPropertyDescriptor(proto, "checked")?.set;
+
+      if (checkedSetter) {
+        checkedSetter.call(el, true);
+      } else {
+        el.checked = true;
       }
 
-      if (/biweekly|bi weekly|every 2 weeks|every two weeks|fortnight/.test(requestedFrequency)) {
-        return ["biweekly", "bi weekly", "every 2 weeks", "every two weeks", "fortnight"];
-      }
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    });
 
-      if (/triweekly|tri weekly|every 3 weeks|every three weeks/.test(requestedFrequency)) {
-        return ["triweekly", "tri weekly", "every 3 weeks", "every three weeks"];
-      }
+    await page.waitForTimeout(800);
 
-      if (/monthly|every month|4 weeks|four weeks/.test(requestedFrequency)) {
-        return ["monthly", "every month", "4 weeks", "four weeks"];
-      }
+    const oneTimeState = await oneTimeInput.evaluate(el => ({
+      id: el.id || "",
+      name: el.getAttribute("name") || "",
+      value: el.value || "",
+      checked: !!el.checked
+    }));
 
-      if (/weekly|every week/.test(requestedFrequency)) {
-        return ["weekly", "every week"];
-      }
+    console.log("ONE TIME FINAL STATE:", JSON.stringify(oneTimeState));
 
-      return [requestedFrequency];
-    })();
-
-    console.log(
-      "Selecting booking frequency:",
-      JSON.stringify({
-        requestedFrequencyRaw,
-        requestedFrequency,
-        aliases: frequencyAliases
-      })
-    );
-
-    const frequencyInputs = page.locator(
-      'input[name="attribute_8087013985[]"]'
-    );
-
-    const frequencyOptions = [];
-
-    for (let i = 0; i < await frequencyInputs.count(); i++) {
-      const input = frequencyInputs.nth(i);
-
-      const option = await input.evaluate(el => {
-        const id = el.id || "";
-        const directLabel = id
-          ? document.querySelector(`label[for="${CSS.escape(id)}"]`)
-          : null;
-
-        const closestLabel = el.closest("label");
-
-        const parentText =
-          String(
-            directLabel?.innerText ||
-            directLabel?.textContent ||
-            closestLabel?.innerText ||
-            closestLabel?.textContent ||
-            el.parentElement?.innerText ||
-            el.parentElement?.textContent ||
-            ""
-          )
-            .replace(/\s+/g, " ")
-            .trim();
-
-        return {
-          id,
-          name: el.getAttribute("name") || "",
-          value: el.value || "",
-          checked: !!el.checked,
-          text: parentText
-        };
-      });
-
-      frequencyOptions.push({
-        index: i,
-        ...option
-      });
+    if (!oneTimeState.checked) {
+      throw new Error("ONE_TIME_NOT_CHECKED");
     }
-
-    console.log(
-      "Available Octopus frequency options:",
-      JSON.stringify(frequencyOptions)
-    );
-
-    let selectedFrequencyIndex = -1;
-
-    // Preserve the known One Time value when it is explicitly requested.
-    const oneTimeRequested = frequencyAliases.some(alias =>
-      /one time|one-time|single/.test(alias)
-    );
-
-    if (oneTimeRequested) {
-      selectedFrequencyIndex = frequencyOptions.findIndex(
-        option =>
-          String(option.value) === "37558" ||
-          /one\s*time|one-time|single/i.test(option.text)
-      );
-    } else {
-      selectedFrequencyIndex = frequencyOptions.findIndex(option => {
-        const text = normalizeFrequency(option.text);
-        return frequencyAliases.some(alias =>
-          text.includes(normalizeFrequency(alias))
-        );
-      });
-    }
-
-    if (selectedFrequencyIndex < 0) {
-      // Some Octopus builds render recurrence choices as buttons/labels instead of
-      // inputs. Try the visible text UI before failing.
-      let clickedVisibleFrequency = false;
-
-      for (const alias of frequencyAliases) {
-        const candidates = page
-          .getByText(new RegExp(alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"))
-          .filter({ visible: true });
-
-        const count = await candidates.count().catch(() => 0);
-
-        for (let i = 0; i < count; i++) {
-          const candidate = candidates.nth(i);
-          const text = (await candidate.innerText().catch(() => ""))
-            .replace(/\s+/g, " ")
-            .trim();
-
-          if (!text || text.length > 120) continue;
-
-          console.log("Clicking visible frequency option:", text);
-
-          await candidate.click({ force: true, timeout: 10000 }).catch(() => {});
-          clickedVisibleFrequency = true;
-          break;
-        }
-
-        if (clickedVisibleFrequency) break;
-      }
-
-      if (!clickedVisibleFrequency) {
-        throw new Error(
-          `FREQUENCY_OPTION_NOT_FOUND: requested=${requestedFrequencyRaw} ` +
-          `options=${JSON.stringify(frequencyOptions)}`
-        );
-      }
-    } else {
-      const targetFrequencyInput = frequencyInputs.nth(selectedFrequencyIndex);
-
-      await targetFrequencyInput.evaluate(el => {
-        const proto = Object.getPrototypeOf(el);
-        const checkedSetter =
-          Object.getOwnPropertyDescriptor(proto, "checked")?.set;
-
-        if (checkedSetter) {
-          checkedSetter.call(el, true);
-        } else {
-          el.checked = true;
-        }
-
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-      });
-
-      await page.waitForTimeout(800);
-
-      const selectedFrequencyState = await targetFrequencyInput.evaluate(el => ({
-        id: el.id || "",
-        name: el.getAttribute("name") || "",
-        value: el.value || "",
-        checked: !!el.checked
-      }));
-
-      console.log(
-        "FREQUENCY FINAL STATE:",
-        JSON.stringify(selectedFrequencyState)
-      );
-
-      if (!selectedFrequencyState.checked) {
-        throw new Error(
-          `FREQUENCY_NOT_CHECKED: ${JSON.stringify(selectedFrequencyState)}`
-        );
-      }
-    }
-
-    await page.waitForTimeout(900);
 
     const specialNotesField = page.locator("#attribute_8087017483").first();
     const accessInstructionsField = page.locator("#attribute_8087013969").first();
@@ -2262,10 +2096,7 @@ console.log("Attempting to save booking with full validation capture...");
       throw new Error(
         `BOOKING_NOT_CREATED: alerts=${JSON.stringify(saveDiagnostics.visibleAlerts)} ` +
         `invalid=${JSON.stringify(saveDiagnostics.invalidFields)} ` +
-        `normalSaveBody=${JSON.stringify(normalSaveBody.slice(0, 4000))} ` +
-        `requestedFrequency=${JSON.stringify(TEST.recurringFrequency)} ` +
-        `requestedPrice=${JSON.stringify(TEST.price)} ` +
-        `requestedUnit=${JSON.stringify(TEST.unit)}`
+        `normalSaveBody=${JSON.stringify(normalSaveBody.slice(0, 4000))}`
       );
     }
 
