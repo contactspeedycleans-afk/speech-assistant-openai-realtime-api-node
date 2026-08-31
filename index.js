@@ -194,8 +194,13 @@ fastify.post(
             'Lisa booking action request:',
             {
                 action,
-                bookingId:
-                    body.bookingId || null
+                bookingId: body.bookingId || null,
+                bookingNumber: body.bookingNumber || body.booking_number || null,
+                phone: body.phone || body.customerPhone || null,
+                customerName: body.customerName || null,
+                requestedDate: body.requestedDate || body.date || null,
+                scope: body.scope || null,
+                limit: body.limit || null
             }
         );
 
@@ -233,9 +238,24 @@ fastify.post(
                     });
                 }
 
-                return reply.send(
-                    JSON.parse(marker.substring('LISA_LOOKUP_RESULT='.length))
+                const lookupResult = JSON.parse(
+                    marker.substring('LISA_LOOKUP_RESULT='.length)
                 );
+
+                console.log('Lisa live Octopus lookup result:', {
+                    success: lookupResult.success,
+                    found: lookupResult.found,
+                    source: lookupResult.source,
+                    bookingNumber:
+                        lookupResult.booking?.bookingNumber ||
+                        lookupResult.bookings?.[0]?.bookingNumber ||
+                        null,
+                    count: lookupResult.count || lookupResult.bookings?.length || 0,
+                    reason: lookupResult.reason || null,
+                    error: lookupResult.error || null
+                });
+
+                return reply.send(lookupResult);
             }
 
             if (action === 'cancel') {
