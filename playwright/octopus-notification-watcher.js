@@ -5208,16 +5208,155 @@ if (req.url === "/lisa/booking-action") {
 
   console.log("Lisa booking action request:", {
     action,
+    bookingId: body.bookingId || null,
+    bookingNumber: body.bookingNumber || body.booking_number || null,
+    phone: body.phone || body.customerPhone || null,
+    email: body.email || body.customerEmail || null,
     customerName: body.customerName || null,
-    requestedDate: body.requestedDate || null,
-    requestedStartTime: body.requestedStartTime || null
+    customerId: body.customerId || body.customer_id || null,
+    requestedDate: body.requestedDate || body.date || null,
+    requestedStartTime: body.requestedStartTime || null,
+    scope: body.scope || null,
+    limit: body.limit || null
   });
+
+  // ------------------------------------------------------------
+  // LISA LIVE READ-ONLY LOOKUP
+  // ------------------------------------------------------------
+  // This watcher is the production HTTP service behind
+  // octopus-watcher-production.up.railway.app. Historically this route
+  // accepted only create, so Lisa's Customer 360 lookup requests reached
+  // the watcher and were immediately rejected. Handle lookup here before
+  // the create-only gate.
+  if (action === "lookup") {
+    let stdout = "";
+    let stderr = "";
+
+    try {
+      const childResult = await execFileAsync(
+        process.execPath,
+        ["playwright/octopus-live-lookup.js"],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            LISA_LOOKUP_PAYLOAD: JSON.stringify(body)
+          },
+          timeout: 120000,
+          maxBuffer: 10 * 1024 * 1024
+        }
+      );
+
+      stdout = String(childResult.stdout || "");
+      stderr = String(childResult.stderr || "");
+    } catch (error) {
+      stdout = String(error?.stdout || "");
+      stderr = String(error?.stderr || "");
+
+      console.error(
+        "Lisa live Octopus lookup process failed:",
+        error?.message || error
+      );
+
+      if (stdout) {
+        console.log(
+          "Lisa live Octopus lookup stdout before failure:",
+          stdout.slice(-12000)
+        );
+      }
+
+      if (stderr) {
+        console.error(
+          "Lisa live Octopus lookup stderr before failure:",
+          stderr.slice(-12000)
+        );
+      }
+
+      sendJson(200, {
+        success: false,
+        found: false,
+        source: "octopus_live",
+        outcome: "lookup_failed",
+        error: error?.killed
+          ? "Live Octopus lookup timed out."
+          : (error?.message || "Live Octopus lookup failed.")
+      });
+      return;
+    }
+
+    if (stderr.trim()) {
+      console.log(
+        "Lisa live Octopus lookup stderr:",
+        stderr.slice(-12000)
+      );
+    }
+
+    const marker = stdout
+      .split(/\r?\n/)
+      .find(line => line.startsWith("LISA_LOOKUP_RESULT="));
+
+    if (!marker) {
+      console.error(
+        "Lisa live Octopus lookup returned no result marker.",
+        stdout.slice(-12000)
+      );
+
+      sendJson(200, {
+        success: false,
+        found: false,
+        source: "octopus_live",
+        outcome: "lookup_failed",
+        error: "Live Octopus lookup did not return a result."
+      });
+      return;
+    }
+
+    let lookupResult;
+    try {
+      lookupResult = JSON.parse(
+        marker.slice("LISA_LOOKUP_RESULT=".length)
+      );
+    } catch (error) {
+      console.error(
+        "Lisa live Octopus lookup returned invalid JSON:",
+        error?.message || error
+      );
+
+      sendJson(200, {
+        success: false,
+        found: false,
+        source: "octopus_live",
+        outcome: "lookup_failed",
+        error: "Live Octopus lookup returned an invalid result."
+      });
+      return;
+    }
+
+    console.log("Lisa live Octopus lookup result:", {
+      success: lookupResult.success === true,
+      found: lookupResult.found === true,
+      source: lookupResult.source || "octopus_live",
+      bookingNumber:
+        lookupResult.booking?.bookingNumber ||
+        lookupResult.bookings?.[0]?.bookingNumber ||
+        null,
+      count:
+        lookupResult.count ||
+        lookupResult.bookings?.length ||
+        0,
+      reason: lookupResult.reason || null,
+      error: lookupResult.error || null
+    });
+
+    sendJson(200, lookupResult);
+    return;
+  }
 
   if (action !== "create") {
     sendJson(400, {
       success: false,
       outcome: "unsupported_action",
-      error: "Only create is enabled on this endpoint right now."
+      error: "Supported actions on this watcher are create and lookup."
     });
     return;
   }
