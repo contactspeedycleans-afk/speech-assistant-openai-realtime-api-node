@@ -76,7 +76,6 @@ const {
     handleKnowledgeTool,
     handleTechnicianStatusTool,
     handleBillingLookupTool,
-    handleCreateBookingTool,
     handleCancelBookingTool,
     handleRescheduleBookingTool,
     cancelBookingAction,
@@ -84,7 +83,6 @@ const {
 } = createOpenAiToolHandlers({
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
-    createBookingAction: executeLisaCreateBooking,
     db
 });
 
@@ -110,286 +108,68 @@ const fastify = Fastify();
 
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
-// ============================================================
-// LISA ASYNC BOOKING JOBS
-// ============================================================
-// The Playwright booking can take multiple minutes. Railway/proxies may close
-// a single long HTTP request before Octopus finishes. Lisa now submits the
-// create request quickly, receives a requestId, and polls this in-memory job
-// store for the verified BOK result.
-const lisaBookingJobs = new Map();
-const LISA_BOOKING_JOB_TTL_MS = 30 * 60 * 1000;
 
-function cleanLisaBookingJobs() {
-    const cutoff = Date.now() - LISA_BOOKING_JOB_TTL_MS;
 
-    for (const [requestId, job] of lisaBookingJobs.entries()) {
-        if ((job.updatedAt || job.createdAt || 0) < cutoff) {
-            lisaBookingJobs.delete(requestId);
-        }
-    }
+function normalizeLisaPhone(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : digits;
 }
 
-function newLisaBookingRequestId() {
-    return `lisa-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function verifyLisaSecret(request) {
-    const configuredSecret = String(
-        process.env.LISA_ACTION_SECRET || ''
-    ).trim();
-
-    const suppliedSecret = String(
-        request.headers['x-lisa-secret'] || ''
-    ).trim();
-
-    return Boolean(
-        configuredSecret &&
-        suppliedSecret &&
-        suppliedSecret === configuredSecret
-    );
-}
-
-function validateLisaCreateBody(body) {
-    if (body.customerConfirmed !== true) {
-        return {
-            success: false,
-            outcome: 'confirmation_required',
-            error: 'The customer must explicitly confirm the complete booking first.'
-        };
-    }
-
-    const required = [
-        ['customerName', body.customerName],
-        ['streetNumber', body.streetNumber],
-        ['street', body.street || body.streetAddress],
-        ['city', body.city || body.suburb],
-        ['state', body.state],
-        ['zip', body.zip || body.postcode],
-        ['requestedDate', body.requestedDate],
-        ['requestedStartTime', body.requestedStartTime]
-    ];
-
-    const missing = required
-        .filter(([, value]) => !String(value || '').trim())
-        .map(([name]) => name);
-
-    if (missing.length) {
-        return {
-            success: false,
-            outcome: 'missing_booking_fields',
-            error: `Missing required booking fields: ${missing.join(', ')}`
-        };
-    }
-
-    return null;
-}
-
-async function deliverLisaBookingSuccessWebhook(body, result) {
-    const bookingId = result.bookingId || result.booking_id || null;
-    const bookingNumber = result.bookingNumber || result.booking_number || null;
-
-    const successWebhookUrl = String(
-        process.env.LISA_BOOKING_SUCCESS_WEBHOOK_URL || ''
-    ).trim();
-
-    if (!successWebhookUrl) {
-        console.log(
-            'LISA_BOOKING_SUCCESS_WEBHOOK_URL not configured; skipping success notification.'
-        );
-        return;
-    }
-
-    const successPayload = {
-        event: 'LISA_BOOKING_CREATED',
-        verified_created_in_octopus: true,
-        bookingNumber,
-        bookingId,
-        customerName: body.customerName || '',
-        customerPhone: body.customerPhone || body.phone || '',
-        customerEmail: body.customerEmail || body.email || '',
-        serviceAddress:
-            body.serviceAddress ||
-            [
-                body.streetNumber,
-                body.street || body.streetAddress,
-                body.city || body.suburb,
-                body.state,
-                body.zip || body.postcode
-            ]
-                .filter(Boolean)
-                .join(', '),
-        streetNumber: body.streetNumber || '',
-        street: body.street || body.streetAddress || '',
-        city: body.city || body.suburb || '',
-        state: body.state || '',
-        zip: body.zip || body.postcode || '',
-        requestedDate: body.requestedDate || '',
-        requestedStartTime: body.requestedStartTime || '',
-        arrivalWindow: body.arrivalWindow || '',
-        durationMinutes:
-            body.durationMinutes ||
-            (Number(body.durationHours || 0) * 60 || ''),
-        quotedPrice: body.quotedPrice || body.price || '',
-        serviceType: body.serviceType || body.serviceName || '',
-        recurringFrequency: body.recurringFrequency || '',
-        source: 'LISA_VOICE',
-        createdAt: new Date().toISOString()
-    };
-
+async function cacheLisaCreatedBooking({ bookingId, bookingNumber, body }) {
     try {
-        const hookResponse = await fetch(successWebhookUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(successPayload),
-            signal: AbortSignal.timeout(15000)
-        });
+        const phone = normalizeLisaPhone(body.customerPhone || body.phone || '');
+        const requestedDate = String(body.requestedDate || '').trim();
+        const requestedStartTime = String(body.requestedStartTime || '').trim();
+        const bookingDate = requestedDate
+            ? `${requestedDate} ${requestedStartTime || '00:00'}:00`
+            : null;
+        const trackingToken = `LISA-CREATED-${bookingNumber}-${Date.now()}`;
 
-        if (!hookResponse.ok) {
-            console.error(
-                'Lisa booking success webhook returned HTTP',
-                hookResponse.status
-            );
-        } else {
-            console.log(
-                'Lisa booking success webhook delivered:',
-                bookingNumber
-            );
-        }
-    } catch (hookError) {
-        console.error(
-            'Lisa booking success webhook failed:',
-            hookError?.message || hookError
+        await db.query(
+            `
+            INSERT INTO public.booking_tracking (
+                booking_number,
+                tracking_token,
+                octopus_booking_id,
+                booking_date,
+                status,
+                customer_phone_normalized,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, 'UPCOMING', $5, NOW())
+            ON CONFLICT (booking_number)
+            DO UPDATE SET
+                octopus_booking_id = COALESCE(EXCLUDED.octopus_booking_id, public.booking_tracking.octopus_booking_id),
+                booking_date = COALESCE(EXCLUDED.booking_date, public.booking_tracking.booking_date),
+                customer_phone_normalized = COALESCE(NULLIF(EXCLUDED.customer_phone_normalized, ''), public.booking_tracking.customer_phone_normalized),
+                updated_at = NOW()
+            `,
+            [bookingNumber, trackingToken, bookingId, bookingDate, phone]
         );
-    }
-}
 
-async function executeLisaCreateBooking(body) {
-    const validationError = validateLisaCreateBody(body);
-    if (validationError) {
-        return validationError;
-    }
-
-    const { stdout, stderr } = await execFileAsync(
-        process.execPath,
-        ['playwright/octopus-create-booking.js'],
-        {
-            cwd: process.cwd(),
-            env: {
-                ...process.env,
-                LISA_BOOKING_PAYLOAD: JSON.stringify(body)
-            },
-            // Longer than Lisa's previous HTTP request. This is now safe because
-            // it runs in the background instead of holding open the submit POST.
-            timeout: 300000,
-            maxBuffer: 10 * 1024 * 1024
-        }
-    );
-
-    if (stderr) {
-        console.log('Lisa direct booking stderr:', stderr);
-    }
-
-    console.log('Lisa direct booking stdout:', stdout);
-
-    const marker = stdout
-        .split(/\r?\n/)
-        .find((line) => line.startsWith('LISA_BOOKING_RESULT='));
-
-    if (!marker) {
-        return {
-            success: false,
-            verified_created_in_octopus: false,
-            outcome: 'playwright_booking_failed',
-            error: 'Octopus booking automation did not return a verified BOK.'
-        };
-    }
-
-    const result = JSON.parse(
-        marker.substring('LISA_BOOKING_RESULT='.length)
-    );
-
-    const bookingId = result.bookingId || result.booking_id || null;
-    const bookingNumber = result.bookingNumber || result.booking_number || null;
-    const verified =
-        result.success === true &&
-        Boolean(bookingId && bookingNumber) &&
-        String(bookingNumber).toUpperCase().startsWith('BOK-');
-
-    if (!verified) {
-        return {
-            ...result,
-            success: false,
-            verified_created_in_octopus: false,
-            bookingId,
-            bookingNumber,
-            outcome: result.outcome || 'verification_failed',
-            error:
-                result.error ||
-                'OctopusPro did not return both a verified booking ID and BOK number.'
-        };
-    }
-
-    const verifiedResult = {
-        ...result,
-        success: true,
-        verified_created_in_octopus: true,
-        bookingId,
-        bookingNumber,
-        outcome: 'created'
-    };
-
-    await deliverLisaBookingSuccessWebhook(body, verifiedResult);
-
-    return verifiedResult;
-}
-
-async function runLisaBookingJob(requestId, body) {
-    const job = lisaBookingJobs.get(requestId);
-    if (!job) return;
-
-    try {
-        const result = await executeLisaCreateBooking(body);
-
-        lisaBookingJobs.set(requestId, {
-            ...job,
-            status: result.success === true ? 'created' : 'failed',
-            result,
-            updatedAt: Date.now()
-        });
-
-        console.log(
-            'Lisa async booking job finished:',
-            requestId,
-            result.bookingNumber || result.outcome || 'no-result'
-        );
+        console.log('Lisa newly-created booking cached immediately:', bookingNumber);
     } catch (error) {
-        console.error(
-            'Lisa async booking job failed:',
-            requestId,
-            error
-        );
-
-        lisaBookingJobs.set(requestId, {
-            ...job,
-            status: 'failed',
-            result: {
-                success: false,
-                verified_created_in_octopus: false,
-                outcome: 'automation_error',
-                error: error?.message || 'Booking action failed.'
-            },
-            updatedAt: Date.now()
-        });
+        // Never fail a real Octopus booking because the local cache write failed.
+        console.error('Lisa immediate booking cache failed:', error?.message || error);
     }
 }
-
 fastify.post(
     '/lisa/booking-action',
     async (request, reply) => {
-        if (!verifyLisaSecret(request)) {
+        const configuredSecret =
+            String(
+                process.env.LISA_ACTION_SECRET || ''
+            ).trim();
+
+        const suppliedSecret =
+            String(
+                request.headers['x-lisa-secret'] || ''
+            ).trim();
+
+        if (
+            !configuredSecret ||
+            suppliedSecret !== configuredSecret
+        ) {
             return reply
                 .code(401)
                 .send({
@@ -400,111 +180,300 @@ fastify.post(
         }
 
         const body =
-            request.body && typeof request.body === 'object'
+            request.body &&
+            typeof request.body === 'object'
                 ? request.body
                 : {};
 
-        const action = String(body.action || '')
-            .trim()
-            .toLowerCase();
+        const action =
+            String(body.action || '')
+                .trim()
+                .toLowerCase();
 
-        console.log('Lisa booking action request:', {
-            action,
-            bookingId: body.bookingId || null,
-            asyncMode: body.asyncMode === true
-        });
+        console.log(
+            'Lisa booking action request:',
+            {
+                action,
+                bookingId:
+                    body.bookingId || null
+            }
+        );
 
         try {
+            if (action === 'lookup') {
+                const { stdout, stderr } = await execFileAsync(
+                    process.execPath,
+                    ['playwright/octopus-live-lookup.js'],
+                    {
+                        cwd: process.cwd(),
+                        env: {
+                            ...process.env,
+                            LISA_LOOKUP_PAYLOAD: JSON.stringify(body)
+                        },
+                        timeout: 90000,
+                        maxBuffer: 10 * 1024 * 1024
+                    }
+                );
+
+                if (stderr) {
+                    console.log('Lisa live Octopus lookup stderr:', stderr);
+                }
+
+                const marker = stdout
+                    .split(/\r?\n/)
+                    .find((line) => line.startsWith('LISA_LOOKUP_RESULT='));
+
+                if (!marker) {
+                    return reply.send({
+                        success: false,
+                        found: false,
+                        source: 'octopus_live',
+                        outcome: 'lookup_failed',
+                        error: 'Live Octopus lookup did not return a result.'
+                    });
+                }
+
+                return reply.send(
+                    JSON.parse(marker.substring('LISA_LOOKUP_RESULT='.length))
+                );
+            }
+
             if (action === 'cancel') {
-                const result = await cancelBookingAction({
-                    bookingId: body.bookingId,
-                    cancellationReason: body.cancellationReason || 'Other',
-                    customerConfirmed: body.customerConfirmed === true,
-                    cancellationScope: body.cancellationScope || 'single_visit',
-                    customerBookings: Array.isArray(body.customerBookings)
-                        ? body.customerBookings
-                        : []
-                });
+                const result =
+                    await cancelBookingAction({
+                        bookingId:
+                            body.bookingId,
+                        cancellationReason:
+                            body.cancellationReason ||
+                            'Other',
+                        customerConfirmed:
+                            body.customerConfirmed === true,
+                        cancellationScope:
+                            body.cancellationScope ||
+                            'single_visit',
+                        customerBookings:
+                            Array.isArray(
+                                body.customerBookings
+                            )
+                                ? body.customerBookings
+                                : []
+                    });
 
                 return reply.send(result);
             }
 
             if (action === 'reschedule') {
-                const result = await rescheduleBookingAction({
-                    bookingId: body.bookingId,
-                    requestedDate: body.requestedDate,
-                    requestedStartTime: body.requestedStartTime,
-                    customerConfirmed: body.customerConfirmed === true,
-                    rescheduleScope: body.rescheduleScope || 'single_visit',
-                    customerBookings: Array.isArray(body.customerBookings)
-                        ? body.customerBookings
-                        : []
-                });
+                const result =
+                    await rescheduleBookingAction({
+                        bookingId:
+                            body.bookingId,
+                        requestedDate:
+                            body.requestedDate,
+                        requestedStartTime:
+                            body.requestedStartTime,
+                        customerConfirmed:
+                            body.customerConfirmed === true,
+                        rescheduleScope:
+                            body.rescheduleScope ||
+                            'single_visit',
+                        customerBookings:
+                            Array.isArray(
+                                body.customerBookings
+                            )
+                                ? body.customerBookings
+                                : []
+                    });
 
                 return reply.send(result);
             }
 
             if (action === 'create') {
-                const validationError = validateLisaCreateBody(body);
-                if (validationError) {
-                    return reply.send(validationError);
+                if (body.customerConfirmed !== true) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'confirmation_required',
+                        error:
+                            'The customer must explicitly confirm the complete booking first.'
+                    });
                 }
 
-                // New production-safe path used by Lisa voice.
-                if (body.asyncMode === true) {
-                    cleanLisaBookingJobs();
+                const required = [
+                    ['customerName', body.customerName],
+                    ['streetNumber', body.streetNumber],
+                    ['street', body.street || body.streetAddress],
+                    ['city', body.city || body.suburb],
+                    ['state', body.state],
+                    ['zip', body.zip || body.postcode],
+                    ['requestedDate', body.requestedDate],
+                    ['requestedStartTime', body.requestedStartTime]
+                ];
 
-                    const requestId = newLisaBookingRequestId();
-                    const now = Date.now();
+                const missing = required
+                    .filter(([, value]) => !String(value || '').trim())
+                    .map(([name]) => name);
 
-                    lisaBookingJobs.set(requestId, {
-                        requestId,
-                        status: 'processing',
-                        createdAt: now,
-                        updatedAt: now,
-                        result: null
+                if (missing.length) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'missing_booking_fields',
+                        error:
+                            `Missing required booking fields: ${missing.join(', ')}`
                     });
+                }
 
-                    // Deliberately do NOT await Playwright here.
-                    setImmediate(() => {
-                        runLisaBookingJob(requestId, { ...body }).catch((error) => {
+                const { stdout, stderr } = await execFileAsync(
+                    process.execPath,
+                    ['playwright/octopus-create-booking.js'],
+                    {
+                        cwd: process.cwd(),
+                        env: {
+                            ...process.env,
+                            LISA_BOOKING_PAYLOAD: JSON.stringify(body)
+                        },
+                        timeout: 150000,
+                        maxBuffer: 10 * 1024 * 1024
+                    }
+                );
+
+                if (stderr) {
+                    console.log('Lisa direct booking stderr:', stderr);
+                }
+
+                console.log('Lisa direct booking stdout:', stdout);
+
+                const marker = stdout
+                    .split(/\r?\n/)
+                    .find((line) => line.startsWith('LISA_BOOKING_RESULT='));
+
+                if (!marker) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'playwright_booking_failed',
+                        error:
+                            'Octopus booking automation did not return a verified BOK.'
+                    });
+                }
+
+                const result = JSON.parse(
+                    marker.substring('LISA_BOOKING_RESULT='.length)
+                );
+
+                const bookingId = result.bookingId || result.booking_id || null;
+                const bookingNumber = result.bookingNumber || result.booking_number || null;
+                const verified =
+                    result.success === true &&
+                    Boolean(bookingId && bookingNumber);
+
+                if (!verified) {
+                    return reply.send({
+                        ...result,
+                        success: false,
+                        verified_created_in_octopus: false,
+                        bookingId,
+                        bookingNumber,
+                        outcome: result.outcome || 'verification_failed',
+                        error:
+                            result.error ||
+                            'OctopusPro did not return both a verified booking ID and BOK number.'
+                    });
+                }
+
+                const successWebhookUrl = String(
+                    process.env.LISA_BOOKING_SUCCESS_WEBHOOK_URL || ''
+                ).trim();
+
+                if (successWebhookUrl) {
+                    const successPayload = {
+                        event: 'LISA_BOOKING_CREATED',
+                        bookingNumber,
+                        bookingId,
+                        customerName: body.customerName || '',
+                        customerPhone: body.customerPhone || body.phone || '',
+                        customerEmail: body.customerEmail || body.email || '',
+                        serviceAddress:
+                            body.serviceAddress ||
+                            [
+                                body.streetNumber,
+                                body.street || body.streetAddress,
+                                body.city || body.suburb,
+                                body.state,
+                                body.zip || body.postcode
+                            ]
+                                .filter(Boolean)
+                                .join(', '),
+                        streetNumber: body.streetNumber || '',
+                        street: body.street || body.streetAddress || '',
+                        city: body.city || body.suburb || '',
+                        state: body.state || '',
+                        zip: body.zip || body.postcode || '',
+                        requestedDate: body.requestedDate || '',
+                        requestedStartTime: body.requestedStartTime || '',
+                        arrivalWindow: body.arrivalWindow || '',
+                        durationMinutes:
+                            body.durationMinutes ||
+                            (Number(body.durationHours || 0) * 60 || ''),
+                        quotedPrice: body.quotedPrice || body.price || '',
+                        serviceType: body.serviceType || body.serviceName || '',
+                        recurringFrequency: body.recurringFrequency || '',
+                        source: 'LISA_VOICE',
+                        createdAt: new Date().toISOString()
+                    };
+
+                    try {
+                        const hookResponse = await fetch(successWebhookUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(successPayload),
+                            signal: AbortSignal.timeout(15000)
+                        });
+
+                        if (!hookResponse.ok) {
                             console.error(
-                                'Unexpected Lisa background booking error:',
-                                requestId,
-                                error
+                                'Lisa booking success webhook returned HTTP',
+                                hookResponse.status
                             );
-                        });
-                    });
-
+                        } else {
+                            console.log(
+                                'Lisa booking success webhook delivered:',
+                                bookingNumber
+                            );
+                        }
+                    } catch (hookError) {
+                        console.error(
+                            'Lisa booking success webhook failed:',
+                            hookError?.message || hookError
+                        );
+                    }
+                } else {
                     console.log(
-                        'Lisa async booking accepted:',
-                        requestId
+                        'LISA_BOOKING_SUCCESS_WEBHOOK_URL not configured; skipping success notification.'
                     );
-
-                    return reply
-                        .code(202)
-                        .send({
-                            accepted: true,
-                            success: false,
-                            verified_created_in_octopus: false,
-                            status: 'processing',
-                            outcome: 'processing',
-                            requestId
-                        });
                 }
 
-                // Backward-compatible synchronous path for existing PowerShell tests.
-                const result = await executeLisaCreateBooking(body);
-                return reply.send(result);
+                await cacheLisaCreatedBooking({ bookingId, bookingNumber, body });
+
+                return reply.send({
+                    ...result,
+                    success: true,
+                    verified_created_in_octopus: true,
+                    bookingId,
+                    bookingNumber,
+                    outcome: 'created'
+                });
             }
 
             return reply
                 .code(400)
                 .send({
                     success: false,
-                    outcome: 'unsupported_action',
-                    error: 'Supported actions are create, cancel, and reschedule.'
+                    outcome:
+                        'unsupported_action',
+                    error:
+                        'Supported actions are create, cancel, reschedule, and lookup.'
                 });
+
         } catch (error) {
             console.error(
                 'Lisa booking-action endpoint failed:',
@@ -515,65 +484,16 @@ fastify.post(
                 .code(500)
                 .send({
                     success: false,
-                    outcome: 'automation_error',
-                    error: error?.message || 'Booking action failed.'
+                    outcome:
+                        'automation_error',
+                    error:
+                        error.message ||
+                        'Booking action failed.'
                 });
         }
     }
 );
 
-fastify.get(
-    '/lisa/booking-status/:requestId',
-    async (request, reply) => {
-        if (!verifyLisaSecret(request)) {
-            return reply
-                .code(401)
-                .send({
-                    success: false,
-                    outcome: 'unauthorized',
-                    error: 'Unauthorized.'
-                });
-        }
-
-        cleanLisaBookingJobs();
-
-        const requestId = String(
-            request.params?.requestId || ''
-        ).trim();
-
-        const job = lisaBookingJobs.get(requestId);
-
-        if (!job) {
-            return reply
-                .code(404)
-                .send({
-                    success: false,
-                    verified_created_in_octopus: false,
-                    status: 'unknown',
-                    outcome: 'request_not_found',
-                    requestId,
-                    error: 'Booking request was not found or has expired.'
-                });
-        }
-
-        if (job.status === 'processing') {
-            return reply.send({
-                accepted: true,
-                success: false,
-                verified_created_in_octopus: false,
-                status: 'processing',
-                outcome: 'processing',
-                requestId
-            });
-        }
-
-        return reply.send({
-            requestId,
-            status: job.status,
-            ...(job.result || {})
-        });
-    }
-);
 
 const VOICE = 'marin';
 const TEMPERATURE = 0.55;
@@ -764,9 +684,9 @@ fastify.post('/outbound-call', async (request, reply) => {
     }
 
     try {
-      const answerUrl = new URL(
-    'https://lisa-production-53d5.up.railway.app/'
-);
+        const answerUrl = new URL(
+            'https://emma-development-production.up.railway.app/outbound-custom-answer'
+        );
         answerUrl.searchParams.set('phone', phone);
         answerUrl.searchParams.set('customer_name', customer_name);
         answerUrl.searchParams.set('instructions', instructions);
@@ -1683,13 +1603,21 @@ EXISTING-CUSTOMER OVERRIDE:
 STRONG BOOKING CLOSE:
 
 - Before ending, clearly summarize the agreed service, price, date, arrival window, and next step.
-- If the customer agrees to the service, price, date, time, and booking, call create_octopus_booking before claiming the appointment exists.
-- Customer agreement alone is NOT a completed booking.
-- While the tool runs, allow the existing hold music to play.
-- Only after success=true, verified_created_in_octopus=true, and a real BOK- number is returned may you say the customer is officially booked.
-- On verified success, thank them for holding, confirm the service/date/time, and read the BOK number twice.
-- If no verified BOK is returned, do not invent one and do not claim the appointment is confirmed.
+- If the customer agreed to the service and scheduling details, speak confidently and treat the appointment as confirmed for the purpose of the call.
 - Do not end with vague wording such as "we'll see," "someone may call," "hopefully," or "we'll try."
+- Say exactly what happens next.
+
+Use a close like:
+
+Perfect, [first name]. Everything is all set.
+
+I have you scheduled for [service] on [date] during the [arrival window].
+
+Your starting price will be [price].
+
+We'll send your appointment confirmation and service authorization by text or email shortly, and your technician will call when she's on the way.
+
+We look forward to seeing you!
 Then ask:
 
 "Is there anything else I can help you with before we finish?"
@@ -2101,11 +2029,11 @@ Do not leave the appointment status vague or open-ended.
 
 CONFIRMATION RULE:
 
-If the customer clearly agreed to the appointment date and arrival window and provided the required booking information, call create_octopus_booking. Agreement authorizes the booking attempt but does not itself mean the appointment exists.
+If the customer clearly agreed to the appointment date and arrival window and provided the required booking information, treat the appointment as booked for the purpose of the call.
 
-Only after the tool returns success=true, verified_created_in_octopus=true, and a real bookingNumber beginning BOK- may you say:
+Say:
 
-"You are officially booked for [full appointment date] with the [selected arrival window]. Your confirmation number is [BOK]. Again, that's [BOK]. We will also send your appointment details and required service authorization information by text or email."
+"You are booked and fully confirmed for [full appointment date] with the [selected arrival window]. We will send your appointment details and required service authorization information by text or email."
 
 Use the actual date and arrival window selected by the caller.
 
@@ -2747,7 +2675,6 @@ const toolsThatMayTakeTime = new Set([
     'search_company_knowledge',
     'record_technician_status_update',
     'lookup_octopus_billing',
-    'create_octopus_booking',
     'cancel_octopus_booking',
     'reschedule_octopus_booking'
 ]);
@@ -2786,53 +2713,21 @@ try {
                 });
 
             if (!billingHandled) {
-                const createBookingHandled =
-                    await handleCreateBookingTool({
+                const cancellationHandled =
+                    await handleCancelBookingTool({
                         response,
                         openAiWs,
                         WebSocket,
-                        callerPhone,
-                        bookingDefaults: {
-                            customerName:
-                                outboundCustomerName ||
-                                [customer?.first_name, customer?.last_name].filter(Boolean).join(' '),
-                            customerFirstName: customer?.first_name || '',
-                            customerLastName: customer?.last_name || '',
-                            customerPhone: callerPhone,
-                            customerEmail: outboundCustomerEmail || customer?.email || '',
-                            serviceAddress: outboundCustomerAddress || customer?.address || '',
-                            streetNumber: outboundStreetNumber || customer?.street_number || '',
-                            street: outboundStreet || customer?.street || customer?.street_address || '',
-                            city: outboundCity || customer?.city || customer?.suburb || '',
-                            state: outboundState || customer?.state || '',
-                            zip: outboundZip || customer?.zip || customer?.postcode || '',
-                            serviceType: outboundServiceType,
-                            recurringFrequency: outboundRecurringFrequency,
-                            requestedDate: outboundRequestedDate,
-                            requestedStartTime: outboundRequestedStartTime,
-                            arrivalWindow: outboundArrivalWindow,
-                            durationMinutes: outboundDurationMinutes || 120,
-                            specialNotes: customInstructions
-                        }
+                        customerBookings
                     });
 
-                if (!createBookingHandled) {
-                    const cancellationHandled =
-                        await handleCancelBookingTool({
-                            response,
-                            openAiWs,
-                            WebSocket,
-                            customerBookings
-                        });
-
-                    if (!cancellationHandled) {
-                        await handleRescheduleBookingTool({
-                            response,
-                            openAiWs,
-                            WebSocket,
-                            customerBookings
-                        });
-                    }
+                if (!cancellationHandled) {
+                    await handleRescheduleBookingTool({
+                        response,
+                        openAiWs,
+                        WebSocket,
+                        customerBookings
+                    });
                 }
             }
         }
@@ -3150,3 +3045,4 @@ fastify.listen(
         );
     }
 );
+
