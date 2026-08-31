@@ -5,6 +5,23 @@ import pg from 'pg';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import twilio from 'twilio';
+import SYSTEM_MESSAGE from './prompts/systemMessage.js';
+import SMS_SYSTEM_MESSAGE from './prompts/smsSystemMessage.js';
+import { createCustomerLookup } from './lib/customerLookup.js';
+import { createBookingLookup } from './lib/bookingLookup.js';
+import { createTechnicianStatus } from './lib/technicianStatus.js';
+import { createKnowledgeSearch } from './lib/knowledgeSearch.js';
+import { createKnowledgeTest } from './lib/knowledgeTest.js';
+import { createTwilioRecording } from './lib/twilioRecording.js';
+import { createOpenAiToolHandlers } from './lib/openAiToolHandlers.js';
+import { buildSessionContext } from './lib/sessionContextBuilder.js';
+import { buildOpenAiSession } from './lib/openAiSessionBuilder.js';
+import { createTechnicianSearch } from './lib/technicianSearch.js';
+import { runSmsReceptionist } from './lib/smsReceptionist.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 
 dotenv.config();
@@ -28,6 +45,54 @@ const db = new Pool({
         rejectUnauthorized: false
     }
 });
+const {
+    searchTechnicians
+} = createTechnicianSearch(db);
+const {
+    findCustomerByPhone,
+    findRecentCalls
+} = createCustomerLookup(db);
+
+const {
+    findCustomerBookingCount,
+    findCustomerBookings
+} = createBookingLookup(db);
+
+const {
+    recordTechnicianStatusUpdate
+} = createTechnicianStatus(db);
+const {
+    searchCompanyKnowledge
+} = createKnowledgeSearch(db);
+const {
+    testKnowledge
+} = createKnowledgeTest({
+    searchCompanyKnowledge
+});
+const {
+    startCallRecording
+} = createTwilioRecording(twilioClient);
+const {
+    handleKnowledgeTool,
+    handleTechnicianStatusTool,
+    handleBillingLookupTool,
+    handleCancelBookingTool,
+    handleRescheduleBookingTool,
+    cancelBookingAction,
+    rescheduleBookingAction
+} = createOpenAiToolHandlers({
+    searchCompanyKnowledge,
+    recordTechnicianStatusUpdate,
+    db
+});
+
+const smsToolHandlers = {
+    handleTechnicianStatusTool,
+    handleBillingLookupTool,
+    handleCancelBookingTool,
+    handleRescheduleBookingTool
+};
+
 
 console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
 
@@ -44,789 +109,427 @@ const fastify = Fastify();
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
 
+
+function normalizeLisaPhone(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+async function cacheLisaCreatedBooking({ bookingId, bookingNumber, body }) {
+    try {
+        const phone = normalizeLisaPhone(body.customerPhone || body.phone || '');
+        const requestedDate = String(body.requestedDate || '').trim();
+        const requestedStartTime = String(body.requestedStartTime || '').trim();
+        const bookingDate = requestedDate
+            ? `${requestedDate} ${requestedStartTime || '00:00'}:00`
+            : null;
+        const trackingToken = `LISA-CREATED-${bookingNumber}-${Date.now()}`;
+
+        await db.query(
+            `
+            INSERT INTO public.booking_tracking (
+                booking_number,
+                tracking_token,
+                octopus_booking_id,
+                booking_date,
+                status,
+                customer_phone_normalized,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, 'UPCOMING', $5, NOW())
+            ON CONFLICT (booking_number)
+            DO UPDATE SET
+                octopus_booking_id = COALESCE(EXCLUDED.octopus_booking_id, public.booking_tracking.octopus_booking_id),
+                booking_date = COALESCE(EXCLUDED.booking_date, public.booking_tracking.booking_date),
+                customer_phone_normalized = COALESCE(NULLIF(EXCLUDED.customer_phone_normalized, ''), public.booking_tracking.customer_phone_normalized),
+                updated_at = NOW()
+            `,
+            [bookingNumber, trackingToken, bookingId, bookingDate, phone]
+        );
+
+        console.log('Lisa newly-created booking cached immediately:', bookingNumber);
+    } catch (error) {
+        // Never fail a real Octopus booking because the local cache write failed.
+        console.error('Lisa immediate booking cache failed:', error?.message || error);
+    }
+}
+fastify.post(
+    '/lisa/booking-action',
+    async (request, reply) => {
+        const configuredSecret =
+            String(
+                process.env.LISA_ACTION_SECRET || ''
+            ).trim();
+
+        const suppliedSecret =
+            String(
+                request.headers['x-lisa-secret'] || ''
+            ).trim();
+
+        if (
+            !configuredSecret ||
+            suppliedSecret !== configuredSecret
+        ) {
+            return reply
+                .code(401)
+                .send({
+                    success: false,
+                    outcome: 'unauthorized',
+                    error: 'Unauthorized.'
+                });
+        }
+
+        const body =
+            request.body &&
+            typeof request.body === 'object'
+                ? request.body
+                : {};
+
+        const action =
+            String(body.action || '')
+                .trim()
+                .toLowerCase();
+
+        console.log(
+            'Lisa booking action request:',
+            {
+                action,
+                bookingId: body.bookingId || null,
+                bookingNumber: body.bookingNumber || body.booking_number || null,
+                phone: body.phone || body.customerPhone || null,
+                customerName: body.customerName || null,
+                requestedDate: body.requestedDate || body.date || null,
+                scope: body.scope || null,
+                limit: body.limit || null
+            }
+        );
+
+        try {
+            if (action === 'lookup') {
+                const { stdout, stderr } = await execFileAsync(
+                    process.execPath,
+                    ['playwright/octopus-live-lookup.js'],
+                    {
+                        cwd: process.cwd(),
+                        env: {
+                            ...process.env,
+                            LISA_LOOKUP_PAYLOAD: JSON.stringify(body)
+                        },
+                        timeout: 90000,
+                        maxBuffer: 10 * 1024 * 1024
+                    }
+                );
+
+                if (stderr) {
+                    console.log('Lisa live Octopus lookup stderr:', stderr);
+                }
+
+                const marker = stdout
+                    .split(/\r?\n/)
+                    .find((line) => line.startsWith('LISA_LOOKUP_RESULT='));
+
+                if (!marker) {
+                    return reply.send({
+                        success: false,
+                        found: false,
+                        source: 'octopus_live',
+                        outcome: 'lookup_failed',
+                        error: 'Live Octopus lookup did not return a result.'
+                    });
+                }
+
+                const lookupResult = JSON.parse(
+                    marker.substring('LISA_LOOKUP_RESULT='.length)
+                );
+
+                console.log('Lisa live Octopus lookup result:', {
+                    success: lookupResult.success,
+                    found: lookupResult.found,
+                    source: lookupResult.source,
+                    bookingNumber:
+                        lookupResult.booking?.bookingNumber ||
+                        lookupResult.bookings?.[0]?.bookingNumber ||
+                        null,
+                    count: lookupResult.count || lookupResult.bookings?.length || 0,
+                    reason: lookupResult.reason || null,
+                    error: lookupResult.error || null
+                });
+
+                return reply.send(lookupResult);
+            }
+
+            if (action === 'cancel') {
+                const result =
+                    await cancelBookingAction({
+                        bookingId:
+                            body.bookingId,
+                        cancellationReason:
+                            body.cancellationReason ||
+                            'Other',
+                        customerConfirmed:
+                            body.customerConfirmed === true,
+                        cancellationScope:
+                            body.cancellationScope ||
+                            'single_visit',
+                        customerBookings:
+                            Array.isArray(
+                                body.customerBookings
+                            )
+                                ? body.customerBookings
+                                : []
+                    });
+
+                return reply.send(result);
+            }
+
+            if (action === 'reschedule') {
+                const result =
+                    await rescheduleBookingAction({
+                        bookingId:
+                            body.bookingId,
+                        requestedDate:
+                            body.requestedDate,
+                        requestedStartTime:
+                            body.requestedStartTime,
+                        customerConfirmed:
+                            body.customerConfirmed === true,
+                        rescheduleScope:
+                            body.rescheduleScope ||
+                            'single_visit',
+                        customerBookings:
+                            Array.isArray(
+                                body.customerBookings
+                            )
+                                ? body.customerBookings
+                                : []
+                    });
+
+                return reply.send(result);
+            }
+
+            if (action === 'create') {
+                if (body.customerConfirmed !== true) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'confirmation_required',
+                        error:
+                            'The customer must explicitly confirm the complete booking first.'
+                    });
+                }
+
+                const required = [
+                    ['customerName', body.customerName],
+                    ['streetNumber', body.streetNumber],
+                    ['street', body.street || body.streetAddress],
+                    ['city', body.city || body.suburb],
+                    ['state', body.state],
+                    ['zip', body.zip || body.postcode],
+                    ['requestedDate', body.requestedDate],
+                    ['requestedStartTime', body.requestedStartTime]
+                ];
+
+                const missing = required
+                    .filter(([, value]) => !String(value || '').trim())
+                    .map(([name]) => name);
+
+                if (missing.length) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'missing_booking_fields',
+                        error:
+                            `Missing required booking fields: ${missing.join(', ')}`
+                    });
+                }
+
+                const { stdout, stderr } = await execFileAsync(
+                    process.execPath,
+                    ['playwright/octopus-create-booking.js'],
+                    {
+                        cwd: process.cwd(),
+                        env: {
+                            ...process.env,
+                            LISA_BOOKING_PAYLOAD: JSON.stringify(body)
+                        },
+                        timeout: 150000,
+                        maxBuffer: 10 * 1024 * 1024
+                    }
+                );
+
+                if (stderr) {
+                    console.log('Lisa direct booking stderr:', stderr);
+                }
+
+                console.log('Lisa direct booking stdout:', stdout);
+
+                const marker = stdout
+                    .split(/\r?\n/)
+                    .find((line) => line.startsWith('LISA_BOOKING_RESULT='));
+
+                if (!marker) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'playwright_booking_failed',
+                        error:
+                            'Octopus booking automation did not return a verified BOK.'
+                    });
+                }
+
+                const result = JSON.parse(
+                    marker.substring('LISA_BOOKING_RESULT='.length)
+                );
+
+                const bookingId = result.bookingId || result.booking_id || null;
+                const bookingNumber = result.bookingNumber || result.booking_number || null;
+                const verified =
+                    result.success === true &&
+                    Boolean(bookingId && bookingNumber);
+
+                if (!verified) {
+                    return reply.send({
+                        ...result,
+                        success: false,
+                        verified_created_in_octopus: false,
+                        bookingId,
+                        bookingNumber,
+                        outcome: result.outcome || 'verification_failed',
+                        error:
+                            result.error ||
+                            'OctopusPro did not return both a verified booking ID and BOK number.'
+                    });
+                }
+
+                const successWebhookUrl = String(
+                    process.env.LISA_BOOKING_SUCCESS_WEBHOOK_URL || ''
+                ).trim();
+
+                if (successWebhookUrl) {
+                    const successPayload = {
+                        event: 'LISA_BOOKING_CREATED',
+                        bookingNumber,
+                        bookingId,
+                        customerName: body.customerName || '',
+                        customerPhone: body.customerPhone || body.phone || '',
+                        customerEmail: body.customerEmail || body.email || '',
+                        serviceAddress:
+                            body.serviceAddress ||
+                            [
+                                body.streetNumber,
+                                body.street || body.streetAddress,
+                                body.city || body.suburb,
+                                body.state,
+                                body.zip || body.postcode
+                            ]
+                                .filter(Boolean)
+                                .join(', '),
+                        streetNumber: body.streetNumber || '',
+                        street: body.street || body.streetAddress || '',
+                        city: body.city || body.suburb || '',
+                        state: body.state || '',
+                        zip: body.zip || body.postcode || '',
+                        requestedDate: body.requestedDate || '',
+                        requestedStartTime: body.requestedStartTime || '',
+                        arrivalWindow: body.arrivalWindow || '',
+                        durationMinutes:
+                            body.durationMinutes ||
+                            (Number(body.durationHours || 0) * 60 || ''),
+                        quotedPrice: body.quotedPrice || body.price || '',
+                        serviceType: body.serviceType || body.serviceName || '',
+                        recurringFrequency: body.recurringFrequency || '',
+                        source: 'LISA_VOICE',
+                        createdAt: new Date().toISOString()
+                    };
+
+                    try {
+                        const hookResponse = await fetch(successWebhookUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(successPayload),
+                            signal: AbortSignal.timeout(15000)
+                        });
+
+                        if (!hookResponse.ok) {
+                            console.error(
+                                'Lisa booking success webhook returned HTTP',
+                                hookResponse.status
+                            );
+                        } else {
+                            console.log(
+                                'Lisa booking success webhook delivered:',
+                                bookingNumber
+                            );
+                        }
+                    } catch (hookError) {
+                        console.error(
+                            'Lisa booking success webhook failed:',
+                            hookError?.message || hookError
+                        );
+                    }
+                } else {
+                    console.log(
+                        'LISA_BOOKING_SUCCESS_WEBHOOK_URL not configured; skipping success notification.'
+                    );
+                }
+
+                await cacheLisaCreatedBooking({ bookingId, bookingNumber, body });
+
+                return reply.send({
+                    ...result,
+                    success: true,
+                    verified_created_in_octopus: true,
+                    bookingId,
+                    bookingNumber,
+                    outcome: 'created'
+                });
+            }
+
+            return reply
+                .code(400)
+                .send({
+                    success: false,
+                    outcome:
+                        'unsupported_action',
+                    error:
+                        'Supported actions are create, cancel, reschedule, and lookup.'
+                });
+
+        } catch (error) {
+            console.error(
+                'Lisa booking-action endpoint failed:',
+                error
+            );
+
+            return reply
+                .code(500)
+                .send({
+                    success: false,
+                    outcome:
+                        'automation_error',
+                    error:
+                        error.message ||
+                        'Booking action failed.'
+                });
+        }
+    }
+);
+
+
 const VOICE = 'marin';
 const TEMPERATURE = 0.55;
 const PORT = process.env.PORT || 8080;
-
-const SYSTEM_MESSAGE = `
-You are Emma, the friendly phone receptionist for Speedy Solutions.
-
-Your job is to make every caller feel welcomed, cared for, and confident they called the right company.
-
-Speak English only unless the caller requests another language.
-
-You are warm, friendly, upbeat, patient, and conversational.
-
-Speak at a relaxed, slightly slower pace.
-Use a gentle, welcoming tone with natural pauses.
-Do not sound rushed, overly formal, scripted, or robotic.
-Use contractions and everyday language.
-Allow the caller time to finish speaking before responding.
-Be especially patient with older callers.
-PERSONALITY
-
-You are cheerful, kind, warm, patient, and genuinely enjoy helping people.
-
-Speak as if you're smiling.
-
-Use a relaxed pace with natural pauses.
-
-Never sound robotic, rushed, or like you're reading from a script.
-
-Be encouraging and reassuring.
-
-Celebrate good news with enthusiasm.
-
-Comfort customers when they are stressed.
-
-Use friendly conversational phrases naturally such as:
-
-"Absolutely!"
-"I'd be happy to help."
-"Of course!"
-"No problem at all."
-"Perfect!"
-"Wonderful!"
-"That sounds great."
-Before every response, silently think through the following:
-
-
-CONVERSATION TIMING
-
-Never interrupt the caller.
-
-Allow the caller to completely finish their thought before responding.
-
-A short pause does not necessarily mean the caller is finished.
-
-If the caller pauses while explaining something, continue listening.
-
-Wait until their statement or question sounds complete.
-
-Do not rush to fill every silence.
-
-Keep most responses to one or two short sentences.
-
-After asking a question, stop speaking and listen.
-
-Do not answer your own question.
-
-Do not stack multiple questions together.
-
-Use brief acknowledgments such as:
-
-"Okay."
-"Got it."
-"Absolutely."
-"I understand."
-
-Then ask only one natural follow-up question.
-
-Before every response, silently think through the following:
-
-1. What is the customer trying to accomplish?
-
-2. What information do I already know?
-
-3. What information is still missing?
-
-4. What is the single best next question?
-
-Only ask one question at a time whenever possible.
-
-
-RETURNING CUSTOMERS
-
-If customer information has already been provided,
-never ask for it again.
-
-Instead, naturally confirm it.
-
-For example:
-
-"Are we cleaning the Highpointe Drive house again?"
-
-instead of
-
-"What is your address?"
-
-Keep answers reasonably brief, but never sacrifice warmth or clarity just to make them shorter.
-
-Opening line:
-"Thank you for calling Speedy Solutions. This is Emma. How can we help you today?"
-
-Do not immediately ask whether the caller wants one-time or recurring service.
-First allow the caller to explain what they need.
-
-Treat returning customers naturally.
-
-If appropriate, welcome them back in a friendly way.
-
-Examples include:
-
-"It's so nice to hear from you again."
-
-"Welcome back!"
-
-"It's great to hear from you again."
-
-"Thanks for calling us again."
-
-Avoid repeating the same phrase every call.
-
-Do not force a welcome-back message if it does not fit naturally into the conversation.
-
-If the customer immediately starts explaining why they called, allow them to finish before acknowledging that they are a returning customer.
-
-Never make the caller feel like you know too much personal information.
-
-Use information already on file only to provide a smoother experience, never to surprise the caller.
-
-If someone sounds overwhelmed, reassure them.
-
-If someone apologizes, tell them it's completely okay.
-
-If someone jokes with you, respond naturally.
-
-If someone is excited, match their excitement.
-
-If someone is upset, remain calm and compassionate.
-
-Always make the caller feel heard.
-
-Avoid repeating the same greeting every call.
-
-
-
-CALL FLOW
-
-1. Begin with:
-"How can we help you today?"
-
-2. If the caller says they need cleaning, ask:
-"Perfect — are you looking for a one-time cleaning, or would you be open to recurring service if it saves you money?"
-
-3. Wait for the customer to answer before discussing pricing.
-
-4. Explain only the pricing that applies to the option they choose.
-
-5. After pricing, ask which day and arrival window they prefer.
-
-6. Then collect any booking information that is not already available.
-
-TRANSFER AND ESCALATION RULES
-
-Do not immediately transfer callers just because they ask for a live person.
-
-First, respond warmly and try to understand what they need.
-
-Say something natural such as:
-
-"I'd be happy to help with that. Can you tell me a little more about what you need?"
-
-or:
-
-"I can usually help with most questions. What can I look into for you?"
-
-Use available customer information, booking history, recent call history, and the company knowledge tool to answer the caller whenever possible.
-
-Do not argue with the caller or repeatedly refuse a transfer.
-
-If the caller still requests a person after explaining the issue, explain:
-
-"We're not able to transfer the call directly, but I can take a detailed message and have the appropriate team member follow up with you."
-
-Then collect:
-
-- The reason for the call
-- The specific question or requested resolution
-- Any relevant booking date, service date, charge, cleaner, or appointment
-- The best callback number
-- Whether they prefer a phone call, text message, or email
-- The best time to contact them, if applicable
-- The urgency of the issue
-
-Ask only one question at a time.
-
-Before ending, summarize the message back to the caller and confirm the preferred contact method.
-
-Do not promise an exact callback time unless one has been confirmed.
-
-Use wording such as:
-
-"I'll make sure the team receives the details."
-
-or:
-
-"We'll follow up using your preferred contact method."
-
-Never falsely claim that a manager is currently available.
-
-Never claim the call has been transferred when it has not.
-
-WHEN A CALLER ASKS FOR MANAGEMENT
-
-Do not immediately escalate.
-
-First ask:
-
-"Of course. Can you tell me what you'd like management to review so I can make sure the right person receives the full details?"
-
-Try to answer simple policy, scheduling, pricing, membership, billing, and service questions before taking a management message.
-
-If the issue requires management review, collect a complete message and the preferred response method.
-
-Management primarily responds by phone, text, or email depending on the issue and the customer's preference.
-
-WORKER, CLEANER, AND APPLICANT CALLS
-
-First determine whether the caller is:
-
-- A current cleaner or technician
-- A future worker or applicant
-- A customer
-
-Do not use customer sales language with cleaners or applicants.
-
-Do not discuss internal pay rates, hourly rates, mileage rates, bonuses, commissions, hiring budgets, or compensation details.
-
-If an applicant asks how much the company pays, say:
-
-"Compensation information is provided during the application and onboarding process. I can make sure you receive the information needed to apply."
-
-Do not quote, estimate, confirm, or negotiate a pay rate.
-
-Do not reveal information about another cleaner's pay, schedule, jobs, performance, account, or personal information.
-
-APPLICANTS AND FUTURE WORKERS
-
-If someone is calling because they want to work with Speedy Solutions, explain that the company will text them the information needed to create an account or complete the application process.
-
-Say something natural such as:
-
-"Absolutely. We can text you the information needed to sign up and complete the application process."
-
-Confirm:
-
-- Full name
-- Best mobile number
-- City and state
-- Whether they have already created an OctopusPro account
-- Whether they are calling about an existing application
-
-Do not conduct a full job interview unless specifically instructed.
-
-Do not promise that the applicant has been hired, approved, or assigned work.
-
-Do not promise how many jobs they will receive.
-
-Do not provide customer addresses, booking details, or client information to an applicant who has not been verified and assigned to the booking.
-
-CURRENT CLEANERS AND TECHNICIANS
-
-If a current cleaner calls regarding a job, identify the booking or customer before discussing details.
-
-Ask for only the information needed to locate the correct booking, such as:
-
-- Cleaner name
-- Customer name
-- Booking number
-- Service date
-- Service address, when needed for verification
-
-Emma may help document or confirm operational updates such as:
-
-- On the way
-- Arrived
-- Started
-- Finished
-- Running late
-- Unable to reach the customer
-- Customer turned the cleaner away
-- Access problem
-- Lockout
-- Additional time needed
-- Supplies or equipment issue
-- Safety concern
-
-Never claim that a booking status, start time, finish time, or note was changed unless the system confirms that the update was successfully completed.
-
-If Emma does not currently have permission or a working tool to update the booking, say:
-
-"I can document that update for the office. Please tell me the exact time and any details that should be included."
-
-Collect the exact local time whenever a cleaner reports starting or finishing.
-
-Confirm whether the time is:
-
-- The time they arrived
-- The time they started working
-- The time they finished working
-- The time they left the property
-
-Repeat the time back to avoid errors.
-
-Example:
-
-"Just to confirm, you started working at 10:17 AM. Is that correct?"
-
-For running-late reports, collect:
-
-- Current estimated arrival time
-- Reason for the delay
-- Whether the customer has been contacted
-- Whether the office needs to contact the customer
-
-For customer access problems, collect:
-
-- How many times the customer was called
-- Whether a voicemail was left
-- Whether a text was sent
-- How long the cleaner has been waiting
-- Whether the cleaner is still onsite
-
-PAYMENT QUESTIONS FROM CLEANERS
-
-Do not quote internal rates or calculate a cleaner's expected pay.
-
-If a current cleaner asks when payment will arrive, explain:
-
-"Cleaner payments are processed the same day and may arrive at any point through midnight. They are often sent earlier, but processing time can vary."
-
-Do not promise a specific payment time.
-
-Do not say that payment is late before midnight on the scheduled payment day.
-
-Do not say the office forgot, is backed up, or has not reviewed the payment unless that information is confirmed.
-
-If payment has not arrived after midnight, collect:
-
-- Cleaner name
-- Job or booking number
-- Service date
-- Customer name
-- Hours worked
-- Best contact number
-
-Then say:
-
-"I'll document this for the payment team to review."
-
-Do not request banking information, debit-card information, passwords, verification codes, or complete account numbers.
-
-SAFETY AND ESCALATION
-
-Immediately document and escalate reports involving:
-
-- Injury
-- Threats
-- Harassment
-- Unsafe property conditions
-- Weapons
-- Aggressive animals
-- Suspected criminal activity
-- Serious property damage
-- Medical emergencies
-
-For immediate danger or a medical emergency, tell the caller to contact emergency services first.
-
-Do not instruct a cleaner to remain in an unsafe location.
-
-PRIVACY
-
-Only share booking information with a cleaner who is assigned to that booking or whose identity has been appropriately verified.
-
-Do not reveal full customer payment information.
-
-Do not reveal card details.
-
-Do not reveal private internal notes unless they are required for the cleaner to safely and properly complete the assigned job.
-
-
-PRICING
-
-Always explain pricing confidently, clearly, and honestly.
-
-Never overwhelm the customer by reading every price all at once.
-
-Do not begin by quoting the one-time price unless the customer has already confirmed they only want a one-time cleaning.
-
-Always ask whether the customer wants one-time or recurring service before quoting pricing.
-
-If the customer is open to recurring service, explain the lower recurring rates first.
-
-If the customer says they are unsure, mention that recurring service is less expensive and briefly explain the monthly and biweekly options.
-
-RECURRING CLEANING
-
-Recurring service is less expensive than one-time cleaning.
-
-Monthly cleaning starts at $127.50 for the first two labor hours.
-
-Biweekly cleaning starts at $120 for the first two labor hours.
-
-Weekly cleaning starts at $112.50 for the first two labor hours.
-
-A natural example is:
-
-"Recurring service is actually less expensive. Monthly cleaning starts at about $128 for two hours, biweekly starts at $120, and weekly starts at $112.50."
-
-Do not list every recurring option unless it is helpful.
-
-If the customer is interested in recurring cleaning, ask:
-
-"Would monthly, biweekly, or weekly service work best for you?"
-
-Be clear that recurring pricing applies when the customer continues with recurring service.
-
-ONE-TIME CLEANING
-
-Only explain one-time pricing after the customer confirms they want a one-time cleaning.
-
-One-time cleaning starts at $150 for the first two labor hours.
-
-Additional labor is billed only if more time is needed.
-
-Professional cleaning supplies and equipment are included.
-
-A natural example is:
-
-"Absolutely. A one-time cleaning starts at $150 for the first two labor hours, including the supplies and equipment. If more time is needed, the additional labor is billed based on the time used."
-
-MEMBERSHIP
-
-The Forever Cleaning Membership is the lowest-priced option.
-
-Membership costs $250 per year.
-
-Members receive 45% off every cleaning for one full year.
-
-The member rate is $41.25 per labor hour.
-
-A two-hour member cleaning is $82.50.
-
-Only introduce the membership after the customer has shown interest in saving money, recurring service, or ongoing cleaning.
-
-Do not interrupt the beginning of the conversation with the membership.
-
-A natural example is:
-
-"Since you mentioned wanting the best price, we also have a yearly membership that brings the rate down to $41.25 per labor hour. That makes a two-hour cleaning only $82.50."
-
-Mention the membership once.
-
-If the customer is interested, explain it further.
-
-If they are not interested, continue naturally without bringing it up again unless they ask.
-
-ADDITIONAL SERVICES
-
-Carpet cleaning is $120.
-
-Power washing is $120.
-
-If the customer mentions pet accidents, heavy odors, excessive trash, hoarding, biohazards, insects, bodily fluids, or unusually difficult conditions, politely explain that additional charges may apply after evaluating the condition.
-
-SALES GUIDELINES
-
-The goal is to help the customer find the most affordable option that fits their needs.
-
-Lead with the lower recurring price when the customer is open to recurring service.
-
-Do not make the one-time price sound like the only option.
-
-Never hide pricing requirements or mislead the customer.
-
-Do not pressure the customer.
-
-Ask one question at a time.
-
-Keep responses brief and conversational.
-
-Answer the customer's question first, then ask the next logical question.
-
-Never give a long pricing speech.
-
-BOOKING
-
-Always respond positively.
-
-If the caller requests a particular area, date, or time, say that you can get the request started.
-
-Do not guarantee final availability unless the scheduling system has confirmed it.
-
-Preferred arrival windows:
-
-- 9 to 10 AM
-- 12 to 2 PM
-- 3 to 5 PM
-
-Ideally offer next-day morning or afternoon first.
-
-Explain that the team will call when they are on the way.
-
-When booking, collect or confirm:
-
-- Full name
-- Phone number
-- Email address
-- Service address
-- Entry instructions
-- Gate code, if applicable
-- One-time or recurring service
-- Service requested
-- Preferred day
-- Preferred arrival window
-- Number of bedrooms
-- Number of bathrooms
-- Pets
-- Special requests
-
-For returning customers, do not ask them to repeat information already provided in the returning-customer record.
-
-Confirm it naturally instead.
-
-After collecting the booking details, say:
-
-"We’ll text and email you a form so you can review the pricing details and place a card on file."
-
-SILENCE RULE
-
-Never remain silent for more than 8 seconds.
-
-If the caller is quiet, gently say:
-
-"Are you still there?"
-
-or:
-
-"No rush — I’m here whenever you’re ready."
-
-Do not mention OpenAI, ChatGPT, Twilio, Railway, code, databases, or APIs unless the caller directly asks.
-`;
+const AI_CALL_COMPLETED_WEBHOOK_URL =
+    process.env.AI_CALL_COMPLETED_WEBHOOK_URL ||
+    'https://hook.us2.make.com/qthdxcyfrr5shx59z5gfhkuoigblw2i4';
+const NEXT_DAY_CONFIRMATION_WEBHOOK_URL =
+    process.env.NEXT_DAY_CONFIRMATION_WEBHOOK_URL ||
+    AI_CALL_COMPLETED_WEBHOOK_URL;
 
 const LOG_EVENT_TYPES = [
     'error',
-    'response.done',
-    'session.created',
-    'session.updated'
+    'response.done'
 ];
 
-async function findCustomerByPhone(phone) {
-    if (!phone) {
-        return null;
-    }
-
-    const digits = String(phone).replace(/\D/g, '');
-
-    let normalizedPhone = '';
-
-    if (digits.length === 10) {
-        normalizedPhone = `1${digits}`;
-    } else if (
-        digits.length === 11 &&
-        digits.startsWith('1')
-    ) {
-        normalizedPhone = digits;
-    } else {
-        normalizedPhone = digits;
-    }
-
-    console.log(
-        'Normalized caller phone:',
-        normalizedPhone
-    );
-
-    const result = await db.query(
-        `
-        SELECT *
-        FROM public.customers
-        WHERE REGEXP_REPLACE(
-            phone_normalized,
-            '[^0-9]',
-            '',
-            'g'
-        ) = $1
-        LIMIT 1
-        `,
-        [normalizedPhone]
-    );
-
-    return result.rows[0] || null;
-}
-async function findRecentCalls(phone) {
-    if (!phone) return [];
-
-    const digits = String(phone).replace(/\D/g, '');
-
-    const normalizedPhone =
-        digits.length === 10
-            ? `1${digits}`
-            : digits;
-
-    const result = await db.query(
-        `
-        SELECT summary, sentiment, started_at
-        FROM public.call_logs
-        WHERE REGEXP_REPLACE(phone_number,'[^0-9]','','g') = $1
-        ORDER BY started_at DESC
-        LIMIT 3
-        `,
-        [normalizedPhone]
-    );
-
-    return result.rows;
-}
-async function findCustomerBookingCount(customerId) {
-    if (!customerId) {
-        return 0;
-    }
-
-    const result = await db.query(
-        `
-        SELECT COUNT(*)::int AS booking_count
-        FROM public.bookings
-        WHERE customer_id = $1
-        `,
-        [customerId]
-    );
-
-    return result.rows[0]?.booking_count || 0;
-}
-       async function findCustomerBookings(customerId) {
-    if (!customerId) {
-        return [];
-    }
-
-    const result = await db.query(
-`
-        SELECT
-            octopus_booking_id,
-            service_type,
-            booking_date,
-            arrival_window,
-            status,
-            labor_hours,
-            technician_count,
-            estimated_total,
-            final_total,
-            special_requests
-        FROM public.bookings
-        WHERE customer_id = $1
-        ORDER BY booking_date DESC
-        LIMIT 5
-        `,
-        [customerId]
-    );
-
-return result.rows;
-}
-
-async function recordTechnicianStatusUpdate({
-    bookingNumber = '',
-    technicianName = '',
-    status = '',
-    reportedTime = '',
-    notes = '',
-    callerPhone = ''
-}) {
-if (!status) {
-    throw new Error(
-        'Technician status is required.'
-    );
-}
-
-const result = await db.query(
-        `
-        INSERT INTO public.technician_status_updates (
-            booking_number,
-            technician_name,
-            status,
-            reported_time,
-            notes,
-            caller_phone
-        )
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING
-            id,
-            created_at
-        `,
-        [
-            bookingNumber || null,
-            technicianName || null,
-            status,
-            reportedTime || null,
-            notes || null,
-            callerPhone || null
-        ]
-    );
-
-    return result.rows[0];
-}
-           
-
-async function searchCompanyKnowledge(query) {
-    if (!query || !String(query).trim()) {
-        return [];
-    }
-
-    console.log(
-        'Searching company knowledge for:',
-        query
-    );
-
-    const result = await db.query(
-        `
-        SELECT *
-        FROM public.search_knowledge_base($1, 5)
-        `,
-        [String(query).trim()]
-    );
-
-    console.log(
-        'Knowledge results found:',
-        result.rows.length
-    );
-
-    return result.rows;
-}
-
-async function startCallRecording(callSid) {
-    if (!callSid) {
-        console.error(
-            'Recording not started: CallSid is missing.'
-        );
-        return;
-    }
-
-    if (!process.env.TWILIO_RECORDING_CALLBACK_URL) {
-        console.error(
-            'Recording not started: callback URL is missing.'
-        );
-        return;
-    }
-
-    try {
-        await twilioClient
-            .calls(callSid)
-            .recordings.create({
-                recordingChannels: 'dual',
-                recordingStatusCallback:
-                    process.env.TWILIO_RECORDING_CALLBACK_URL,
-                recordingStatusCallbackMethod: 'POST'
-            });
-
-        console.log(
-            'Twilio recording started:',
-            callSid
-        );
-    } catch (error) {
-        console.error(
-            'Unable to start Twilio recording:',
-            error
-        );
-    }
-}
 
 fastify.all('/incoming-call', async (request, reply) => {
     const callerPhone =
@@ -847,8 +550,7 @@ fastify.all('/incoming-call', async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-      <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
-   <Parameter
+<Stream url="wss://emma-development-production.up.railway.app/media-stream">   <Parameter
     name="callerPhone"
     value="${callerPhone}"
 />
@@ -877,25 +579,120 @@ function escapeXml(value = '') {
         .replaceAll("'", '&apos;');
 }
 
+function getDetroitDateKey(offsetDays = 0) {
+    const shifted = new Date(Date.now() + (Number(offsetDays) || 0) * 86400000);
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Detroit',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(shifted);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.month}/${values.day}/${values.year}`;
+}
+
+function normalizeUsDateKey(value = '') {
+    const text = String(value || '').trim();
+    const match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+    if (!match) return '';
+    return `${match[1].padStart(2, '0')}/${match[2].padStart(2, '0')}/${match[3]}`;
+}
+
+function getConfirmationTiming(callPurpose = '', bookingDate = '') {
+    const purpose = String(callPurpose || '').trim().toUpperCase();
+
+    if (purpose === 'SAME_DAY_CONFIRMATION') {
+        return { isConfirmation: true, dayWord: 'today', mode: 'same_day' };
+    }
+
+    if (purpose === 'NEXT_DAY_CONFIRMATION') {
+        return { isConfirmation: true, dayWord: 'tomorrow', mode: 'next_day' };
+    }
+
+    // Safety net: if Make ever sends the wrong/missing purpose, use the actual
+    // booking date when it clearly matches today or tomorrow in Detroit.
+    const bookingDateKey = normalizeUsDateKey(bookingDate);
+    if (bookingDateKey && bookingDateKey === getDetroitDateKey(0)) {
+        return { isConfirmation: true, dayWord: 'today', mode: 'same_day_date_fallback' };
+    }
+    if (bookingDateKey && bookingDateKey === getDetroitDateKey(1)) {
+        return { isConfirmation: true, dayWord: 'tomorrow', mode: 'next_day_date_fallback' };
+    }
+
+    return { isConfirmation: false, dayWord: '', mode: '' };
+}
+
+function buildConfirmationVoicemailMessage({ callPurpose = '', customerName = '', bookingDate = '' } = {}) {
+    const timing = getConfirmationTiming(callPurpose, bookingDate);
+    if (!timing.isConfirmation) return '';
+
+    const firstName = String(customerName || '').trim().split(/\s+/)[0] || '';
+    return `Hi${firstName ? ` ${firstName}` : ''}, this is Emma with SpeedyCleans. I was calling to confirm your cleaning ${timing.dayWord}. Please reply to our text or call us back at 517-777-8712 to confirm or cancel. Thank you!`;
+}
+
 fastify.post('/outbound-call', async (request, reply) => {
-    const {
-        phone,
-        customer_name = '',
-        instructions = '',
-        sheet_row_number = ''
-    } = request.body || {};
+    const body = request.body || {};
+    const phone = body.phone || body.customer_phone || '';
+    const customer_name =
+        body.customer_name || body.customerName || body.name || '';
+    const sheet_row_number =
+        body.sheet_row_number || body.sheetRowNumber || '';
+    const call_purpose =
+        body.call_purpose || body.callPurpose || '';
+    const customer_email =
+        body.customer_email || body.customerEmail || '';
+
+    // Keep Angi/lead booking fields structured for the entire call. Previously
+    // these values were flattened into customInstructions and disappeared from
+    // the completion webhook, leaving Make without a usable booking address.
+    const leadBookingData = {
+        leadSource: body.lead_source || body.leadSource || '',
+        serviceType:
+            body.service_type || body.serviceType || body.service || body.cleaning_type || '',
+        recurringFrequency:
+            body.recurring_frequency || body.recurringFrequency || body.frequency || '',
+        address: body.address || body.service_address || body.serviceAddress || '',
+        streetNumber: body.street_number || body.streetNumber || '',
+        street: body.street || body.street_address || body.streetAddress || '',
+        city: body.city || body.suburb || '',
+        state: body.state || '',
+        zip: body.zip || body.postcode || body.postal_code || '',
+        requestedDate: body.requested_date || body.requestedDate || body.booking_date || body.bookingDate || '',
+        requestedStartTime:
+            body.requested_start_time || body.requestedStartTime || body.requested_time || '',
+        arrivalWindow: body.arrival_window || body.arrivalWindow || '',
+        durationMinutes: body.duration_minutes || body.durationMinutes || ''
+    };
+
+    const suppliedInstructions =
+        body.instructions || body.customInstructions || '';
+    const knownLeadDetails = [
+        body.lead_source && `Lead source: ${body.lead_source}`,
+        body.service && `Requested service: ${body.service}`,
+        body.cleaning_type && `Cleaning type: ${body.cleaning_type}`,
+        body.frequency && `Frequency: ${body.frequency}`,
+        body.current_frequency && `Existing service frequency: ${body.current_frequency}`,
+        body.membership_status && `Membership status: ${body.membership_status}`,
+        body.booking_number && `Existing booking number: ${body.booking_number}`,
+        body.booking_date && `Existing booking date: ${body.booking_date}`,
+        body.arrival_window && `Existing arrival window: ${body.arrival_window}`,
+        body.customer_status && `Customer status: ${body.customer_status}`,
+        body.address && `Service address: ${body.address}`,
+        body.city && `City: ${body.city}`,
+        body.state && `State: ${body.state}`,
+        body.zip && `ZIP: ${body.zip}`,
+        body.requested_date && `Requested date: ${body.requested_date}`,
+        body.requested_time && `Requested time: ${body.requested_time}`,
+        body.notes && `Lead notes: ${body.notes}`
+    ].filter(Boolean);
+    const instructions = [suppliedInstructions, ...knownLeadDetails]
+        .filter(Boolean)
+        .join('\n');
 
     if (!phone) {
         return reply.code(400).send({
             success: false,
             error: 'Phone number is required.'
-        });
-    }
-
-    if (!instructions) {
-        return reply.code(400).send({
-            success: false,
-            error: 'Instructions are required.'
         });
     }
 
@@ -906,52 +703,52 @@ fastify.post('/outbound-call', async (request, reply) => {
         });
     }
 
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Connect>
-        <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
-            <Parameter
-                name="callerPhone"
-                value="${escapeXml(phone)}"
-            />
-            <Parameter
-                name="callMode"
-                value="OUTBOUND_CUSTOM"
-            />
-            <Parameter
-                name="customerName"
-                value="${escapeXml(customer_name)}"
-            />
-            <Parameter
-                name="customInstructions"
-                value="${escapeXml(instructions)}"
-            />
-            <Parameter
-                name="sheetRowNumber"
-                value="${escapeXml(sheet_row_number)}"
-            />
-        </Stream>
-    </Connect>
-</Response>`;
-
     try {
-      const call = await twilioClient.calls.create({
-    to: phone,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    twiml,
+        const answerUrl = new URL(
+            'https://emma-development-production.up.railway.app/outbound-custom-answer'
+        );
+        answerUrl.searchParams.set('phone', phone);
+        answerUrl.searchParams.set('customer_name', customer_name);
+        answerUrl.searchParams.set('instructions', instructions);
+        answerUrl.searchParams.set('sheet_row_number', sheet_row_number);
+        answerUrl.searchParams.set('call_purpose', call_purpose);
+        answerUrl.searchParams.set('customer_email', customer_email);
+        answerUrl.searchParams.set('lead_source', leadBookingData.leadSource);
+        answerUrl.searchParams.set('service_type', leadBookingData.serviceType);
+        answerUrl.searchParams.set('recurring_frequency', leadBookingData.recurringFrequency);
+        answerUrl.searchParams.set('address', leadBookingData.address);
+        answerUrl.searchParams.set('street_number', leadBookingData.streetNumber);
+        answerUrl.searchParams.set('street', leadBookingData.street);
+        answerUrl.searchParams.set('city', leadBookingData.city);
+        answerUrl.searchParams.set('state', leadBookingData.state);
+        answerUrl.searchParams.set('zip', leadBookingData.zip);
+        answerUrl.searchParams.set('requested_date', leadBookingData.requestedDate);
+        answerUrl.searchParams.set('requested_start_time', leadBookingData.requestedStartTime);
+        answerUrl.searchParams.set('arrival_window', leadBookingData.arrivalWindow);
+        answerUrl.searchParams.set('duration_minutes', leadBookingData.durationMinutes);
 
-    statusCallback:
-        'https://emma-development-production.up.railway.app/call-status',
+        console.log('Outbound Twilio answer route prepared:', {
+            origin: answerUrl.origin,
+            pathname: answerUrl.pathname,
+            phone,
+            customerName: customer_name,
+            sheetRowNumber: sheet_row_number,
+            callPurpose: call_purpose
+        });
 
-    statusCallbackMethod: 'POST',
-
-    statusCallbackEvent: [
-        'initiated',
-        'ringing',
-        'answered',
-        'completed'
-    ]
-});
+        const call = await twilioClient.calls.create({
+            to: phone,
+            from: process.env.TWILIO_PHONE_NUMBER,
+            url: answerUrl.toString(),
+            method: 'POST',
+            record: true,
+            recordingChannels: 'dual',
+            machineDetection: 'DetectMessageEnd',
+            machineDetectionTimeout: 30,
+            machineDetectionSpeechThreshold: 2400,
+            machineDetectionSpeechEndThreshold: 1200,
+            machineDetectionSilenceTimeout: 5000
+        });
 
         console.log('Custom outbound call started:', {
             callSid: call.sid,
@@ -960,14 +757,15 @@ fastify.post('/outbound-call', async (request, reply) => {
             sheetRowNumber: sheet_row_number
         });
 
-    return reply.send({
-    success: true,
-    call_sid: call.sid,
-    status: call.status,
-    queue_time: call.queueTime,
-    phone,
-    sheet_row_number
-});
+        return reply.send({
+            success: true,
+            call_sid: call.sid,
+            status: call.status,
+            phone,
+            sheet_row_number,
+            customer_name,
+            call_purpose
+        });
     } catch (error) {
         console.error(
             'Custom outbound call failed:',
@@ -981,6 +779,512 @@ fastify.post('/outbound-call', async (request, reply) => {
                 'Unable to start outbound call.'
         });
     }
+});
+
+fastify.post('/sms-message', async (request, reply) => {
+    const configuredSecret = process.env.SMS_WEBHOOK_SECRET || '';
+    const suppliedSecret = String(request.headers['x-emma-secret'] || '');
+
+    if (configuredSecret && suppliedSecret !== configuredSecret) {
+        return reply.code(401).send({ success: false, error: 'Unauthorized.' });
+    }
+
+    const body = request.body || {};
+    const customerPhone = String(body.from || body.From || '').trim();
+    const twilioNumber = String(body.to || body.To || '').trim();
+    const customerMessage = String(body.message || body.Body || '').trim();
+    const messageSid = String(body.message_sid || body.MessageSid || '').trim();
+
+    if (!customerPhone || !twilioNumber || !customerMessage) {
+        return reply.code(400).send({
+            success: false,
+            error: 'from, to, and message are required.'
+        });
+    }
+
+    const optOutWords = new Set([
+        'stop', 'stopall', 'unsubscribe', 'cancel', 'end', 'quit'
+    ]);
+    if (optOutWords.has(customerMessage.toLowerCase())) {
+        return reply.send({
+            success: true,
+            shouldReply: false,
+            optedOut: true,
+            customerPhone,
+            twilioNumber,
+            messageSid
+        });
+    }
+
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS emma_sms_messages (
+            id BIGSERIAL PRIMARY KEY,
+            customer_phone TEXT NOT NULL,
+            twilio_number TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            message TEXT NOT NULL,
+            message_sid TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
+
+    await db.query(
+        `INSERT INTO emma_sms_messages
+            (customer_phone, twilio_number, direction, message, message_sid)
+         VALUES ($1, $2, 'inbound', $3, $4)`,
+        [customerPhone, twilioNumber, customerMessage, messageSid || null]
+    );
+
+    const smsCustomer = await findCustomerByPhone(customerPhone);
+    const technicianResult = await db.query(
+        `SELECT *
+         FROM public.technicians
+         WHERE RIGHT(REGEXP_REPLACE(COALESCE(phone_number, ''), '[^0-9]', '', 'g'), 10)
+             = RIGHT(REGEXP_REPLACE($1, '[^0-9]', '', 'g'), 10)
+         ORDER BY id DESC
+         LIMIT 1`,
+        [customerPhone]
+    );
+    const smsTechnician = technicianResult.rows[0] || null;
+    const customerName = [
+        smsCustomer?.first_name,
+        smsCustomer?.last_name
+    ].filter(Boolean).join(' ').trim();
+
+    const historyResult = await db.query(
+        `SELECT direction, message
+         FROM emma_sms_messages
+         WHERE customer_phone = $1 AND twilio_number = $2
+         ORDER BY created_at DESC, id DESC
+         LIMIT 20`,
+        [customerPhone, twilioNumber]
+    );
+
+    const history = historyResult.rows.reverse().map((row) => ({
+        role: row.direction === 'outbound' ? 'assistant' : 'user',
+        content: row.message
+    }));
+
+    const customerBookings = smsCustomer
+        ? await findCustomerBookings(smsCustomer.id, customerPhone)
+        : await findCustomerBookings(null, customerPhone);
+
+    const smsResult = await runSmsReceptionist({
+        openAiApiKey: OPENAI_API_KEY,
+        model: process.env.SMS_OPENAI_MODEL || 'gpt-4.1-mini',
+        systemMessage: SMS_SYSTEM_MESSAGE,
+        history,
+        customer: smsCustomer,
+        technician: smsTechnician,
+        customerBookings,
+        customerPhone,
+        searchCompanyKnowledge,
+        handlers: smsToolHandlers
+    });
+    const smsReply = String(smsResult.reply || '').trim();
+
+    if (!smsReply) {
+        throw new Error('Emma generated an empty SMS reply.');
+    }
+
+    await db.query(
+        `INSERT INTO emma_sms_messages
+            (customer_phone, twilio_number, direction, message)
+         VALUES ($1, $2, 'outbound', $3)`,
+        [customerPhone, twilioNumber, smsReply]
+    );
+
+    return reply.send({
+        success: true,
+        shouldReply: true,
+        customerPhone,
+        customerName,
+        senderRole: smsResult.identity?.role || 'unknown',
+        senderName: smsResult.identity?.name || customerName,
+        twilioNumber,
+        incomingMessage: customerMessage,
+        reply: smsReply,
+        messageSid,
+        receivedAt: new Date().toISOString(),
+        action: smsResult.action,
+        actionSuccess: smsResult.actionResult?.success === true,
+        actionResult: smsResult.actionResult,
+        futureBookings: smsResult.futureBookings
+    });
+});
+
+// Recovery endpoint used by the Make.com "missing AI summary" scenario.
+// It never places a call. It only recovers an existing Twilio recording by
+// Call SID, transcribes it, and returns structured fields for the Sheet CRM.
+fastify.post('/recover-outbound-call', async (request, reply) => {
+    const callSid = String(
+        request.body?.call_sid || request.body?.callSid || ''
+    ).trim();
+
+    if (!/^CA[0-9a-f]{32}$/i.test(callSid)) {
+        return reply.code(400).send({
+            success: false,
+            retryable: false,
+            error: 'A valid Twilio Call SID is required.'
+        });
+    }
+
+    try {
+        const call = await twilioClient.calls(callSid).fetch();
+        const terminalStatuses = new Set([
+            'completed',
+            'busy',
+            'failed',
+            'no-answer',
+            'canceled'
+        ]);
+
+        if (!terminalStatuses.has(call.status)) {
+            return reply.code(202).send({
+                success: false,
+                retryable: true,
+                call_sid: callSid,
+                status: call.status,
+                error: 'Call is not finished yet.'
+            });
+        }
+
+        const recordings = await twilioClient.recordings.list({
+            callSid,
+            limit: 10
+        });
+        const recording = recordings
+            .filter((item) => item.status === 'completed')
+            .sort(
+                (a, b) =>
+                    new Date(b.dateCreated || 0) -
+                    new Date(a.dateCreated || 0)
+            )[0];
+
+        if (!recording) {
+            const noRecordingFinalStatuses = new Set([
+                'busy',
+                'failed',
+                'no-answer',
+                'canceled'
+            ]);
+            const endedAt = call.endTime || call.dateUpdated || null;
+            const endedAgeMs = endedAt
+                ? Date.now() - new Date(endedAt).getTime()
+                : 0;
+            const recordingGraceExpired =
+                call.status === 'completed' &&
+                endedAgeMs >= 10 * 60 * 1000;
+
+            if (
+                noRecordingFinalStatuses.has(call.status) ||
+                recordingGraceExpired
+            ) {
+                const outcome =
+                    call.status === 'no-answer'
+                        ? 'no_answer'
+                        : call.status === 'completed'
+                            ? 'completed_no_recording'
+                            : call.status.replace('-', '_');
+                const summary =
+                    call.status === 'completed'
+                        ? 'Call completed, but no Twilio recording became available after the recovery window.'
+                        : `No conversation recording was created. Twilio final status: ${call.status}.`;
+
+                return reply.send({
+                    success: true,
+                    retryable: false,
+                    call_sid: callSid,
+                    recording_sid: '',
+                    recording_url: '',
+                    status: call.status,
+                    transcript: summary,
+                    summary,
+                    outcome,
+                    offer_accepted: 'No',
+                    scheduled: 'No',
+                    callback_requested: 'No',
+                    followup_needed:
+                        call.status === 'completed' ? 'Yes' : 'No',
+                    sentiment: 'Unclear',
+                    next_action:
+                        call.status === 'completed'
+                            ? 'Review missing Twilio recording'
+                            : 'No conversation occurred',
+                    completed_at: new Date().toISOString()
+                });
+            }
+
+            return reply.code(202).send({
+                success: false,
+                retryable: true,
+                call_sid: callSid,
+                status: call.status,
+                error: 'Twilio recording is not ready yet.'
+            });
+        }
+
+        const recordingUrl =
+            `https://api.twilio.com/2010-04-01/Accounts/` +
+            `${process.env.TWILIO_ACCT_SID}/Recordings/${recording.sid}.mp3`;
+        const audioResponse = await fetch(recordingUrl, {
+            headers: {
+                Authorization:
+                    `Basic ${Buffer.from(
+                        `${process.env.TWILIO_ACCT_SID}:` +
+                        process.env.TWILIO_AUTH_TOKEN
+                    ).toString('base64')}`
+            }
+        });
+
+        if (!audioResponse.ok) {
+            throw new Error(
+                `Twilio recording download failed (${audioResponse.status}).`
+            );
+        }
+
+        const audioBytes = await audioResponse.arrayBuffer();
+        const transcriptionForm = new FormData();
+        transcriptionForm.append(
+            'file',
+            new Blob([audioBytes], { type: 'audio/mpeg' }),
+            `${recording.sid}.mp3`
+        );
+        transcriptionForm.append('model', 'gpt-4o-mini-transcribe');
+        transcriptionForm.append('response_format', 'json');
+
+        const transcriptionResponse = await fetch(
+            'https://api.openai.com/v1/audio/transcriptions',
+            {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${OPENAI_API_KEY}`
+                },
+                body: transcriptionForm
+            }
+        );
+
+        if (!transcriptionResponse.ok) {
+            throw new Error(
+                `OpenAI transcription failed (${transcriptionResponse.status}): ` +
+                (await transcriptionResponse.text()).slice(0, 500)
+            );
+        }
+
+        const transcription = await transcriptionResponse.json();
+        const transcript = String(transcription.text || '').trim();
+
+        if (!transcript) {
+            return reply.code(202).send({
+                success: false,
+                retryable: true,
+                call_sid: callSid,
+                status: call.status,
+                error: 'The recording produced an empty transcript.'
+            });
+        }
+
+        const summaryResponse = await fetch(
+            'https://api.openai.com/v1/chat/completions',
+            {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${OPENAI_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4.1-mini',
+                    temperature: 0.1,
+                    response_format: { type: 'json_object' },
+                    messages: [
+                        {
+                            role: 'system',
+                            content:
+                                'Analyze a Speedy Solutions outbound call. ' +
+                                'Return JSON only with keys summary, outcome, ' +
+                                'offer_accepted, scheduled, callback_requested, ' +
+                                'followup_needed, sentiment, next_action. ' +
+                                'Boolean fields must be Yes, No, or Unclear. ' +
+                                'Outcome should be completed, follow_up, voicemail, ' +
+                                'no_answer, not_interested, or unclear. Keep the ' +
+                                'summary factual and under 45 words.'
+                        },
+                        {
+                            role: 'user',
+                            content: transcript
+                        }
+                    ]
+                })
+            }
+        );
+
+        if (!summaryResponse.ok) {
+            throw new Error(
+                `OpenAI summary failed (${summaryResponse.status}): ` +
+                (await summaryResponse.text()).slice(0, 500)
+            );
+        }
+
+        const summaryPayload = await summaryResponse.json();
+        const analysis = JSON.parse(
+            summaryPayload.choices?.[0]?.message?.content || '{}'
+        );
+
+        return reply.send({
+            success: true,
+            retryable: false,
+            call_sid: callSid,
+            recording_sid: recording.sid,
+            recording_url: recordingUrl,
+            status: call.status,
+            transcript,
+            summary: analysis.summary || transcript.slice(0, 500),
+            outcome: analysis.outcome || 'unclear',
+            offer_accepted: analysis.offer_accepted || 'Unclear',
+            scheduled: analysis.scheduled || 'Unclear',
+            callback_requested: analysis.callback_requested || 'Unclear',
+            followup_needed: analysis.followup_needed || 'Unclear',
+            sentiment: analysis.sentiment || 'Neutral',
+            next_action: analysis.next_action || 'Review call',
+            completed_at: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Outbound recovery failed:', callSid, error);
+        return reply.code(500).send({
+            success: false,
+            retryable: true,
+            call_sid: callSid,
+            error: error?.message || 'Unable to recover outbound call.'
+        });
+    }
+});
+
+fastify.all('/outbound-custom-answer', async (request, reply) => {
+    const phone =
+        request.query?.phone ||
+        request.body?.phone ||
+        request.body?.To ||
+        '';
+    const customerName =
+        request.query?.customer_name ||
+        request.body?.customer_name ||
+        '';
+    const instructions =
+        request.query?.instructions ||
+        request.body?.instructions ||
+        '';
+    const sheetRowNumber =
+        request.query?.sheet_row_number ||
+        request.body?.sheet_row_number ||
+        '';
+    const callPurpose =
+        request.query?.call_purpose ||
+        request.body?.call_purpose ||
+        '';
+    const customerEmail =
+        request.query?.customer_email ||
+        request.body?.customer_email ||
+        '';
+    const leadBookingData = {
+        leadSource:
+            request.query?.lead_source || request.body?.lead_source || '',
+        serviceType:
+            request.query?.service_type || request.body?.service_type || '',
+        recurringFrequency:
+            request.query?.recurring_frequency || request.body?.recurring_frequency || '',
+        address:
+            request.query?.address || request.body?.address || '',
+        streetNumber:
+            request.query?.street_number || request.body?.street_number || '',
+        street:
+            request.query?.street || request.body?.street || '',
+        city:
+            request.query?.city || request.body?.city || '',
+        state:
+            request.query?.state || request.body?.state || '',
+        zip:
+            request.query?.zip || request.body?.zip || '',
+        requestedDate:
+            request.query?.requested_date || request.body?.requested_date || '',
+        requestedStartTime:
+            request.query?.requested_start_time || request.body?.requested_start_time || '',
+        arrivalWindow:
+            request.query?.arrival_window || request.body?.arrival_window || '',
+        durationMinutes:
+            request.query?.duration_minutes || request.body?.duration_minutes || ''
+    };
+    const answeredBy = String(
+        request.body?.AnsweredBy ||
+        request.query?.AnsweredBy ||
+        'unknown'
+    ).toLowerCase();
+
+    console.log('Custom outbound answer route reached:', {
+        answeredBy,
+        phone,
+        customerName,
+        sheetRowNumber,
+        callPurpose,
+        method: request.method
+    });
+
+    const isVoicemail =
+        answeredBy.startsWith('machine') ||
+        answeredBy === 'fax';
+
+    if (isVoicemail) {
+        console.log('Leaving outbound voicemail and ending call:', {
+            phone,
+            customerName,
+            answeredBy
+        });
+
+        const confirmationVoicemailMessage = buildConfirmationVoicemailMessage({
+            callPurpose,
+            customerName,
+            bookingDate: leadBookingData.requestedDate
+        });
+        const voicemailMessage = confirmationVoicemailMessage ||
+            `Hi${customerName ? ` ${String(customerName).split(/\s+/)[0]}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!`;
+
+        const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>${escapeXml(voicemailMessage)}</Say>
+    <Hangup/>
+</Response>`;
+
+        return reply.type('text/xml').send(voicemailResponse);
+    }
+
+    const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="wss://emma-development-production.up.railway.app/media-stream">
+            <Parameter name="callerPhone" value="${escapeXml(phone)}" />
+            <Parameter name="callMode" value="OUTBOUND_CUSTOM" />
+            <Parameter name="customerName" value="${escapeXml(customerName)}" />
+            <Parameter name="customInstructions" value="${escapeXml(instructions)}" />
+            <Parameter name="sheetRowNumber" value="${escapeXml(sheetRowNumber)}" />
+            <Parameter name="callPurpose" value="${escapeXml(callPurpose)}" />
+            <Parameter name="customerEmail" value="${escapeXml(customerEmail)}" />
+            <Parameter name="leadSource" value="${escapeXml(leadBookingData.leadSource)}" />
+            <Parameter name="serviceType" value="${escapeXml(leadBookingData.serviceType)}" />
+            <Parameter name="recurringFrequency" value="${escapeXml(leadBookingData.recurringFrequency)}" />
+            <Parameter name="customerAddress" value="${escapeXml(leadBookingData.address)}" />
+            <Parameter name="streetNumber" value="${escapeXml(leadBookingData.streetNumber)}" />
+            <Parameter name="street" value="${escapeXml(leadBookingData.street)}" />
+            <Parameter name="city" value="${escapeXml(leadBookingData.city)}" />
+            <Parameter name="state" value="${escapeXml(leadBookingData.state)}" />
+            <Parameter name="zip" value="${escapeXml(leadBookingData.zip)}" />
+            <Parameter name="requestedDate" value="${escapeXml(leadBookingData.requestedDate)}" />
+            <Parameter name="requestedStartTime" value="${escapeXml(leadBookingData.requestedStartTime)}" />
+            <Parameter name="arrivalWindow" value="${escapeXml(leadBookingData.arrivalWindow)}" />
+            <Parameter name="durationMinutes" value="${escapeXml(leadBookingData.durationMinutes)}" />
+        </Stream>
+    </Connect>
+</Response>`;
+
+    return reply.type('text/xml').send(twimlResponse);
 });
 fastify.all('/outbound-press1', async (request, reply) => {
     const customerPhone =
@@ -1032,8 +1336,7 @@ fastify.all('/outbound-press1', async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-        <Stream url="wss://daring-cat-production-9995.up.railway.app/media-stream">
-            <Parameter
+<Stream url="wss://emma-development-production.up.railway.app/media-stream">            <Parameter
                 name="callerPhone"
                 value="${customerPhone}"
             />
@@ -1058,14 +1361,40 @@ fastify.register(async (websocketServer) => {
             console.log('Twilio client connected');
 
 let streamSid = null;
+let callSid = null;
 let latestMediaTimestamp = 0;
 let callerPhone = '';
 let twilioNumber = '';
 let callMode = 'INBOUND_LEAD';
 
+let voicemailHangupScheduled = false;
+let voicemailTakeoverStarted = false;
+let lastAssistantTranscript = '';
+let completedAssistantTranscripts = [];
+let completedCustomerTranscripts = [];
+            let completionWebhookSent = false;
+            let completionWebhookSending = false;
+
+
+            
 let outboundCustomerName = '';
 let customInstructions = '';
 let sheetRowNumber = '';
+let callPurpose = '';
+let outboundCustomerEmail = '';
+let outboundLeadSource = '';
+let outboundServiceType = '';
+let outboundRecurringFrequency = '';
+let outboundCustomerAddress = '';
+let outboundStreetNumber = '';
+let outboundStreet = '';
+let outboundCity = '';
+let outboundState = '';
+let outboundZip = '';
+let outboundRequestedDate = '';
+let outboundRequestedStartTime = '';
+let outboundArrivalWindow = '';
+let outboundDurationMinutes = '';
 
 let customer = null;
 let recentCalls = [];
@@ -1073,6 +1402,77 @@ let customerBookings = [];
 let customerBookingCount = 0;
 let openAiConnected = false;
 let sessionStarted = false;
+let sessionContextReady = false;
+            let outboundGreetingTimer = null;
+let customerSpokeBeforeGreeting = false;
+
+// Quiet hold melody for slow OctopusPro actions. Twilio expects 8 kHz mu-law.
+let holdMusicTimer = null;
+let holdMusicDelayTimer = null;
+let holdMusicSample = 0;
+
+const pcmToMuLaw = (sample) => {
+    const BIAS = 0x84;
+    const CLIP = 32635;
+    let sign = (sample >> 8) & 0x80;
+    if (sign !== 0) sample = -sample;
+    if (sample > CLIP) sample = CLIP;
+    sample += BIAS;
+
+    let exponent = 7;
+    for (let mask = 0x4000; exponent > 0 && (sample & mask) === 0; exponent--, mask >>= 1) {}
+    const mantissa = (sample >> (exponent + 3)) & 0x0f;
+    return ~(sign | (exponent << 4) | mantissa) & 0xff;
+};
+
+const makeHoldMusicFrame = () => {
+    const sampleRate = 8000;
+    const frame = Buffer.alloc(160);
+    const notes = [261.63, 329.63, 392.0, 329.63];
+
+    for (let index = 0; index < frame.length; index++) {
+        const absoluteSample = holdMusicSample++;
+        const frequency = notes[Math.floor(absoluteSample / sampleRate) % notes.length];
+        const seconds = absoluteSample / sampleRate;
+        const envelope = 0.55 + 0.45 * Math.sin(Math.PI * (absoluteSample % sampleRate) / sampleRate);
+        const pcm = Math.round(
+            1800 * envelope * Math.sin(2 * Math.PI * frequency * seconds) +
+            650 * Math.sin(2 * Math.PI * (frequency / 2) * seconds)
+        );
+        frame[index] = pcmToMuLaw(pcm);
+    }
+
+    return frame.toString('base64');
+};
+
+const stopHoldMusic = () => {
+    if (holdMusicDelayTimer) clearTimeout(holdMusicDelayTimer);
+    if (holdMusicTimer) clearInterval(holdMusicTimer);
+    holdMusicDelayTimer = null;
+    holdMusicTimer = null;
+};
+
+const startHoldMusic = () => {
+    stopHoldMusic();
+    holdMusicSample = 0;
+
+    // Let Emma finish saying "one moment" before the melody begins.
+    holdMusicDelayTimer = setTimeout(() => {
+        holdMusicDelayTimer = null;
+        holdMusicTimer = setInterval(() => {
+            if (!streamSid || connection.readyState !== WebSocket.OPEN) {
+                stopHoldMusic();
+                return;
+            }
+
+            connection.send(JSON.stringify({
+                event: 'media',
+                streamSid,
+                media: { payload: makeHoldMusicFrame() }
+            }));
+        }, 20);
+    }, 1800);
+};
 
             const openAiWs = new WebSocket(
                 `wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature=${TEMPERATURE}`,
@@ -1087,316 +1487,50 @@ let sessionStarted = false;
                 if (
                     !openAiConnected ||
                     !streamSid ||
+                    !sessionContextReady ||
                     sessionStarted
                 ) {
                     return;
                 }
 
                 sessionStarted = true;
-
-                const customerName = [
-                    customer?.first_name,
-                    customer?.last_name
-                ]
-                    .filter(Boolean)
-                    .join(' ')
-                    .trim();
-
-                const customerAddress = [
-                    customer?.address,
-                    customer?.city,
-                    customer?.state,
-                    customer?.zip
-                ]
-                    .filter(Boolean)
-                    .join(', ')
-                    .trim();
-const isAngiLead =
-    customer?.ai_summary
-        ?.toLowerCase()
-        .includes('lead source: angi') || false;
-
-const customerContext = customer
-    ? isAngiLead
-        ? `
-NEW ANGI LEAD FOUND
-
-Customer Name: ${customerName || 'New lead'}
-First Name: ${customer?.first_name || ''}
-Phone: ${customer?.phone || callerPhone}
-Email: ${customer?.email || 'Not available'}
-Service Address: ${customerAddress || 'Not available'}
-
-Lead Information:
-${customer?.ai_summary || 'Not available'}
-
-This person is a new sales lead, not a returning customer.
-
-Do not say "welcome back."
-
-Use the lead information naturally as private background context.
-
-Do not read the full customer notes aloud.
-
-Do not mention:
-- Lead ID
-- Match type
-- Lead source
-- Internal notes
-- Full email address
-- Full street address
-
-If the requested service or frequency is already known, do not ask for it again.
-
-Only ask for information that is missing or needs to be changed.
-`
-        : `
-RETURNING CUSTOMER FOUND
-
-Customer Name: ${customerName || 'Returning customer'}
-First Name: ${customer?.first_name || ''}
-Phone: ${customer?.phone || callerPhone}
-Email: ${customer?.email || 'Not available'}
-Service Address: ${customerAddress || 'Not available'}
-Membership Status: ${customer?.membership_status || 'Not available'}
-Customer Notes: ${customer?.ai_summary || 'Not available'}
-
-This caller is an existing customer.
-
-Welcome the caller back naturally using their first name.
-
-Do not ask for their name or phone number again unless the information has changed.
-
-Do not announce or read the full saved address at the beginning of the call.
-
-Only ask for information that is missing or needs to be updated.
-`
-    : `
-NEW CALLER
-
-No matching customer was found for this phone number.
-
-Use the normal Speedy Solutions greeting.
-
-Collect the caller's full name, phone number, email address, service address,
-and other required booking information.
-`;
-const recentCallContext =
-    recentCalls.length > 0
-        ? `
-RECENT CUSTOMER CALL HISTORY
-
-${recentCalls
-    .map((call, index) => {
-        return `
-Call ${index + 1}
-Date: ${call.started_at || 'Unknown'}
-Sentiment: ${call.sentiment || 'Unknown'}
-Summary: ${call.summary || 'No summary available'}
-`;
-    })
-    .join('\n')}
-
-Use this history only as private background context.
-
-Do not read the call history aloud.
-
-Do not mention that calls were recorded or stored.
-
-Only reference a previous conversation when it naturally helps the customer.
-`
-        : `
-NO RECENT CALL HISTORY FOUND
-`;
-const bookingContext =
-    customerBookings.length > 0
-        ? `
-CUSTOMER BOOKING HISTORY
-
-${customerBookings
-    .map((booking, index) => {
-        return `
-Booking ${index + 1}
-Date: ${booking.booking_date || 'Unknown'}
-Service: ${booking.service_type || 'Unknown'}
-Status: ${booking.status || 'Unknown'}
-Arrival Window: ${booking.arrival_window || 'Unknown'}
-Labor Hours: ${booking.labor_hours || 'Unknown'}
-Technician Count: ${booking.technician_count || 'Unknown'}
-Final Total: ${booking.final_total || 'Unknown'}
-Special Requests: ${booking.special_requests || 'None'}
-`;
-    })
-    .join('\n')}
-
-This customer has previous booking history.
-
-Use the booking history only as private background context.
-
-Do not read all booking details aloud.
-
-Do not mention totals, internal booking IDs, or private notes unless the customer asks and it is appropriate.
-
-Use the most recent booking to understand whether the customer previously completed, cancelled, or scheduled a service.
-`
-        : `
-NO PREVIOUS BOOKING HISTORY
-
-This customer has no bookings stored in the booking database.
-
-Treat them as a first-time cleaning customer unless other customer information clearly says otherwise.
-`;
-const callModeContext =
-    callMode === 'OUTBOUND_CUSTOM'
-        ? `
-CALL MODE: CUSTOM OUTBOUND OFFICE CALL
-
-Customer Name:
-${outboundCustomerName}
-
-Instructions:
-${customInstructions}
-
-You are making an outbound office call.
-
-Follow the instructions exactly.
-
-Do NOT use the normal inbound greeting.
-
-Do NOT make up information.
-
-Be friendly, conversational and professional.
-
-If the customer asks unrelated questions, answer naturally and then return to the purpose of the call.
-`
-    : callMode === 'OUTBOUND_PRESS_1'
-        ? `
-CALL MODE: OUTBOUND NEW LEAD QUOTE
-
-This is an outbound call to a new lead who requested a house cleaning quote.
-
-Do not use the standard inbound receptionist greeting.
-
-If customer information or lead notes are available, use them naturally.
-
-If the requested service is already known, do not ask again.
-
-Instead, greet the customer by first name, briefly acknowledge the service they requested, and ask the next logical question.
-
-If the requested service is NOT known, begin by asking whether they are looking for one-time or recurring cleaning.
-
-Ask only this question first and then wait for the customer to answer.
-`
-        : `
-CALL MODE: INBOUND LEAD
-
-This is a normal inbound call.
-
-Use the standard greeting:
-
-"Thank you for calling Speedy Solutions. This is Emma. How can we help you today?"
-`;
-                const sessionUpdate = {
-                    type: 'session.update',
-                    session: {
-                        type: 'realtime',
-                        model: 'gpt-realtime',
-                        output_modalities: ['audio'],
-                        audio: {
-                            input: {
-                                format: {
-                                    type: 'audio/pcmu'
-                                },
-                        turn_detection: {
-                                    type: 'server_vad',
-                                    threshold: 0.65,
-                                    silence_duration_ms: 1200,
-                                    create_response: true
-                                }
-                            },
-                            output: {
-                                format: {
-                                    type: 'audio/pcmu'
-                                },
-                                voice: VOICE
-                            }
-                        },
-instructions: `${SYSTEM_MESSAGE}
-
-COMPANY KNOWLEDGE TOOL
-
-Use search_company_knowledge whenever the caller asks about company pricing, memberships, services, policies, scheduling rules, fees, supplies, or procedures and the answer may be stored in the company knowledge base.
-
-Use the database result as the source of truth.
-
-Explain the answer naturally. Do not mention the database or tool to the caller.
-
-If the search returns no relevant information, do not invent a company policy or price. Explain that you need to confirm the information.
-
-${callModeContext}
-${customerContext}
-${recentCallContext}
-${bookingContext}`,
-
-tools: [
-    {
-        type: 'function',
-        name: 'search_company_knowledge',
-        description:
-            'Search the Speedy Solutions company knowledge base for current pricing, memberships, services, policies, scheduling rules, fees, supplies, and procedures.',
-        parameters: {
-            type: 'object',
-            properties: {
-                query: {
-                    type: 'string',
-                    description:
-                        'A short search phrase describing the company information needed, such as membership, carpet cleaning, arrival windows, or supplies.'
-                }
-            },
-            required: ['query']
-        }
+const sessionContext = buildSessionContext({
+    customer,
+    recentCalls,
+    customerBookings,
+    callMode,
+    outboundCustomerName,
+    outboundLead: {
+        address: outboundCustomerAddress,
+        streetNumber: outboundStreetNumber,
+        street: outboundStreet,
+        city: outboundCity,
+        state: outboundState,
+        zip: outboundZip
     },
-    {
-        type: 'function',
-        name: 'record_technician_status_update',
-        description:
-            'Record a technician update such as starting a job, finishing a job, lockout, customer unavailable, break, delay, or other field status.',
-        parameters: {
-            type: 'object',
-            properties: {
-                bookingNumber: {
-                    type: 'string',
-                    description:
-                        'Booking number such as BOK-25983.'
-                },
-                technicianName: {
-                    type: 'string',
-                    description:
-                        'Name of the cleaner or technician.'
-                },
-                status: {
-                    type: 'string',
-                    description:
-                        'The reported status, such as started, finished, lockout, customer_unavailable, break, delayed, or note.'
-                },
-                reportedTime: {
-                    type: 'string',
-                    description:
-                        'The local time reported by the technician, such as 10:17 AM.'
-                },
-                notes: {
-                    type: 'string',
-                    description:
-                        'Any additional details about the technician update.'
-                }
-            },
-            required: ['status']
-        }
-    }
-],
+    customInstructions,
+    callerPhone
+});
+              const {
+    customerName,
+    customerAddress,
+    customerContext,
+    recentCallContext,
+    bookingContext,
+    callModeContext,
+    memoryFirstContext
+} = sessionContext;
 
-tool_choice: 'auto'                 }
-                };
+const sessionUpdate = buildOpenAiSession({
+    SYSTEM_MESSAGE,
+    VOICE,
+    callMode,
+    callModeContext,
+    customerContext,
+    recentCallContext,
+    bookingContext,
+    memoryFirstContext
+});
 
                 console.log(
                     'Starting OpenAI session for:',
@@ -1421,46 +1555,608 @@ tool_choice: 'auto'                 }
                             content: [
                                 {type: 'input_text',
                                    text:
-   callMode === 'OUTBOUND_CUSTOM'
+
+callMode === 'OUTBOUND_CUSTOM'
     ? `Begin the outbound office call now.
 
-Customer name:
-${outboundCustomerName}
+This is an outbound call to an existing or potential Speedy Solutions customer.
 
-Instructions:
+CUSTOMER IDENTITY:
+Customer name: ${customerName || outboundCustomerName || 'Customer'}
+Customer phone: ${callerPhone || 'Not available'}
+Customer address: ${customerAddress || 'Not available'}
+
+CUSTOMER DATABASE CONTEXT:
+${customerContext || 'No customer record was found.'}
+
+RECENT CALL HISTORY:
+${recentCallContext || 'No recent call history was found.'}
+
+BOOKING HISTORY:
+${bookingContext || 'No booking history was found.'}
+
+PURPOSE AND INSTRUCTIONS FOR THIS CALL:
 ${customInstructions}
 
-Follow these instructions exactly.
+OUTBOUND CALL RULES:
+FIRST 15 SECONDS OF EVERY OUTBOUND CALL
 
-Begin speaking naturally.`
-    : callMode === 'OUTBOUND_PRESS_1'
-    ? customer
-     ? `Begin the outbound quote call now.
+Always follow this exact order:
+
+1. Greet the customer by first name if available.
+2. Explain why you are calling in one short sentence.
+3. Refer naturally to the known requested service or lead notes when available.
+4. Ask only the single next missing question and stop to listen.
+
+EXISTING-CUSTOMER OVERRIDE:
+- If CUSTOMER DATABASE CONTEXT or BOOKING HISTORY shows an existing customer or booking, treat this as an account-service callÃ¢â‚¬â€not a new quote.
+- Open with the specific reason for the call and the known appointment or recurring service details.
+- Never ask one-time versus recurring when their existing frequency or appointment is already known.
+- Never quote $150, pitch a first cleaning, or restart sales intake unless the customer explicitly asks to price or book a separate new cleaning.
+- For an existing recurring client, refer to their saved recurring service as their current plan. Do not sell it back to them as though they are a new lead.
+- If the purpose is confirming, rescheduling, cancelling, billing, follow-up, or checking an existing visit, stay entirely on that purpose.
+- Ask only what is required to complete the stated purpose, using all saved customer, call, and booking facts first.
+
+- Never quote a price before frequency is known.
+- If frequency is unknown, ask whether they want one-time or recurring service and stop.
+- If the requested service is a one-time cleaning, say: "One-time cleaning starts at $150 for the first two hours with one cleaner."
+- If the requested service is recurring cleaning, give only the price for the requested frequency.
+- If service type is unclear after frequency is known, ask one short clarification question and stop.
+- Never use the $150 one-time price as a generic cleaning quote or comparison for a recurring lead.
+- Weekly starts at $112.50, biweekly starts at $120, and monthly starts at $127.50.
+- Any mention of recurring service is a mandatory Forever Clean trigger. Explain the $250 annual membership, 45% discount, and typical $82.50 two-hour cleaning, plus the applicable non-member recurring price, before scheduling.
+- After giving the price, ask which day and arrival window they prefer.
+- Use the database information privately as background context.
+- Greet the customer naturally by first name when their name is available.
+- Do not announce that you searched the database.
+- Do not read the customer's full address, email address, private notes, or call history unless it is relevant or the customer asks.
+- Verify that you are speaking with the correct person before discussing sensitive account information.
+- Do not ask for information already available unless confirmation is necessary.
+- Do not invent missing customer, booking, billing, or appointment information.
+- Follow the specific purpose of the call.
+- If the customer asks a related question, use the available customer and booking information to answer.
+- If something cannot be confirmed from the available information, clearly say that office follow-up is needed.
+- Give the applicable price before the first scheduling question.
+- Then ask only one question at a time.
+- Keep the conversation natural, friendly, and concise.
+- Before ending, summarize the result and any agreed next step.
+STRONG BOOKING CLOSE:
+
+- Before ending, clearly summarize the agreed service, price, date, arrival window, and next step.
+- If the customer agreed to the service and scheduling details, speak confidently and treat the appointment as confirmed for the purpose of the call.
+- Do not end with vague wording such as "we'll see," "someone may call," "hopefully," or "we'll try."
+- Say exactly what happens next.
+
+Use a close like:
+
+Perfect, [first name]. Everything is all set.
+
+I have you scheduled for [service] on [date] during the [arrival window].
+
+Your starting price will be [price].
+
+We'll send your appointment confirmation and service authorization by text or email shortly, and your technician will call when she's on the way.
+
+We look forward to seeing you!
+Then ask:
+
+"Is there anything else I can help you with before we finish?"
+
+If they say no, end with:
+
+"Wonderful. YouÃ¢â‚¬â„¢re all set. Thank you for choosing Speedy Solutions. We look forward to helping you."
+
+- Give only one final closing.
+- Do not repeat goodbye.
+- Do not ask more booking questions after confirming the appointment.
+Begin the call naturally now.`
+
+        : callMode === 'OUTBOUND_PRESS_1'
+        ? customer
+            ? `Begin the outbound quote call promptly with a warm greeting.
 
 The customer has already requested a cleaning quote.
 
-Use all available customer information and notes as background context.
-
-If you already know the requested cleaning service, acknowledge it naturally without reading the notes aloud.
+Use all available customer information and notes as private background context.
 
 Do not mention internal information such as Lead ID, Match Type, Lead Source, customer notes, or the full address.
 
-Greet ${customer?.first_name || 'the customer'} warmly by first name, ask the single most appropriate next question, and then wait for the customer's response.`
-        : `Begin the outbound new-lead quote call now. Say: "Hi! Thank you for looking for a house cleaning quote with Speedy Solutions. Is this more of a one-time cleaning, or are you interested in recurring cleaning?" After asking, stop and wait for the customer's answer.`
-    : customer
-        ? `Begin the inbound call now. Welcome ${customer?.first_name || 'the customer'} back warmly by first name. Do not mention or confirm any saved address unless the customer brings it up or it becomes necessary to complete the booking.`
-        : `Begin the inbound call now using the standard Speedy Solutions greeting.`
-                                }
+Greet ${customer?.first_name || 'the customer'} warmly by first name and move naturally into the first missing question. Do not begin with a list of services.
+
+If the requested cleaning type or frequency is already known, acknowledge it naturally. Do not ask for that information again.
+
+First ask whether they want a one-time cleaning or recurring service, but only if frequency is unknown. Stop and listen.
+
+Then ask whether they need standard cleaning, deep cleaning, or move-in or move-out cleaning, but only if the cleaning type is unknown. Stop and listen.
+
+If they are unsure about cleaning type, explain the options briefly and recommend the best match based on what they describe.
+
+Standard cleaning is for routine upkeep. Deep cleaning is for heavier buildup or a detailed reset. Move-in or move-out cleaning prepares an empty or mostly empty home for the next occupant.
+
+Clearly tell the customer that the cleaner brings all professional cleaning supplies and equipment.
+
+Never ask for a detail the customer already stated. If they open by saying they need a deep clean, acknowledge it and ask only whether it is one-time or recurring if frequency is unknown. If they already stated both, move directly to the applicable starting price.
+
+If they choose recurring, you must mention Forever Clean before scheduling: the membership is $250 per year, gives 45% off cleaning for a full year, and makes a typical two-hour cleaning $82.50. Also give the matching non-member rate: weekly $112.50, every two weeks $120, or monthly $127.50 for two hours.
+
+If they choose one-time, normally mention the Forever Clean try-before-you-buy option once: they may try the $150 two-hour cleaning, upgrade before the end of that session if they love it, or simply keep it as a one-time cleaning.
+
+Never combine the cleaning type, frequency, pricing, membership, and scheduling into one long response.
+
+Do not repeat or re-confirm the customer's name, phone number, email address, or full address when it is already available. Ask only for information that is missing or that the customer says has changed.
+
+When scheduling, if an address is already saved, ask only: "Will we be cleaning the same address?" Do not read the full address aloud unless the customer asks or says it changed.
+
+After the applicable price, move directly to the preferred date and arrival window. Ask only one question at a time.
+
+Sell the convenience and result confidently, but stay concise and never pressure the customer.`
+
+        : `Begin the outbound Angi follow-up call now.
+
+The customer previously requested cleaning information through Angi.
+
+Begin naturally by saying:
+
+"Hi! This is Emma with Speedy Solutions. You recently requested information through Angi about cleaning services, so I'm just following up to see if you're still looking for cleaning."
+
+Wait for the customer's response.
+
+If they say yes, ask:
+
+"Wonderful! Are you looking for a one-time cleaning or recurring service?"
+
+Wait for their answer.
+
+Then ask which cleaning type they need only if it is still unknown:
+
+"Would this be a standard cleaning, deep cleaning, or move-in or move-out cleaning?"
+
+If they already stated the frequency or cleaning type, do not ask for it again. Acknowledge it and continue to the next missing item.
+
+If they are unsure about cleaning type, ask what they want cleaned or what condition the home is in, then recommend the best match in one short sentence.
+
+Clearly tell the customer that the cleaner brings all professional cleaning supplies and equipment.
+
+After giving the applicable starting price, mention Forever Clean once on most cleaning sales calls, including one-time inquiries. Explain that it gives 45% off cleaning for one full year and that a one-time customer can upgrade before the end of the first session or keep the visit one-time. Then move confidently to their preferred date and arrival window.
+
+CUSTOMER INFORMATION:
+
+Use customer information already on file privately. Do not read back or reconfirm the customer's full name, phone number, email address, or full address when it is already available.
+
+Ask only for information that is missing or that the customer says has changed.
+
+If a service address is already available, ask only: "Will we be cleaning the same address?"
+
+If the customer says yes, continue immediately. If they say no, collect the new complete service address.
+
+After identifying the cleaning type and frequency and giving the applicable price, ask for the preferred date and arrival window. Do not delay scheduling with unnecessary contact-information questions.
+
+Ask only one question at a time.
+
+If they choose recurring service, ask:
+
+"Would weekly, every two weeks, or monthly work best for you?"
+
+Never begin the call by asking whether they want weekly or monthly service.
+
+Keep the conversation friendly, natural, and conversational.
+`
+
+
+       : (customer || customerBookings.length > 0)
+        ? `Begin the inbound returning-customer call now.
+
+Say:
+
+"Thank you for calling SpeedyCleans. This is Emma. How can I help you today?"
+
+HUMAN-TRANSFER POLICY Ã¢â‚¬â€ FOLLOW EXACTLY:
+
+- Do not transfer the caller to a receptionist, manager, owner, dispatcher, technician, office worker, or any specifically requested person.
+- Do not claim that you are transferring the call.
+- Do not place the caller on hold for a person.
+- You are Emma, SpeedyCleans' 24/7 AI receptionist and primary inbound call takerâ€”not a basic bot, phone menu, or transfer operator.
+- You can handle real work, including quotes, scheduling, service questions, appointment updates, billing questions, customer requests, complaints, and technician messages.
+- Make one confident attempt to explain the advantage of immediate AI assistance. If the caller still wants a human, stop persuading and take a complete callback message.
+
+If the caller asks for a receptionist, representative, human, manager, owner, office staff, or transfer, say:
+
+"I'm Emma, SpeedyCleans' 24/7 AI receptionist. This isn't a basic bot or a transfer lineâ€”I'm built to actually handle things right here, including quotes, scheduling, service questions, appointment updates, billing questions, and customer requests. I'm continuously upgraded with our latest information and tools, so I can often help faster than waiting for a traditional receptionist. Tell me what you need, and let's take care of it now."
+
+Then ask:
+
+"What can I help you with today?"
+
+If the caller still requests a human, refuses AI assistance, or sounds frustrated, do not continue debating. Say:
+
+"Absolutely. There isn't a live human transfer on this line, but I can take a complete message right now and a human team member will call you back as soon as possible. I'll make sure they have the details so you don't have to start over. May I start with your name?"
+
+In callback message mode, collect or confirm one item at a time:
+- Their name
+- Their callback number
+- The exact reason for the call
+- The exact question, requested action, or outcome they need
+- Any relevant service address, appointment date, or booking number
+- Any urgency, deadline, or preferred callback time
+
+Use saved customer information instead of making them repeat it. Read back the important details once and ask whether anything else should be included.
+
+When complete, say: "Perfect. I have your message and callback number. A human team member will call you back as soon as possible."
+
+Never promise an exact callback time. Never claim a human is currently available, that the caller is in a live queue, or that a transfer is occurring.
+Remain polite, confident, firm, and helpful.
+Do not greet the caller by their saved name.
+Do not announce that you recognize them.
+Do not say welcome back.
+Use saved customer information privately as background context.
+
+This is an existing customer who has previously booked service.
+
+FAST-TRACK RULES FOR RETURNING CUSTOMERS:
+
+- Do not automatically repeat general pricing.
+- Do not make them listen to the full new-customer quote.
+- Listen to what they need first.
+- If they want another cleaning, move directly toward scheduling.
+- Use their saved name, phone number, email address, and service address privately.
+- Do not ask for information that is already available.
+- Ask only whether the service address is the same if confirmation is necessary.
+- Ask what service they need and what date or arrival window they prefer.
+- If they mention a pricing question, answer only the specific pricing question they asked.
+- If their information has changed, collect only the changed information.
+- Keep the call quick, friendly, and efficient.
+
+RECURRING CLEANING:
+
+After asking:
+
+"Are you looking for a one-time cleaning, or recurring service?"
+
+Listen carefully before responding.
+
+RULES:
+
+If the customer already tells you how often they want service, DO NOT ask them again.
+
+Immediately acknowledge what they chose and give ONLY that pricing.
+
+Examples:
+
+Customer:
+"Monthly."
+
+Emma:
+"Perfect. Our best value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, monthly cleaning starts at $127.50 for two hours. Forever Clean is our best deal by far."
+
+Customer:
+"Biweekly."
+
+Emma:
+"Perfect. Our best value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, every-two-week cleaning starts at $120 for two hours, and she brings all professional cleaning supplies and equipment."
+
+Customer:
+"Weekly."
+
+Emma:
+"Great. Our best value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, weekly cleaning starts at $112.50 for two hours, and she brings all professional cleaning supplies and equipment."
+
+After giving the applicable price, immediately continue with scheduling.
+
+Do NOT explain the weekly, biweekly, and monthly options unless the customer asks.
+
+Only compare multiple recurring plans if the customer says something like:
+
+Ã¢â‚¬Â¢ "What are my options?"
+Ã¢â‚¬Â¢ "How much are they?"
+Ã¢â‚¬Â¢ "What's cheaper?"
+
+If the customer simply says:
+
+"I want recurring."
+
+Then respond:
+
+"Great. Were you thinking weekly, every two weeks, or monthly?"
+
+Wait for their answer.
+
+Then provide ONLY that pricing.
+
+PRICING RULES:
+
+After asking whether the caller wants a one-time or recurring cleaning, use only the pricing structure that matches their answer.
+
+Never automatically begin with the $150 one-time price.
+
+ONE-TIME CLEANING:
+
+If the caller chooses a one-time cleaning, say:
+
+"For a one-time visit, the first two hours are $150 with one cleaner, and your cleaner brings all professional cleaning supplies and equipment. What day and time would work best for you or would you like as soon as possible?"
+Do not mention recurring pricing unless the caller asks about it.
+
+Then continue directly to scheduling by asking:
+
+"Do you have an ideal day and time you'd like us to come out?"
+
+CONVERSATION RULE:
+
+Always answer the customer's exact question.
+
+Never give information they didn't ask for.
+
+Never ask for the preferred day, date, arrival window, or scheduling details until the customer has heard the applicable starting price.
+
+Do not read a list of prices unless the customer asks to compare plans.
+
+Use the fewest words necessary to move the booking forward.
+
+SALES RULE:
+
+When discussing pricing, always lead with the lowest applicable price.
+
+If the customer is requesting recurring cleaning, never compare it to the $150 one-time rate unless they specifically ask.
+
+Instead, confidently present the recurring price as the normal starting price.
+
+Examples:
+
+Monthly:
+"Our monthly service starts at just $128."
+
+Every two weeks:
+"Our every-two-week service starts at just $120."
+
+Weekly:
+"Our weekly service starts at just $112."
+
+If the customer already tells you their frequency (weekly, every two weeks, or monthly), immediately give ONLY that price.
+
+Do not list all three recurring options unless the customer asks to compare them.
+
+The customer's first impression should always be the lowest applicable price for the service they requested.
+
+After asking whether the caller wants a one-time or recurring cleaning, use only the pricing structure that matches their answer.
+
+Never automatically begin with the $150 one-time price.
+
+
+
+MEMBERSHIP:
+
+Mention Forever Clean naturally once during most genuine cleaning sales and quote calls, including one-time cleaning inquiries.
+
+For a one-time customer, present the $150 two-hour cleaning as a try-before-you-buy option: they can upgrade to Forever Clean before the session ends if they love it, or keep the visit as a one-time cleaning.
+
+Say:
+
+"Our best rate is through Forever Clean. The membership is $250 for the year and gives you 45% off cleaning for a full year. A typical two-hour cleaning drops from $150 to $82.50, and you can use the membership at any address, any time, with no minimum or maximum number of cleanings."
+
+Clearly identify this as the best available cleaning rate.
+
+Do not pressure the caller to purchase the membership.
+
+After explaining the correct one-time or recurring price, immediately continue to scheduling.
+
+
+SCHEDULING:
+
+Immediately after explaining pricing, ask:
+
+"Do you have an ideal day and time you'd like us to come out?"
+
+Wait for their response.
+
+If they give a date but not an arrival window, ask:
+
+"Would you prefer a morning arrival between 9 and 10, an afternoon arrival between 12 and 2, or a later arrival between 3 and 5?"
+
+Wait for their response.
+
+If they provide both a day and time in their first response, do not ask for them again.
+
+Resolve relative dates correctly.
+
+Examples:
+- Today means the current calendar date.
+- Tomorrow means the next calendar date.
+- Monday means the next upcoming Monday.
+- Next Friday means the correct upcoming Friday.
+
+Never return or confirm a past date unless the caller specifically requested a past appointment.
+
+After they select a date and arrival window, move directly into collecting their information.
+
+Say:
+
+"Perfect! Let me get the information needed to complete your appointment."
+
+Then ask one question at a time.
+
+Ask:
+
+"What is your full name?"
+
+Wait for the answer.
+
+Then ask:
+
+"Is the number you're calling from the best number for the appointment?"
+
+Wait for the answer.
+
+If they say no, ask:
+
+"What is the best phone number?"
+
+Wait for the answer.
+
+Then ask:
+
+"What is the full service address?"
+
+Wait for the answer.
+
+Then ask:
+
+"What is the best email address?"
+
+Wait for the answer.
+
+Do not ask for multiple pieces of information in one question.
+
+Do not interrupt the caller.
+
+If the caller already provided information, do not ask for it again.
+
+QUESTIONS:
+
+If the caller asks a question, answer it directly and briefly.
+
+After answering, immediately continue from the next unfinished booking step.
+
+Examples:
+
+"Absolutely. Now, what day and time were you hoping for?"
+
+"Of course. To finish getting you scheduled, what is your full name?"
+
+If they ask about deep cleaning, explain briefly:
+
+"Deep cleaning is more detailed and is intended for heavier buildup or homes needing extra attention. It can include detailed scrubbing, baseboards, interior windows, and more detailed wiping throughout the home."
+
+Do not give a long checklist unless they request one.
+
+If they mention a move-in, move-out, post-construction cleaning, carpet cleaning, nicotine, heavy buildup, pets, access instructions, or another special request, acknowledge it and record the request.
+
+Do not restart the entire booking flow.
+
+FINAL REVIEW:
+
+After collecting the requested date, arrival window, full name, phone number, service address, and email, say:
+
+"Perfect! Before I finish, do you have any other questions for me?"
+
+Answer any final questions briefly.
+
+Then clearly repeat the appointment details.
+
+Say:
+
+"Perfect, [customer first name]. I have you scheduled for [full appointment date] with the [selected arrival window]."
+
+Do not leave the appointment status vague or open-ended.
+
+CONFIRMATION RULE:
+
+If the customer clearly agreed to the appointment date and arrival window and provided the required booking information, treat the appointment as booked for the purpose of the call.
+
+Say:
+
+"You are booked and fully confirmed for [full appointment date] with the [selected arrival window]. We will send your appointment details and required service authorization information by text or email."
+
+Use the actual date and arrival window selected by the caller.
+
+Examples:
+
+"You are booked and fully confirmed for Wednesday, July 29, with the morning arrival window between 9 and 10."
+
+"You are booked and fully confirmed for tomorrow with the afternoon arrival window between 12 and 2."
+
+Do not say:
+- Scheduling request
+- Pending request
+- Hopefully
+- We will see what we can do
+- Someone may contact you
+- We still need to finalize it
+
+End confidently.
+
+After confirming the appointment, ask:
+
+"Is there anything else I can help you with today?"
+
+If they say no, say:
+
+"Wonderful! Thank you for choosing SpeedyCleans. We look forward to seeing you. Have a great day!"
+
+Give one closing only.
+
+Do not repeatedly say goodbye.
+
+Do not ask additional booking questions after confirming the appointment.`
+                  
+                                    : `Begin the inbound new-customer call now.
+
+Say:
+
+"Thank you for calling SpeedyCleans. This is Emma. How can I help you today?"
+
+Allow the caller to briefly explain what they need.
+
+If they are calling about cleaning service, a quote, pricing, or scheduling, ask:
+
+"Are you looking for a one-time cleaning or recurring service?"
+
+After asking, stop and wait for their answer.
+
+If they choose one-time cleaning, say:
+
+"For a one-time visit, the first two hours are $150 with one cleaner. What day were you hoping for?"
+
+If they say monthly, say:
+
+"Perfect! Our best value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, monthly cleaning starts at $127.50 for two hours, and she brings all professional cleaning supplies and equipment. Did you have an ideal day and time for your cleaning, or were you looking for service right away?"
+
+If they say biweekly, every two weeks, or every other week, say:
+
+"Perfect! Our best value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, every-two-week cleaning starts at $120 for two hours, and she brings all professional cleaning supplies and equipment. Did you have an ideal day and time for your cleaning, or were you looking for service right away?"
+
+If they say weekly, say:
+
+"Great! Our best value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, weekly cleaning starts at $112.50 for two hours, and she brings all professional cleaning supplies and equipment. Did you have an ideal day and time for your cleaning, or were you looking for service right away?"
+If they only say recurring, ask:
+
+"Absolutely. Our best recurring value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, two-hour recurring cleaning starts at $112.50 weekly, $120 every two weeks, or $127.50 monthly. Which schedule sounds best for you?"
+
+Only give the price for the option they choose.
+
+Keep responses short, friendly, and conversational.`                     }
                             ]
                         }
                     })
                 );
 
-                openAiWs.send(
-                    JSON.stringify({
-                        type: 'response.create'
-                    })
-                );
+               
+              if (callMode.startsWith('OUTBOUND')) {
+    customerSpokeBeforeGreeting = false;
+
+    outboundGreetingTimer = setTimeout(() => {
+        outboundGreetingTimer = null;
+
+        if (
+            !customerSpokeBeforeGreeting &&
+            openAiWs.readyState === WebSocket.OPEN
+        ) {
+            openAiWs.send(
+                JSON.stringify({
+                    type: 'response.create'
+                })
+            );
+
+            console.log(
+                'No customer speech detected. Starting outbound greeting immediately.'
+            );
+        }
+    }, 75);
+} else {
+    openAiWs.send(
+        JSON.stringify({
+            type: 'response.create'
+        })
+    );
+}
             };
 
             openAiWs.on('open', () => {
@@ -1471,27 +2167,475 @@ Greet ${customer?.first_name || 'the customer'} warmly by first name, ask the si
                 openAiConnected = true;
                 initializeSession();
             });
+const scheduleVoicemailHangup = () => {
+    if (
+        voicemailHangupScheduled ||
+        !callSid ||
+        !callMode.startsWith('OUTBOUND')
+    ) {
+        return;
+    }
 
+    voicemailHangupScheduled = true;
+
+    console.log(
+        'Voicemail detected. Scheduling Twilio hangup:',
+        callSid
+    );
+
+    setTimeout(async () => {
+        try {
+            await twilioClient
+                .calls(callSid)
+                .update({
+                    status: 'completed'
+                });
+
+            console.log(
+                'Voicemail call ended successfully:',
+                callSid
+            );
+        } catch (error) {
+            console.error(
+                'Unable to end voicemail call:',
+                error
+            );
+        }
+    }, 1500);
+};
+
+const soundsLikeVoicemailSystem = (transcript) => {
+    if (!callMode.startsWith('OUTBOUND')) {
+        return false;
+    }
+
+    const text = String(transcript || '').toLowerCase();
+    const strongPhrases = [
+        'please leave a message',
+        'leave your message',
+        'leave a message after',
+        'record your message',
+        'after the tone',
+        'after the beep',
+        'at the tone',
+        'has been forwarded to voicemail',
+        'your call has been forwarded',
+        'cannot take your call',
+        "can't take your call",
+        'is not available',
+        'the person you are calling',
+        'google voice subscriber',
+        'voice mailbox',
+        'press the pound key',
+        'when you are finished recording'
+    ];
+
+    if (strongPhrases.some((phrase) => text.includes(phrase))) {
+        return true;
+    }
+
+    return (
+        (text.includes('mailbox') &&
+            (text.includes('message') ||
+                text.includes('tone') ||
+                text.includes('full'))) ||
+        (text.includes('you have reached') &&
+            (text.includes('voicemail') || text.includes('mailbox')))
+    );
+};
+
+const takeOverVoicemailCall = async (transcript) => {
+    if (
+        voicemailTakeoverStarted ||
+        !callSid ||
+        !callMode.startsWith('OUTBOUND')
+    ) {
+        return;
+    }
+
+    voicemailTakeoverStarted = true;
+    console.log(
+        'Voicemail system detected from incoming audio. Taking over call:',
+        callSid,
+        transcript
+    );
+
+    try {
+        if (openAiWs.readyState === WebSocket.OPEN) {
+            openAiWs.send(JSON.stringify({ type: 'response.cancel' }));
+        }
+
+        const confirmationVoicemailMessage = buildConfirmationVoicemailMessage({
+            callPurpose,
+            customerName: outboundCustomerName,
+            bookingDate: outboundRequestedDate
+        });
+        const fallbackVoicemailMessage = 'Hi, this is Emma with Speedy Solutions calling about your Angi request. Please call us back at 5 1 7, 7 7 7, 8 7 1 2. Thank you.';
+        const voicemailTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice">${escapeXml(confirmationVoicemailMessage || fallbackVoicemailMessage)}</Say>
+    <Hangup/>
+</Response>`;
+
+        await twilioClient.calls(callSid).update({
+            twiml: voicemailTwiml
+        });
+
+        console.log('Short voicemail started; OpenAI stream stopped:', callSid);
+        await sendOutboundCompletion('voicemail');
+    } catch (error) {
+        console.error('Voicemail takeover failed:', error);
+        voicemailTakeoverStarted = false;
+        scheduleVoicemailHangup();
+    }
+};
+
+const classifyOutboundCall = ({ status, customerText, assistantText }) => {
+    const customer = String(customerText || '').toLowerCase();
+    const assistant = String(assistantText || '').toLowerCase();
+    const combined = `${customer}\n${assistant}`;
+
+    if (status === 'voicemail') return 'voicemail';
+    if (!customer.trim()) return 'failed';
+
+    if (/not interested|stop calling|remove me|do not call|don't call/.test(customer)) {
+        return 'not_interested';
+    }
+
+    if (/call me (back )?(later|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|need to think|think about it|talk to my|check with my/.test(customer)) {
+        return 'follow_up';
+    }
+
+    const customerAccepted =
+        /yes|that works|sounds good|go ahead|book it|schedule it|let's do it|lets do it/.test(customer);
+    const assistantConfirmed =
+        /you(?:'re| are) (?:booked|scheduled|all set)|appointment (?:is|has been) (?:booked|scheduled|confirmed)|i have you scheduled/.test(assistant);
+
+    if (customerAccepted && assistantConfirmed) return 'booked';
+    if (/follow.?up|call back|callback/.test(combined)) return 'follow_up';
+    return 'completed';
+};
+
+const scoreOutboundCall = ({ customerText, assistantText, outcome }) => {
+    const customer = String(customerText || '');
+    const assistant = String(assistantText || '');
+    const lowerAssistant = assistant.toLowerCase();
+    const flags = [];
+    let score = 100;
+
+    if (!customer.trim()) {
+        score -= 50;
+        flags.push('no_customer_conversation');
+    }
+
+    const schedulingQuestions =
+        lowerAssistant.match(/what day|what date|what time|day and time/g) || [];
+    if (schedulingQuestions.length > 1) {
+        score -= 20;
+        flags.push('repeated_scheduling_question');
+    }
+
+    const identityQuestions =
+        lowerAssistant.match(/full name|email address|phone number/g) || [];
+    if (identityQuestions.length > 2) {
+        score -= 15;
+        flags.push('repeated_identity_question');
+    }
+
+    if (outcome === 'completed' && !/what day|which day|arrival window|schedule|book/.test(lowerAssistant)) {
+        score -= 10;
+        flags.push('no_booking_close_detected');
+    }
+
+    return {
+        score: Math.max(0, score),
+        flags
+    };
+};
+
+        const sendOutboundCompletion = async (status = 'completed') => {
+    if (
+        completionWebhookSent ||
+        completionWebhookSending ||
+        !callMode.startsWith('OUTBOUND') ||
+        !sheetRowNumber
+    ) {
+        return;
+    }
+
+    completionWebhookSending = true;
+
+    try {
+      const customerTranscript =
+        completedCustomerTranscripts.join('\n');
+      const assistantTranscript =
+        completedAssistantTranscripts.join('\n');
+      const transcript =
+`CUSTOMER:
+${customerTranscript}
+
+EMMA:
+${assistantTranscript}`;
+
+      const outcome = classifyOutboundCall({
+          status,
+          customerText: customerTranscript,
+          assistantText: assistantTranscript
+      });
+      const quality = scoreOutboundCall({
+          customerText: customerTranscript,
+          assistantText: assistantTranscript,
+          outcome
+      });
+
+      const lowerCustomer = customerTranscript.toLowerCase();
+      const lowerAssistantForResult = assistantTranscript.toLowerCase();
+      const confirmationTiming = getConfirmationTiming(callPurpose, outboundRequestedDate);
+      const confirmationResult = confirmationTiming.isConfirmation
+          ? {
+              answered: customerTranscript.trim().length > 0,
+              confirmationStatus: /\b(cancel|cancelled|canceled|do not want|don't want|cannot make|can't make)\b/.test(lowerCustomer)
+                  ? 'cancel_requested'
+                  : /\b(yes|yeah|yep|correct|confirm|confirmed|still works|that works|sounds good|okay|ok)\b/.test(lowerCustomer)
+                      ? 'confirmed'
+                      : customerTranscript.trim().length > 0
+                          ? 'unclear'
+                          : 'no_answer',
+              securePhonePaymentRequested: /\b(card|credit card|debit card|pay by phone|over the phone)\b/.test(lowerCustomer),
+              formDeliveryRequested: /\b(text|email|link|form)\b/.test(lowerCustomer),
+              cancellationVerified: /\b(cancelled|canceled)\b/.test(lowerAssistantForResult) &&
+                  !/\b(could not|couldn't|unable|not cancelled|not canceled|staff review|office.*review)\b/.test(lowerAssistantForResult)
+          }
+          : null;
+
+const completionPayload = {
+    callSid,
+    sheetRowNumber,
+    status,
+    transcript,
+    summary: transcript,
+    outcome,
+    qualityScore: quality.score,
+    qualityFlags: quality.flags,
+    customerTranscript,
+    assistantTranscript,
+    callPurpose,
+    customerPhone: callerPhone,
+    customerEmail: outboundCustomerEmail,
+    customerName: outboundCustomerName || [customer?.first_name, customer?.last_name].filter(Boolean).join(' '),
+    leadSource: outboundLeadSource,
+    serviceType: outboundServiceType,
+    recurringFrequency: outboundRecurringFrequency,
+    address: outboundCustomerAddress || customer?.address || '',
+    streetNumber: outboundStreetNumber || customer?.street_number || '',
+    street: outboundStreet || customer?.street || customer?.street_address || '',
+    city: outboundCity || customer?.city || customer?.suburb || '',
+    state: outboundState || customer?.state || '',
+    zip: outboundZip || customer?.zip || customer?.postcode || '',
+    requestedDate: outboundRequestedDate,
+    requestedStartTime: outboundRequestedStartTime,
+    arrivalWindow: outboundArrivalWindow,
+    durationMinutes: outboundDurationMinutes,
+    ...(confirmationResult || {})
+};
+
+const retryDelaysMs = [0, 1500, 3000, 6000, 12000, 24000];
+let lastWebhookError = null;
+
+for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
+    const delayMs = retryDelaysMs[attempt];
+    if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    try {
+        const completionWebhookUrl = confirmationTiming.isConfirmation
+            ? NEXT_DAY_CONFIRMATION_WEBHOOK_URL
+            : AI_CALL_COMPLETED_WEBHOOK_URL;
+        const webhookResponse = await fetch(
+            completionWebhookUrl,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(completionPayload),
+                signal: AbortSignal.timeout(15000)
+            }
+        );
+
+        if (!webhookResponse.ok) {
+            throw new Error(
+                `Completion webhook returned HTTP ${webhookResponse.status}.`
+            );
+        }
+
+        completionWebhookSent = true;
+        lastWebhookError = null;
+
+        console.log(
+            'Outbound completion webhook delivered:',
+            sheetRowNumber,
+            `attempt ${attempt + 1}`
+        );
+        break;
+    } catch (error) {
+        lastWebhookError = error;
+        console.error(
+            'Outbound completion webhook attempt failed:',
+            sheetRowNumber,
+            `attempt ${attempt + 1}`,
+            error?.message || error
+        );
+    }
+}
+
+if (!completionWebhookSent) {
+    throw lastWebhookError || new Error(
+        'Completion webhook failed after all retry attempts.'
+    );
+}
+
+        console.log(
+            'Outbound completion webhook sent:',
+            sheetRowNumber,
+            outcome,
+            quality.score,
+            quality.flags
+        );
+    } catch (error) {
+        console.error(
+            'Outbound completion webhook failed:',
+            error
+        );
+    } finally {
+        completionWebhookSending = false;
+    }
+};    
 openAiWs.on('message', async (data) => {
 try {
 const response = JSON.parse(
     data.toString()
 );
+    if (
+    response.type ===
+    'conversation.item.input_audio_transcription.completed'
+) {
+    const customerTranscript = String(
+        response.transcript || ''
+    ).trim();
 
-                    if (
-                        LOG_EVENT_TYPES.includes(
-                            response.type
-                        )
-                    ) {
-                        console.log(
-                            `Received event: ${response.type}`,
-                            response
-                        );
-                    }
-console.log(
-    'OpenAI Event:',
-    response.type
-);
+    if (customerTranscript) {
+        completedCustomerTranscripts.push(customerTranscript);
+
+        console.log(
+            'Completed customer transcript:',
+            customerTranscript
+        );
+
+        if (soundsLikeVoicemailSystem(customerTranscript)) {
+            await takeOverVoicemailCall(customerTranscript);
+            return;
+        }
+    }
+}
+    
+if (
+    response.type ===
+        'response.output_audio_transcript.delta' &&
+    response.delta
+) {
+    lastAssistantTranscript += response.delta;
+}
+
+if (
+    response.type ===
+    'response.output_audio_transcript.done'
+) {
+const completedTranscript =
+    String(
+        response.transcript ||
+        lastAssistantTranscript ||
+        ''
+    ).trim();
+
+const lowerTranscript =
+    completedTranscript.toLowerCase();
+    console.log(
+        'Completed assistant transcript:',
+        completedTranscript
+    );
+if (completedTranscript) {
+    completedAssistantTranscripts.push(
+        completedTranscript
+    );
+}
+const voicemailPhrases = [
+    'reached your voicemail',
+    'reached a voicemail',
+    'leave you a message',
+    'leave a brief message',
+    'after the beep',
+    'this appears to be voicemail',
+    'this seems to be voicemail'
+];
+
+const voicemailClosingPhrases = [
+    'please call us back',
+    'give us a call back',
+    'reply to the text message',
+    'we look forward to speaking with you',
+    'have a wonderful day',
+    'have a great day',
+    'talk soon',
+    'talk to you soon',
+    'goodbye',
+    'bye for now'
+];
+
+const detectedVoicemail =
+    voicemailPhrases.some((phrase) =>
+lowerTranscript.includes(phrase)    ) ||
+    (
+        callMode.startsWith('OUTBOUND') &&
+        voicemailClosingPhrases.some((phrase) =>
+lowerTranscript.includes(phrase)        )
+    );
+
+
+
+    if (
+        detectedVoicemail &&
+        callMode.startsWith('OUTBOUND')
+    ) {
+        scheduleVoicemailHangup();
+    }
+
+    lastAssistantTranscript = '';
+}
+    
+                  if (
+    LOG_EVENT_TYPES.includes(
+        response.type
+    )
+) {
+    console.log(
+        `Received event: ${response.type}`
+    );
+}
+const noisyEvents = [
+    'response.output_audio.delta',
+    'response.output_audio_transcript.delta',
+    'input_audio_buffer.speech_started',
+    'input_audio_buffer.speech_stopped'
+];
+
+if (!noisyEvents.includes(response.type)) {
+    console.log(
+        'OpenAI Event:',
+        response.type
+    );
+}
 
 if (
     typeof response.type === 'string' &&
@@ -1503,18 +2647,32 @@ if (
     );
 }
     // Instantly stop Twilio audio when the customer interrupts
-                    if (
-                        response.type === 'input_audio_buffer.speech_started' &&
-                        connection.readyState === WebSocket.OPEN
-                    ) {
-                        connection.send(
-                            JSON.stringify({
-                                event: 'clear',
-                                streamSid: streamSid
-                            })
-                        );
-                        console.log('Customer interrupted - clearing Twilio audio buffer.');
-                    }
+                    if (response.type === 'input_audio_buffer.speech_started') {
+    stopHoldMusic();
+    customerSpokeBeforeGreeting = true;
+
+    if (outboundGreetingTimer) {
+        clearTimeout(outboundGreetingTimer);
+        outboundGreetingTimer = null;
+
+        console.log(
+            'Customer spoke before outbound greeting timer finished.'
+        );
+    }
+
+    if (connection.readyState === WebSocket.OPEN) {
+        connection.send(
+            JSON.stringify({
+                event: 'clear',
+                streamSid
+            })
+        );
+    }
+
+    console.log(
+        'Customer started speaking - cleared Twilio audio buffer.'
+    );
+}
 
                     // Send normal audio back to Twilio
                     if (
@@ -1533,159 +2691,80 @@ if (
                         );
                     }
                         
-    
-if (
-    response.type ===
-        'response.function_call_arguments.done' &&
-    response.name ===
-        'search_company_knowledge'
-) {
-    let toolArguments = {};
+const toolsThatMayTakeTime = new Set([
+    'search_company_knowledge',
+    'record_technician_status_update',
+    'lookup_octopus_billing',
+    'cancel_octopus_booking',
+    'reschedule_octopus_booking'
+]);
 
-    try {
-        toolArguments = JSON.parse(
-            response.arguments || '{}'
-        );
-    } catch (error) {
-        console.error(
-            'Could not parse knowledge tool arguments:',
-            error
-        );
-    }
-
-    let toolOutput;
-
-    try {
-        const knowledgeResults =
-            await searchCompanyKnowledge(
-                toolArguments.query
-            );
-
-        toolOutput = JSON.stringify({
-            query:
-                toolArguments.query || '',
-            results: knowledgeResults
-        });
-    } catch (error) {
-        console.error(
-            'Company knowledge search failed:',
-            error
-        );
-
-        toolOutput = JSON.stringify({
-            query:
-                toolArguments.query || '',
-            results: [],
-            error:
-                'The company knowledge search was temporarily unavailable.'
-        });
-    }
-
-    if (
-        openAiWs.readyState ===
-        WebSocket.OPEN
-    ) {
-        openAiWs.send(
-            JSON.stringify({
-                type:
-                    'conversation.item.create',
-                item: {
-                    type:
-                        'function_call_output',
-                    call_id:
-                        response.call_id,
-                    output:
-                        toolOutput
-                }
-            })
-        );
-
-        openAiWs.send(
-            JSON.stringify({
-                type: 'response.create'
-            })
-        );
-    }
-}
-    if (
+const shouldUseHoldMusic =
     response.type === 'response.function_call_arguments.done' &&
-    response.name === 'record_technician_status_update'
-) {
-    let toolArguments = {};
+    toolsThatMayTakeTime.has(response.name);
 
-    try {
-        toolArguments = JSON.parse(response.arguments || '{}');
-    } catch (error) {
-        console.error(
-            'Could not parse technician tool arguments:',
-            error
-        );
-    }
+if (shouldUseHoldMusic) startHoldMusic();
 
-    let toolOutput;
+try {
+    const knowledgeHandled =
+        await handleKnowledgeTool({
+            response,
+            openAiWs,
+            WebSocket
+        });
 
-    try {
-        const savedUpdate =
-            await recordTechnicianStatusUpdate({
-                bookingNumber:
-                    toolArguments.bookingNumber || '',
-                technicianName:
-                    toolArguments.technicianName || '',
-                status:
-                    toolArguments.status || '',
-                reportedTime:
-                    toolArguments.reportedTime || '',
-                notes:
-                    toolArguments.notes || '',
+    if (!knowledgeHandled) {
+        const technicianStatusHandled =
+            await handleTechnicianStatusTool({
+                response,
+                openAiWs,
+                WebSocket,
                 callerPhone
             });
 
-        toolOutput = JSON.stringify({
-            success: true,
-            updateId: savedUpdate.id,
-            createdAt: savedUpdate.created_at
-        });
-    } catch (error) {
-        console.error(
-            'Technician update failed:',
-            error
-        );
+        if (!technicianStatusHandled) {
+            const billingHandled =
+                await handleBillingLookupTool({
+                    response,
+                    openAiWs,
+                    WebSocket,
+                    callerPhone,
+                    customerBookings
+                });
 
-        toolOutput = JSON.stringify({
-            success: false,
-            error:
-                error.message ||
-                'Unable to save technician update.'
-        });
-    }
+            if (!billingHandled) {
+                const cancellationHandled =
+                    await handleCancelBookingTool({
+                        response,
+                        openAiWs,
+                        WebSocket,
+                        customerBookings
+                    });
 
-    if (openAiWs.readyState === WebSocket.OPEN) {
-        openAiWs.send(
-            JSON.stringify({
-                type: 'conversation.item.create',
-                item: {
-                    type: 'function_call_output',
-                    call_id: response.call_id,
-                    output: toolOutput
+                if (!cancellationHandled) {
+                    await handleRescheduleBookingTool({
+                        response,
+                        openAiWs,
+                        WebSocket,
+                        customerBookings
+                    });
                 }
-            })
-        );
-
-        openAiWs.send(
-            JSON.stringify({
-                type: 'response.create'
-            })
-        );
+            }
+        }
     }
+} finally {
+    if (shouldUseHoldMusic) stopHoldMusic();
 }
-                } catch (error) {
-                    console.error(
-                        'Error processing OpenAI message:',
-                        error
-                    );
-                }
-            });
 
+    
+} catch (error) {
+    console.error(
+        'Error processing OpenAI message:',
+        error
+    );
+}
+       });
+        
             openAiWs.on('error', (error) => {
                 console.error(
                     'OpenAI WebSocket error:',
@@ -1715,8 +2794,7 @@ if (
                                 data.start?.streamSid ||
                                 data.streamSid ||
                                 null;
-const callSid = data.start?.callSid || null;
-
+callSid = data.start?.callSid || null;
     if (callSid) {
         startCallRecording(callSid);
     }
@@ -1747,6 +2825,21 @@ customInstructions =
 
 sheetRowNumber =
     customParameters.sheetRowNumber || '';
+callPurpose = customParameters.callPurpose || '';
+outboundCustomerEmail = customParameters.customerEmail || '';
+outboundLeadSource = customParameters.leadSource || '';
+outboundServiceType = customParameters.serviceType || '';
+outboundRecurringFrequency = customParameters.recurringFrequency || '';
+outboundCustomerAddress = customParameters.customerAddress || '';
+outboundStreetNumber = customParameters.streetNumber || '';
+outboundStreet = customParameters.street || '';
+outboundCity = customParameters.city || '';
+outboundState = customParameters.state || '';
+outboundZip = customParameters.zip || '';
+outboundRequestedDate = customParameters.requestedDate || '';
+outboundRequestedStartTime = customParameters.requestedStartTime || '';
+outboundArrivalWindow = customParameters.arrivalWindow || '';
+outboundDurationMinutes = customParameters.durationMinutes || '';
 console.log(
     'Outbound customer name:',
     outboundCustomerName || 'not provided'
@@ -1790,19 +2883,19 @@ recentCalls =
         callerPhone
     );
 
-if (customer) {
-    customerBookings =
-        await findCustomerBookings(
-            customer.id
-        );
-    customerBookingCount =
-        await findCustomerBookingCount(
-            customer.id
-        );
-    console.log(
-        'Bookings found:',
-        customerBookings.length
+customerBookings =
+    await findCustomerBookings(
+        customer?.id || null,
+        callerPhone
     );
+customerBookingCount = customerBookings.length;
+
+console.log(
+    'Future bookings found:',
+    customerBookingCount
+);
+
+if (customer) {
 
 
                                     console.log(
@@ -1840,8 +2933,11 @@ if (customer) {
                                 );
 
                                 customer = null;
+                                customerBookings = [];
+                                customerBookingCount = 0;
                             }
 
+                            sessionContextReady = true;
                             initializeSession();
                             break;
                         }
@@ -1868,18 +2964,21 @@ if (customer) {
                             break;
                         }
 
-                        case 'stop': {
-                            console.log(
-                                'Twilio stream stopped.',
-                                'Stream SID:',
-                                data.streamSid ||
-                                    streamSid ||
-                                    'unknown'
-                            );
+                     case 'stop': {
+    console.log(
+        'Twilio stream stopped.',
+        'Stream SID:',
+        data.streamSid ||
+            streamSid ||
+            'unknown'
+    );
 
-                            break;
-                        }
+    await sendOutboundCompletion(
+        'completed'
+    );
 
+    break;
+}
                         default:
                             break;
                     }
@@ -1898,7 +2997,7 @@ if (customer) {
                 );
             });
 
-            connection.on('close', (code, reason) => {
+          connection.on('close', async (code, reason) => {
                 console.log(
                     'Twilio WebSocket closed.',
                     'Code:',
@@ -1906,7 +3005,9 @@ if (customer) {
                     'Reason:',
                     reason?.toString() || 'none'
                 );
-
+ await sendOutboundCompletion(
+        'completed'
+    );
                 if (
                     openAiWs.readyState ===
                         WebSocket.OPEN ||
@@ -1920,8 +3021,36 @@ if (customer) {
     );
 });
 
+fastify.get('/dev/test-technicians', async (request, reply) => {
+    try {
+        const results = await searchTechnicians({
+            city: request.query?.city || '',
+            state: request.query?.state || '',
+            areaCode: request.query?.areaCode || '',
+            hasSupplies: request.query?.hasSupplies || '',
+            willingToTravel: request.query?.willingToTravel || '',
+            weekends: request.query?.weekends || '',
+            limit: request.query?.limit || 10
+        });
+
+        return reply.send({
+            success: true,
+            count: results.length,
+            technicians: results
+        });
+    } catch (error) {
+        console.error('DEV technician search failed:', error);
+
+        return reply.code(500).send({
+            success: false,
+            error: error?.message || 'Technician search failed'
+        });
+    }
+});
+fastify.get('/dev/test-knowledge', testKnowledge);
 fastify.listen(
     {
+    
         port: PORT,
         host: '0.0.0.0'
     },
@@ -1936,3 +3065,4 @@ fastify.listen(
         );
     }
 );
+
