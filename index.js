@@ -3065,4 +3065,3 @@ fastify.listen(
         );
     }
 );
-
