@@ -5030,6 +5030,23 @@ async function runLisaBookingInBackground(requestId, body) {
     return;
   }
 
+  // WRITE-THROUGH FOR ASYNC CREATE PATH TOO.
+  // Lisa's voice booking flow uses asyncMode, so without this call the booking
+  // exists in Octopus but never gets seeded into booking_tracking.
+  try {
+    await writeThroughLisaCreatedBooking(body, {
+      ...result,
+      bookingId,
+      bookingNumber
+    });
+  } catch (error) {
+    // Do not falsely report the Octopus booking as failed if only the cache write failed.
+    console.error(
+      `LISA_POSTGRES_WRITE_THROUGH_FAILED ${bookingNumber}:`,
+      error?.message || error
+    );
+  }
+
   lisaBookingJobs.set(requestId, {
     ...result,
     requestId,
