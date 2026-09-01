@@ -79,6 +79,7 @@ async function login(page) {
 function criteria(payload) {
   return {
     bookingNumber: normalizeBok(payload.bookingNumber || payload.booking_number),
+    bookingId: Number(String(payload.bookingId || payload.octopusBookingId || payload.octopus_booking_id || '').replace(/\D/g,'')) || null,
     phone: normalizePhone(payload.phone || payload.customerPhone),
     email: clean(payload.email || payload.customerEmail).toLowerCase(),
     customerName: clean(payload.customerName).toLowerCase(),
@@ -162,21 +163,52 @@ async function enrich(page, m) {
   await page.goto(m.bookingUrl,{waitUntil:'domcontentloaded',timeout:60000}).catch(()=>{}); await page.waitForTimeout(1200);
   const body = await page.locator('body').innerText().catch(()=>m.rawText||'');
   const bookingNumber = body.match(/BOK-\d+/i)?.[0]?.toUpperCase() || m.bookingNumber;
-  const status = body.match(/\b(Upcoming|Completed|Cancelled|Canceled|Arrived|Started|En Route|On Hold|Running Late|Needs Cleaner)\b/i)?.[1] || null;
+  const status = body.match(/\b(To\s*Do|TODO|Upcoming|Completed|Finished|Cancelled|Canceled|Assigned|Arrived|Started|In Progress|En Route|On The Way|On Hold|Running Late|Needs Cleaner)\b/i)?.[1] || null;
   const date = parseDateFromText(body) || m.date || null;
   return {...m, bookingNumber, status, date, detailsText: body.trim().slice(0,6000)};
 }
 
 async function main() {
   const payload=parsePayload(), c=criteria(payload);
-  console.log('LISA_LOOKUP_DEBUG=' + JSON.stringify({bookingNumber:c.bookingNumber||null,phone:c.phone||null,customerName:c.customerName||null,requestedDate:c.requestedDate||null,scope:c.scope}));
+  console.log('LISA_LOOKUP_DEBUG=' + JSON.stringify({bookingNumber:c.bookingNumber||null,bookingId:c.bookingId||null,phone:c.phone||null,customerName:c.customerName||null,requestedDate:c.requestedDate||null,scope:c.scope}));
   const browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage']});
   try {
     const context=await browser.newContext({viewport:{width:1440,height:1000}}); const page=await context.newPage(); await login(page);
     const terms=[c.bookingNumber, digits(c.bookingNumber), c.phone, c.email, c.customerName].filter(Boolean);
     const urls=[`${BASE}/booking`,`${BASE}/bookings`,`${BASE}/booking/index`,NOTIFICATIONS_URL];
     let matches=[];
-    for (const url of urls) { matches=await searchUrl(page,url,c,terms).catch(()=>[]); if(matches.length) break; }
+
+    // FAST EXACT PATH: when watcher/Postgres supplies the numeric Octopus booking
+    // ID, open the booking directly. This avoids slow list-page crawling and makes
+    // a BOK Lisa just created readable immediately.
+    if (c.bookingId) {
+      const directUrl = `${BASE}/booking/view/${c.bookingId}`;
+      await page.goto(directUrl,{waitUntil:'domcontentloaded',timeout:60000}).catch(()=>{});
+      if (page.url().toLowerCase().includes('/login')) {
+        await login(page);
+        await page.goto(directUrl,{waitUntil:'domcontentloaded',timeout:60000}).catch(()=>{});
+      }
+      await page.waitForTimeout(900);
+      const bodyText = await page.locator('body').innerText().catch(()=> '');
+      const pageBok = bodyText.match(/BOK-\d+/i)?.[0]?.toUpperCase() || c.bookingNumber || null;
+      if (!c.bookingNumber || pageBok === c.bookingNumber) {
+        matches=[{
+          bookingId:c.bookingId,
+          bookingNumber:pageBok,
+          bookingUrl:directUrl,
+          date:parseDateFromText(bodyText),
+          rawText:bodyText.trim().slice(0,3000),
+          score:2000
+        }];
+      }
+    }
+
+    if (!matches.length) {
+      for (const url of urls) {
+        matches=await searchUrl(page,url,c,terms).catch(()=>[]);
+        if(matches.length) break;
+      }
+    }
     const unique=[...new Map(matches.map(x=>[x.bookingUrl,x])).values()].sort((a,b)=>b.score-a.score);
     const enriched=[];
     for(const m of unique.slice(0,c.limit)) { const e=await enrich(page,m); if(dateAllowed(e.date,c.scope,c.requestedDate)) enriched.push(e); }
