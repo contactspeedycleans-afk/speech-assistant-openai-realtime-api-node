@@ -616,6 +616,92 @@ async function updateBookingTracking(
 }
 
 
+async function writeThroughLisaCreatedBooking(body, result) {
+  const bookingNumber = String(
+    result?.bookingNumber || result?.booking_number || result?.bokNumber || ""
+  ).trim().toUpperCase();
+
+  const bookingId = Number(
+    String(
+      result?.bookingId || result?.booking_id || result?.octopusBookingId || result?.octopus_booking_id || ""
+    ).replace(/\D/g, "")
+  );
+
+  if (!/^BOK-\d+$/.test(bookingNumber) || !Number.isInteger(bookingId) || bookingId < 1) {
+    console.error("Lisa Postgres write-through skipped: missing verified booking number/id", {
+      bookingNumber,
+      bookingId: Number.isFinite(bookingId) ? bookingId : null
+    });
+    return false;
+  }
+
+  const phoneDigits = String(body.customerPhone || body.phone || "").replace(/\D/g, "");
+  const normalizedPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : (phoneDigits || null);
+  const requestedDate = String(body.requestedDate || "").trim();
+  const requestedStartTime = String(body.requestedStartTime || "").trim();
+  const bookingUrl = `https://admin.octopuspro.com/booking/view/${bookingId}`;
+
+  let bookingDate = null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+    const hhmm = /^([01]\d|2[0-3]):[0-5]\d$/.test(requestedStartTime)
+      ? requestedStartTime
+      : "09:00";
+    // PostgreSQL interprets this explicitly in America/Detroit below.
+    bookingDate = `${requestedDate} ${hhmm}:00`;
+  }
+
+  const trackingToken = `${bookingNumber}-lisa-create-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+  await pool.query(
+    `
+      INSERT INTO public.booking_tracking (
+        booking_number,
+        tracking_token,
+        status,
+        octopus_booking_id,
+        octopus_booking_url,
+        customer_phone_normalized,
+        customer_phones_normalized,
+        booking_date,
+        booking_details_synced_at,
+        octopus_updated_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        'DISCOVERED',
+        $3,
+        $4,
+        $5,
+        CASE WHEN $5::text IS NULL THEN NULL ELSE ARRAY[$5::text] END,
+        CASE
+          WHEN $6::text IS NULL THEN NULL
+          ELSE ($6::timestamp AT TIME ZONE 'America/Detroit')
+        END,
+        NULL,
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (booking_number)
+      DO UPDATE SET
+        octopus_booking_id = COALESCE(EXCLUDED.octopus_booking_id, public.booking_tracking.octopus_booking_id),
+        octopus_booking_url = COALESCE(EXCLUDED.octopus_booking_url, public.booking_tracking.octopus_booking_url),
+        customer_phone_normalized = COALESCE(EXCLUDED.customer_phone_normalized, public.booking_tracking.customer_phone_normalized),
+        customer_phones_normalized = COALESCE(EXCLUDED.customer_phones_normalized, public.booking_tracking.customer_phones_normalized),
+        booking_date = COALESCE(EXCLUDED.booking_date, public.booking_tracking.booking_date),
+        booking_details_synced_at = NULL,
+        octopus_updated_at = NOW(),
+        updated_at = NOW();
+    `,
+    [bookingNumber, trackingToken, bookingId, bookingUrl, normalizedPhone, bookingDate]
+  );
+
+  console.log(`LISA_POSTGRES_WRITE_THROUGH_OK ${bookingNumber} octopusId=${bookingId}`);
+  return true;
+}
+
+
 async function upsertDispatchState(
   notification
 ) {
@@ -5222,6 +5308,30 @@ if (req.url === "/lisa/booking-action") {
   if (action === "lookup") {
     let stdout = "";
     let stderr = "";
+    const lookupBody = { ...body };
+
+    // Exact BOK lookups should be fast and deterministic. If Postgres already knows
+    // the numeric Octopus ID, pass it to the live reader so it can open the booking
+    // page directly instead of crawling/searching Octopus.
+    const exactBok = String(body.bookingNumber || body.booking_number || "").trim().toUpperCase();
+    if (/^BOK-\d+$/.test(exactBok) && !lookupBody.bookingId && !lookupBody.octopusBookingId) {
+      try {
+        const cached = await pool.query(
+          `SELECT booking_number, octopus_booking_id, octopus_booking_url
+             FROM public.booking_tracking
+            WHERE booking_number = $1
+            LIMIT 1`,
+          [exactBok]
+        );
+        if (cached.rows?.[0]?.octopus_booking_id) {
+          lookupBody.bookingId = cached.rows[0].octopus_booking_id;
+          lookupBody.octopusBookingId = cached.rows[0].octopus_booking_id;
+          console.log(`Lisa exact BOK pre-resolved from Postgres: ${exactBok} -> ${cached.rows[0].octopus_booking_id}`);
+        }
+      } catch (error) {
+        console.error("Lisa exact BOK Postgres pre-resolution failed:", error?.message || error);
+      }
+    }
 
     try {
       const childResult = await execFileAsync(
@@ -5231,9 +5341,9 @@ if (req.url === "/lisa/booking-action") {
           cwd: process.cwd(),
           env: {
             ...process.env,
-            LISA_LOOKUP_PAYLOAD: JSON.stringify(body)
+            LISA_LOOKUP_PAYLOAD: JSON.stringify(lookupBody)
           },
-          timeout: 20000,
+          timeout: 45000,
           maxBuffer: 10 * 1024 * 1024
         }
       );
@@ -5321,11 +5431,215 @@ if (req.url === "/lisa/booking-action") {
     return;
   }
 
+  if (action === "cancel" || action === "reschedule") {
+    if (body.customerConfirmed !== true) {
+      sendJson(200, {
+        success: false,
+        outcome: "confirmation_required",
+        error: action === "cancel"
+          ? "The customer must explicitly confirm cancellation before Octopus is changed."
+          : "The customer must explicitly confirm the new date and time before Octopus is changed."
+      });
+      return;
+    }
+
+    const scope = String(
+      body.cancellationScope || body.rescheduleScope || body.scope || "single_visit"
+    ).trim().toLowerCase();
+
+    if (scope !== "single_visit") {
+      sendJson(200, {
+        success: false,
+        outcome: "staff_review_required",
+        error: "Only one specific visit can be changed automatically. Recurring-series changes require staff review."
+      });
+      return;
+    }
+
+    if (action === "reschedule") {
+      const requestedDate = String(body.requestedDate || body.date || "").trim();
+      const requestedStartTime = String(body.requestedStartTime || body.time || "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+        sendJson(200, {
+          success: false,
+          outcome: "invalid_requested_date",
+          error: "A verified new date in YYYY-MM-DD format is required."
+        });
+        return;
+      }
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(requestedStartTime)) {
+        sendJson(200, {
+          success: false,
+          outcome: "invalid_requested_time",
+          error: "A verified new start time in 24-hour HH:MM format is required."
+        });
+        return;
+      }
+    }
+
+    let internalBookingId = Number(
+      String(body.bookingId || body.octopusBookingId || body.octopus_booking_id || "")
+        .replace(/\D/g, "")
+    );
+
+    const suppliedBookingNumber = String(
+      body.bookingNumber || body.booking_number || ""
+    ).trim().toUpperCase();
+
+    // If Lisa supplied a visible BOK rather than the numeric Octopus ID, resolve it
+    // live from Octopus first. This works for bookings created seconds ago and does
+    // not depend on Postgres sync being caught up.
+    if (!Number.isInteger(internalBookingId) || internalBookingId < 100000) {
+      if (!/^BOK-\d+$/i.test(suppliedBookingNumber)) {
+        sendJson(200, {
+          success: false,
+          outcome: "invalid_booking_id",
+          error: "A valid BOK number or Octopus booking ID is required."
+        });
+        return;
+      }
+
+      try {
+        const lookupPayload = {
+          action: "lookup",
+          bookingNumber: suppliedBookingNumber,
+          scope: "all",
+          limit: 1
+        };
+        const lookupRun = await execFileAsync(
+          process.execPath,
+          ["playwright/octopus-live-lookup.js"],
+          {
+            cwd: process.cwd(),
+            env: {
+              ...process.env,
+              LISA_LOOKUP_PAYLOAD: JSON.stringify(lookupPayload)
+            },
+            timeout: 25000,
+            maxBuffer: 10 * 1024 * 1024
+          }
+        );
+
+        const lookupMarker = String(lookupRun.stdout || "")
+          .split(/\r?\n/)
+          .find(line => line.startsWith("LISA_LOOKUP_RESULT="));
+
+        if (lookupMarker) {
+          const lookupResult = JSON.parse(
+            lookupMarker.substring("LISA_LOOKUP_RESULT=".length)
+          );
+          const liveBooking = lookupResult.booking || (lookupResult.bookings || [])[0] || {};
+          internalBookingId = Number(
+            String(liveBooking.bookingId || liveBooking.booking_id || "")
+              .replace(/\D/g, "")
+          );
+        }
+      } catch (error) {
+        console.error("Lisa change-action live BOK resolution failed:", error?.message || error);
+      }
+    }
+
+    if (!Number.isInteger(internalBookingId) || internalBookingId < 100000) {
+      sendJson(200, {
+        success: false,
+        outcome: "booking_not_found",
+        error: "The booking could not be verified live in Octopus, so no change was made."
+      });
+      return;
+    }
+
+    const commandArgs = action === "cancel"
+      ? [
+          "playwright/octopus-booking-actions.js",
+          "cancel",
+          String(internalBookingId),
+          String(body.cancellationReason || "Customer requested cancellation")
+        ]
+      : [
+          "playwright/octopus-booking-actions.js",
+          "reschedule",
+          String(internalBookingId),
+          String(body.requestedDate),
+          String(body.requestedStartTime)
+        ];
+
+    let stdout = "";
+    let stderr = "";
+    try {
+      const childResult = await execFileAsync(
+        process.execPath,
+        commandArgs,
+        {
+          cwd: process.cwd(),
+          env: process.env,
+          timeout: action === "cancel" ? 165000 : 195000,
+          maxBuffer: 10 * 1024 * 1024
+        }
+      );
+      stdout = String(childResult.stdout || "");
+      stderr = String(childResult.stderr || "");
+    } catch (error) {
+      stdout = String(error?.stdout || "");
+      stderr = String(error?.stderr || "");
+      console.error(`Lisa ${action} action failed:`, error?.message || error);
+    }
+
+    if (stderr.trim()) {
+      console.log(`Lisa ${action} stderr:`, stderr.slice(-8000));
+    }
+
+    const resultMatch = stdout.match(
+      /===== BOOKING ACTION RESULT =====\s*([\s\S]*?)\s*===== END BOOKING ACTION RESULT =====/
+    );
+
+    if (!resultMatch) {
+      sendJson(200, {
+        success: false,
+        outcome: "automation_error",
+        error: `Octopus ${action} automation did not return a verified result. No success should be claimed.`
+      });
+      return;
+    }
+
+    let actionResult;
+    try {
+      actionResult = JSON.parse(resultMatch[1]);
+    } catch (error) {
+      sendJson(200, {
+        success: false,
+        outcome: "invalid_action_result",
+        error: `Octopus ${action} returned an unreadable verification result.`
+      });
+      return;
+    }
+
+    const verified = action === "cancel"
+      ? actionResult.ok === true && actionResult.verified_cancelled_in_octopus === true
+      : actionResult.ok === true && actionResult.verified_rescheduled_in_octopus === true;
+
+    sendJson(200, {
+      ...actionResult,
+      success: verified,
+      action,
+      bookingId: internalBookingId,
+      bookingNumber: suppliedBookingNumber || null,
+      customerConfirmed: true,
+      verified_cancelled_in_octopus:
+        action === "cancel" ? actionResult.verified_cancelled_in_octopus === true : undefined,
+      verified_rescheduled_in_octopus:
+        action === "reschedule" ? actionResult.verified_rescheduled_in_octopus === true : undefined,
+      error: verified
+        ? undefined
+        : (actionResult.error || `Octopus did not verify the ${action}; no success should be claimed.`)
+    });
+    return;
+  }
+
   if (action !== "create") {
     sendJson(400, {
       success: false,
       outcome: "unsupported_action",
-      error: "Supported actions on this endpoint are lookup and create."
+      error: "Supported actions on this endpoint are lookup, create, cancel, and reschedule."
     });
     return;
   }
@@ -5559,6 +5873,17 @@ if (body.asyncMode === true) {
       error: result.error || "OctopusPro did not return both a verified booking ID and BOK number."
     });
     return;
+  }
+
+  // WRITE-THROUGH: do not wait for notification/dispatch discovery. The moment
+  // Octopus verifies creation, seed booking_tracking so Customer 360 and the
+  // booking-sync service can see/enrich the new booking immediately.
+  try {
+    await writeThroughLisaCreatedBooking(body, { ...result, bookingId, bookingNumber });
+  } catch (error) {
+    // Octopus creation is still real even if the cache write fails. Log loudly so
+    // it can be repaired; never misreport the Octopus booking as uncreated.
+    console.error(`LISA_POSTGRES_WRITE_THROUGH_FAILED ${bookingNumber}:`, error?.message || error);
   }
 
   const successWebhookUrl = String(
