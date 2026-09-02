@@ -1764,6 +1764,292 @@ async function markBookingNeedsCleanerFromOctopus({
 }
 
 
+// ============================================================
+// ADDITIVE PATCH: RECURRING / EXISTING ASSIGNMENT RECONCILIATION
+// This does not replace live notification handling. It only fills the gap
+// when an upcoming booking already has a cleaner assigned in Octopus and
+// no fresh acceptance notification exists (common with recurring bookings).
+// ============================================================
+
+async function markBookingAssignedFromOctopus({
+  bookingNumber,
+  octopusBookingId,
+  octopusBookingUrl,
+  cleanerName
+}) {
+  const verifiedCleanerName = String(cleanerName || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!bookingNumber || !verifiedCleanerName) {
+    return;
+  }
+
+  await pool.query(
+    `
+      INSERT INTO public.booking_dispatch_state (
+        booking_number,
+        assignment_status,
+        current_cleaner,
+        job_request_status,
+        last_event_type,
+        last_notification_text,
+        last_assignment_change_at,
+        octopus_booking_id,
+        octopus_booking_url,
+        updated_at
+      )
+      VALUES (
+        $1,
+        'ASSIGNED',
+        $2,
+        'ACCEPTED',
+        'OCTOPUS_ASSIGNMENT_RECONCILED',
+        $3,
+        NOW(),
+        $4,
+        $5,
+        NOW()
+      )
+
+      ON CONFLICT (booking_number)
+
+      DO UPDATE SET
+        assignment_status = 'ASSIGNED',
+        current_cleaner = EXCLUDED.current_cleaner,
+        job_request_status = 'ACCEPTED',
+        last_event_type = 'OCTOPUS_ASSIGNMENT_RECONCILED',
+        last_notification_text = EXCLUDED.last_notification_text,
+
+        last_assignment_change_at =
+          CASE
+            WHEN public.booking_dispatch_state.assignment_status
+              IS DISTINCT FROM 'ASSIGNED'
+              OR COALESCE(
+                public.booking_dispatch_state.current_cleaner,
+                ''
+              ) IS DISTINCT FROM COALESCE(
+                EXCLUDED.current_cleaner,
+                ''
+              )
+            THEN NOW()
+            ELSE public.booking_dispatch_state.last_assignment_change_at
+          END,
+
+        octopus_booking_id =
+          COALESCE(
+            EXCLUDED.octopus_booking_id,
+            public.booking_dispatch_state.octopus_booking_id
+          ),
+
+        octopus_booking_url =
+          COALESCE(
+            EXCLUDED.octopus_booking_url,
+            public.booking_dispatch_state.octopus_booking_url
+          ),
+
+        updated_at = NOW();
+    `,
+    [
+      bookingNumber,
+      verifiedCleanerName,
+      `Verified on Octopus booking page as assigned to ${verifiedCleanerName}`,
+      octopusBookingId,
+      octopusBookingUrl
+    ]
+  );
+
+  await sendAssignmentToMake({
+    bookingNumber,
+    cleanerName: verifiedCleanerName,
+    assignmentAction: "ASSIGNED",
+    notificationText:
+      `Verified existing/recurring assignment on Octopus booking page: ${verifiedCleanerName}`
+  });
+
+  console.log(
+    `ASSIGNMENT RECONCILIATION: ${bookingNumber} -> ASSIGNED -> ${verifiedCleanerName}`
+  );
+}
+
+
+async function inspectAssignedCleanerOnCurrentBookingPage(page) {
+  const result = await page.evaluate(() => {
+    const clean = (value) =>
+      String(value || "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) {
+        return false;
+      }
+
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity || "1") !== 0
+      );
+    };
+
+    const isBlockedText = (value) => {
+      const text = clean(value).toLowerCase();
+
+      if (!text) {
+        return true;
+      }
+
+      return (
+        text.includes("unassigned fieldworker") ||
+        text.includes("unassigned fieldworkers") ||
+        text.includes("unassigned tasks manager") ||
+        text === "fieldworker" ||
+        text === "fieldworkers" ||
+        text === "assigned fieldworker" ||
+        text === "assigned fieldworkers" ||
+        text === "assigned to" ||
+        text === "available fieldworkers" ||
+        text === "send job request" ||
+        text === "add" ||
+        text === "edit" ||
+        text === "remove" ||
+        text === "change" ||
+        text === "assign" ||
+        text === "manage" ||
+        text === "view"
+      );
+    };
+
+    const looksLikePersonName = (value) => {
+      const text = clean(value);
+
+      if (
+        !text ||
+        text.length < 2 ||
+        text.length > 80 ||
+        isBlockedText(text)
+      ) {
+        return false;
+      }
+
+      // Conservative: names only. Avoid addresses, dates, buttons, and status copy.
+      if (!/^[A-Za-z][A-Za-z .'-]+$/.test(text)) {
+        return false;
+      }
+
+      const words = text.split(/\s+/).filter(Boolean);
+      return words.length >= 1 && words.length <= 5;
+    };
+
+    const all = Array.from(
+      document.querySelectorAll("body *")
+    );
+
+    const labels = all.filter((element) => {
+      if (!visible(element)) {
+        return false;
+      }
+
+      const text = clean(
+        element.innerText || element.textContent
+      ).toLowerCase();
+
+      return (
+        text === "assigned fieldworker" ||
+        text === "assigned fieldworkers" ||
+        text === "assigned to" ||
+        text === "fieldworker" ||
+        text === "fieldworkers"
+      );
+    });
+
+    for (const label of labels) {
+      let container = label.parentElement;
+      let levels = 0;
+
+      while (container && levels < 5) {
+        const context = clean(
+          container.innerText || container.textContent
+        );
+
+        // Never use the available-worker/job-request panel as assignment truth.
+        if (
+          context &&
+          context.length <= 1200 &&
+          !/available\s+fieldworkers|send\s+job\s+request/i.test(context)
+        ) {
+          // Prefer explicit profile/user links near the assignment label.
+          const linkedCandidates = Array.from(
+            container.querySelectorAll("a")
+          )
+            .filter(visible)
+            .map((element) => clean(
+              element.innerText || element.textContent
+            ))
+            .filter(looksLikePersonName);
+
+          if (linkedCandidates.length === 1) {
+            return {
+              cleanerName: linkedCandidates[0],
+              evidence: context.slice(0, 900),
+              source: "assignment_profile_link"
+            };
+          }
+
+          // Fallback: inspect short visible text nodes in the same assignment box.
+          const textCandidates = Array.from(
+            container.querySelectorAll("a, span, div, strong, b, p")
+          )
+            .filter(visible)
+            .map((element) => clean(
+              element.innerText || element.textContent
+            ))
+            .filter(looksLikePersonName)
+            .filter((value, index, array) =>
+              array.indexOf(value) === index
+            );
+
+          if (textCandidates.length === 1) {
+            return {
+              cleanerName: textCandidates[0],
+              evidence: context.slice(0, 900),
+              source: "assignment_box_text"
+            };
+          }
+        }
+
+        container = container.parentElement;
+        levels += 1;
+      }
+    }
+
+    return {
+      cleanerName: null,
+      evidence: "",
+      source: "not_verified"
+    };
+  }).catch(() => ({
+    cleanerName: null,
+    evidence: "",
+    source: "inspection_error"
+  }));
+
+  return {
+    cleanerName:
+      result.cleanerName || null,
+    evidence:
+      result.evidence || "",
+    source:
+      result.source || "not_verified"
+  };
+}
+
+
 async function inspectBookingAssignment(
   page,
   bookingUrl
@@ -2086,6 +2372,30 @@ async function sweepOctopusUnassignedBookings(
         continue;
       }
 
+
+      // ADDITIVE PATCH: if the existing unassigned detector did not verify an
+      // unassigned profile, check the same Octopus booking page for a real,
+      // currently assigned cleaner. This fills recurring assignments that may
+      // have been accepted months ago and therefore produce no fresh notification.
+      if (!assignmentCheck.isUnassigned) {
+        const assignedCheck =
+          await inspectAssignedCleanerOnCurrentBookingPage(
+            page
+          );
+
+        if (assignedCheck.cleanerName) {
+          await markBookingAssignedFromOctopus({
+            bookingNumber,
+            octopusBookingId,
+            octopusBookingUrl: bookingUrl,
+            cleanerName:
+              assignedCheck.cleanerName
+          });
+
+          continue;
+        }
+      }
+
       if (
         !assignmentCheck.isUnassigned
       ) {
@@ -2102,6 +2412,21 @@ async function sweepOctopusUnassignedBookings(
         profileName:
           assignmentCheck.profileName
       });
+
+      // ADDITIVE PATCH: stamp NEEDS CLEANER into the same assignment Make flow
+      // so the CRM cell is updated and the existing NEEDS CLEANER operation can
+      // pick it up without a person manually touching the sheet.
+      await sendAssignmentToMake({
+        bookingNumber,
+        cleanerName: "",
+        assignmentAction: "NEEDS CLEANER",
+        notificationText:
+          `Verified on Octopus booking page as ${assignmentCheck.profileName || "Unassigned Fieldworkers"}`
+      });
+
+      console.log(
+        `ASSIGNMENT RECONCILIATION: ${bookingNumber} -> NEEDS CLEANER`
+      );
 
       verifiedUnassigned += 1;
 
