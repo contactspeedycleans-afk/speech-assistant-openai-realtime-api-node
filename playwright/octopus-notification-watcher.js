@@ -4877,6 +4877,70 @@ async function upsertNeedsCleanerFromHttp({
 
 const lisaBookingJobs = new Map();
 
+// Lisa booking browser jobs are intentionally serialized. Each Playwright create
+// launches Chromium and can consume multiple OS threads. Railway is a 1-replica
+// service, so overlapping create jobs can trigger uv_thread_create failures and
+// make a customer wait through several failed attempts.
+let lisaBookingQueue = Promise.resolve();
+let lisaBookingActiveCount = 0;
+let lisaBookingQueuedCount = 0;
+
+function normalizeLisaBookingFingerprintPart(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function lisaBookingFingerprint(body = {}) {
+  const phone = String(body.customerPhone || body.phone || "").replace(/\D/g, "");
+  const address = normalizeLisaBookingFingerprintPart(
+    body.serviceAddress || body.address ||
+    [body.streetNumber, body.street || body.streetAddress, body.city || body.suburb, body.state, body.zip || body.postcode]
+      .filter(Boolean)
+      .join(" ")
+  );
+  return [
+    phone,
+    normalizeLisaBookingFingerprintPart(body.customerEmail || body.email),
+    address,
+    normalizeLisaBookingFingerprintPart(body.requestedDate),
+    normalizeLisaBookingFingerprintPart(body.requestedStartTime),
+    normalizeLisaBookingFingerprintPart(body.serviceType || body.serviceName),
+    normalizeLisaBookingFingerprintPart(body.recurringFrequency || body.frequency)
+  ].join("|");
+}
+
+function findActiveLisaBookingByFingerprint(fingerprint) {
+  if (!fingerprint) return null;
+  for (const job of lisaBookingJobs.values()) {
+    if (job.fingerprint !== fingerprint) continue;
+    if (job.status === "queued" || job.status === "processing") return job;
+  }
+  return null;
+}
+
+function scheduleLisaBookingJob(requestId, body) {
+  lisaBookingQueuedCount += 1;
+  const run = async () => {
+    lisaBookingQueuedCount = Math.max(0, lisaBookingQueuedCount - 1);
+    lisaBookingActiveCount += 1;
+    try {
+      await runLisaBookingInBackground(requestId, body);
+    } finally {
+      lisaBookingActiveCount = Math.max(0, lisaBookingActiveCount - 1);
+    }
+  };
+
+  lisaBookingQueue = lisaBookingQueue
+    .then(run, run)
+    .catch(error => {
+      console.error("Lisa serialized booking queue error:", requestId, error?.message || error);
+    });
+
+  return lisaBookingQueue;
+}
+
 function createLisaBookingRequestId() {
   return `lisa-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -5698,6 +5762,30 @@ if (req.url === "/lisa/booking-action") {
 // ============================================================
 
 if (body.asyncMode === true) {
+  const fingerprint = lisaBookingFingerprint(body);
+  const existingActiveJob = findActiveLisaBookingByFingerprint(fingerprint);
+
+  if (existingActiveJob) {
+    console.log(
+      "Lisa async booking duplicate suppressed:",
+      existingActiveJob.requestId,
+      body.customerName || null,
+      body.requestedDate || null,
+      body.requestedStartTime || null
+    );
+
+    sendJson(202, {
+      accepted: true,
+      success: false,
+      verified_created_in_octopus: false,
+      outcome: "processing",
+      status: existingActiveJob.status,
+      requestId: existingActiveJob.requestId,
+      alreadyProcessing: true
+    });
+    return;
+  }
+
   const requestId =
     createLisaBookingRequestId();
 
@@ -5713,6 +5801,7 @@ if (body.asyncMode === true) {
       body.requestedDate || null,
     requestedStartTime:
       body.requestedStartTime || null,
+    fingerprint,
     createdAt: Date.now(),
     updatedAt: Date.now()
   });
@@ -5723,9 +5812,10 @@ if (body.asyncMode === true) {
     body.customerName
   );
 
-  // Intentionally do NOT await this.
-  // The HTTP request returns immediately while Playwright continues.
-  runLisaBookingInBackground(
+  // Intentionally do NOT await this. The HTTP request returns immediately.
+  // The job itself is queued behind any currently running Lisa booking so a
+  // second model/tool call cannot launch another Chromium process concurrently.
+  scheduleLisaBookingJob(
     requestId,
     { ...body }
   ).catch(error => {
@@ -6160,8 +6250,37 @@ async function main() {
   let dispatchCheckRunning =
     false;
 
+  // PATCH 2026-09-01: protect technician-status polling from a failing
+  // automatic-dispatch page. This is additive only; existing dispatch,
+  // booking, lookup, Make, and notification logic remains unchanged.
+  let dispatchCooldownUntil = 0;
+  const DISPATCH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
+
   const runDispatchCheck =
     async () => {
+      if (notificationCheckRunning) {
+        console.log(
+          "Notification check has priority; skipping dispatch cycle."
+        );
+        return;
+      }
+
+      if (Date.now() < dispatchCooldownUntil) {
+        console.log(
+          `Dispatch cooldown active after Octopus navigation failure; skipping dispatch cycle until ${new Date(dispatchCooldownUntil).toISOString()}.`
+        );
+        return;
+      }
+
+      if (
+        lisaBookingActiveCount > 0 || lisaBookingQueuedCount > 0
+      ) {
+        console.log(
+          `Lisa booking has priority; skipping dispatch cycle. active=${lisaBookingActiveCount} queued=${lisaBookingQueuedCount}`
+        );
+        return;
+      }
+
       if (
         dispatchCheckRunning
       ) {
@@ -6180,8 +6299,9 @@ async function main() {
           dispatchPage
         );
       } catch (error) {
+        dispatchCooldownUntil = Date.now() + DISPATCH_FAILURE_COOLDOWN_MS;
         console.error(
-          "Automatic dispatch check failed:",
+          "Automatic dispatch check failed; dispatch paused for 5 minutes so notification tracking stays responsive:",
           error
         );
       } finally {
