@@ -2222,6 +2222,343 @@ async function inspectBookingAssignmentInNewPage(
 }
 
 
+// ============================================================
+// ADDITIVE PATCH: LIVE OCTOPUS UPCOMING-BOOKING DISCOVERY
+//
+// Why this exists:
+// The existing reconciliation sweep gets candidates from Postgres. Older
+// recurring bookings may already be assigned in Octopus but have no recent
+// notification and therefore no row yet in jobs/booking_tracking. This helper
+// discovers those bookings directly from Octopus's Upcoming Bookings screen
+// and ADDS them to the existing in-memory candidate array. It does not replace
+// or remove any existing Postgres, notification, dispatch, or reconciliation
+// behavior.
+// ============================================================
+
+async function discoverUpcomingBookingsDirectlyFromOctopus(page) {
+  const discoveryPage = await page.context().newPage();
+  const discoveredByBookingNumber = new Map();
+
+  const clean = (value) =>
+    String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  try {
+    discoveryPage.setDefaultTimeout(30000);
+    discoveryPage.setDefaultNavigationTimeout(60000);
+
+    // Reuse the already-authenticated browser context, but verify the session
+    // on this dedicated discovery tab so the normal watcher tab is untouched.
+    await ensureLoggedIn(discoveryPage);
+
+    const findNavigationHref = async (pattern) => {
+      return await discoveryPage.evaluate((patternSource) => {
+        const regex = new RegExp(patternSource, "i");
+        const links = Array.from(document.querySelectorAll("a[href]"));
+
+        for (const link of links) {
+          const text = String(
+            link.innerText ||
+            link.textContent ||
+            link.getAttribute("aria-label") ||
+            ""
+          )
+            .replace(/\s+/g, " ")
+            .trim();
+
+          const href = String(link.getAttribute("href") || "").trim();
+
+          if (href && regex.test(text)) {
+            try {
+              return new URL(href, window.location.origin).toString();
+            } catch {
+              return null;
+            }
+          }
+        }
+
+        return null;
+      }, pattern.source).catch(() => null);
+    };
+
+    // First try a visible/direct Upcoming Bookings navigation link from the
+    // current admin shell. If Octopus only exposes "Bookings" first, open that
+    // menu/page and then resolve the Upcoming link from there.
+    let upcomingHref =
+      await findNavigationHref("^\\s*Upcoming(?:\\s+Bookings)?\\s*$");
+
+    if (!upcomingHref) {
+      const bookingsHref =
+        await findNavigationHref("^\\s*(?:All\\s+)?Bookings\\s*$");
+
+      if (bookingsHref) {
+        await discoveryPage.goto(bookingsHref, {
+          waitUntil: "domcontentloaded",
+          timeout: 60000
+        });
+
+        await discoveryPage.waitForTimeout(1800);
+
+        upcomingHref =
+          await findNavigationHref("^\\s*Upcoming(?:\\s+Bookings)?\\s*$");
+      }
+    }
+
+    // Some Octopus builds use a menu control rather than an anchor for
+    // "Bookings". Clicking it is safe because this is a dedicated tab.
+    if (!upcomingHref) {
+      const bookingsControl = discoveryPage
+        .getByText(/^\s*Bookings\s*$/i, { exact: true })
+        .first();
+
+      if (
+        await bookingsControl
+          .isVisible()
+          .catch(() => false)
+      ) {
+        await bookingsControl.click().catch(() => {});
+        await discoveryPage.waitForTimeout(900);
+
+        upcomingHref =
+          await findNavigationHref("^\\s*Upcoming(?:\\s+Bookings)?\\s*$");
+      }
+    }
+
+    if (!upcomingHref) {
+      console.log(
+        "ASSIGNMENT DISCOVERY: Could not locate Octopus Upcoming Bookings navigation. Existing Postgres reconciliation will continue unchanged."
+      );
+
+      return [];
+    }
+
+    await discoveryPage.goto(upcomingHref, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    });
+
+    await discoveryPage.waitForTimeout(2200);
+
+    const upcomingPageText = clean(
+      await discoveryPage
+        .locator("body")
+        .innerText()
+        .catch(() => "")
+    );
+
+    console.log(
+      `ASSIGNMENT DISCOVERY: Opened Octopus Upcoming Bookings page: ${discoveryPage.url()}`
+    );
+
+    // Fail closed. Never scrape a generic/past booking screen as "upcoming".
+    if (!/upcoming/i.test(upcomingPageText)) {
+      console.log(
+        "ASSIGNMENT DISCOVERY: Page did not verify itself as Upcoming; no live candidates were added."
+      );
+
+      return [];
+    }
+
+    const collectCurrentPage = async () => {
+      const rows = await discoveryPage.evaluate(() => {
+        const results = [];
+        const links = Array.from(
+          document.querySelectorAll('a[href*="/booking/view/"]')
+        );
+
+        const compact = (value) =>
+          String(value || "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        for (const link of links) {
+          const href = String(link.getAttribute("href") || "");
+          const idMatch = href.match(/\/booking\/view\/(\d+)/i);
+
+          if (!idMatch) {
+            continue;
+          }
+
+          let context = compact(
+            link.innerText || link.textContent || ""
+          );
+
+          let node = link;
+          let levels = 0;
+
+          while (node && levels < 7 && !/BOK-\d+/i.test(context)) {
+            node = node.parentElement;
+
+            if (!node) {
+              break;
+            }
+
+            const parentText = compact(
+              node.innerText || node.textContent || ""
+            );
+
+            if (parentText && parentText.length <= 2500) {
+              context = `${context} ${parentText}`.trim();
+            }
+
+            levels += 1;
+          }
+
+          const bookingMatch = context.match(/BOK-\d+/i);
+
+          if (!bookingMatch) {
+            continue;
+          }
+
+          results.push({
+            booking_number: bookingMatch[0].toUpperCase(),
+            octopus_booking_id: Number(idMatch[1]),
+            octopus_booking_url: new URL(
+              href,
+              window.location.origin
+            ).toString()
+          });
+        }
+
+        return results;
+      }).catch(() => []);
+
+      for (const row of rows) {
+        const bookingNumber = clean(row.booking_number).toUpperCase();
+        const octopusBookingId = Number(row.octopus_booking_id);
+
+        if (
+          !/^BOK-\d+$/.test(bookingNumber) ||
+          !Number.isInteger(octopusBookingId) ||
+          octopusBookingId <= 0
+        ) {
+          continue;
+        }
+
+        if (!discoveredByBookingNumber.has(bookingNumber)) {
+          discoveredByBookingNumber.set(bookingNumber, {
+            booking_number: bookingNumber,
+            octopus_booking_id: octopusBookingId,
+            booking_date: null,
+            assignment_status: null,
+            current_cleaner: null,
+            dispatch_updated_at: null,
+            discovery_source: "OCTOPUS_UPCOMING_PAGE"
+          });
+        }
+      }
+    };
+
+    // Collect the current Upcoming page first.
+    await collectCurrentPage();
+
+    // Octopus installations differ between pagination and "Load More". Support
+    // both conservatively. We cap the scan so this never becomes an unbounded
+    // browser crawl.
+    for (let step = 0; step < 9; step += 1) {
+      if (discoveredByBookingNumber.size >= 250) {
+        break;
+      }
+
+      let advanced = false;
+
+      const loadMore = discoveryPage
+        .getByText(/^\s*Load More\s*$/i, { exact: true })
+        .first();
+
+      if (
+        await loadMore
+          .isVisible()
+          .catch(() => false)
+      ) {
+        const beforeCount = discoveredByBookingNumber.size;
+
+        await loadMore
+          .scrollIntoViewIfNeeded()
+          .catch(() => {});
+
+        await loadMore.click().catch(() => {});
+        await discoveryPage.waitForTimeout(1200);
+        await collectCurrentPage();
+
+        advanced = discoveredByBookingNumber.size > beforeCount;
+      }
+
+      if (advanced) {
+        continue;
+      }
+
+      const nextCandidates = [
+        discoveryPage.getByRole("link", { name: /^\s*Next\s*$/i }).first(),
+        discoveryPage.getByRole("button", { name: /^\s*Next\s*$/i }).first(),
+        discoveryPage.locator('a[rel="next"]').first(),
+        discoveryPage.locator('.pagination a').filter({ hasText: /^\s*(?:›|»|>)\s*$/ }).first()
+      ];
+
+      let nextControl = null;
+
+      for (const candidate of nextCandidates) {
+        const visible = await candidate
+          .isVisible()
+          .catch(() => false);
+
+        const enabled = visible
+          ? await candidate.isEnabled().catch(() => true)
+          : false;
+
+        if (visible && enabled) {
+          nextControl = candidate;
+          break;
+        }
+      }
+
+      if (!nextControl) {
+        break;
+      }
+
+      const oldUrl = discoveryPage.url();
+
+      await nextControl
+        .scrollIntoViewIfNeeded()
+        .catch(() => {});
+
+      await nextControl.click().catch(() => {});
+      await discoveryPage.waitForTimeout(1400);
+
+      // Whether Octopus paginates with a URL change or AJAX, simply collect
+      // again and stop naturally if no next control remains.
+      await collectCurrentPage();
+
+      console.log(
+        `ASSIGNMENT DISCOVERY: Advanced Upcoming Bookings page from ${oldUrl} to ${discoveryPage.url()}.`
+      );
+    }
+
+    const discovered = Array.from(
+      discoveredByBookingNumber.values()
+    );
+
+    console.log(
+      `ASSIGNMENT DISCOVERY: Found ${discovered.length} upcoming Octopus booking(s) directly from the admin Upcoming Bookings screen.`
+    );
+
+    return discovered;
+  } catch (error) {
+    console.error(
+      "ASSIGNMENT DISCOVERY: Live Octopus upcoming-booking discovery failed; existing Postgres reconciliation will continue unchanged:",
+      error
+    );
+
+    return [];
+  } finally {
+    await discoveryPage
+      .close()
+      .catch(() => {});
+  }
+}
+
+
 async function getUpcomingBookingsForUnassignedSweep() {
   const result =
     await pool.query(
@@ -2292,6 +2629,41 @@ async function sweepOctopusUnassignedBookings(
 ) {
   const candidates =
     await getUpcomingBookingsForUnassignedSweep();
+
+  // ADDITIVE PATCH: merge direct Octopus Upcoming Bookings into the existing
+  // Postgres-derived reconciliation list. This is what catches old recurring
+  // assignments that never generated a recent notification/database row.
+  const liveOctopusCandidates =
+    await discoverUpcomingBookingsDirectlyFromOctopus(page);
+
+  if (liveOctopusCandidates.length) {
+    const knownBookingNumbers = new Set(
+      candidates.map((candidate) =>
+        String(candidate.booking_number || "")
+          .trim()
+          .toUpperCase()
+      )
+    );
+
+    for (const liveCandidate of liveOctopusCandidates) {
+      const liveBookingNumber =
+        String(liveCandidate.booking_number || "")
+          .trim()
+          .toUpperCase();
+
+      if (
+        liveBookingNumber &&
+        !knownBookingNumbers.has(liveBookingNumber)
+      ) {
+        candidates.push(liveCandidate);
+        knownBookingNumbers.add(liveBookingNumber);
+      }
+    }
+
+    console.log(
+      `ASSIGNMENT DISCOVERY: Reconciliation candidate pool now contains ${candidates.length} booking(s) after merging live Octopus Upcoming Bookings.`
+    );
+  }
 
   if (!candidates.length) {
     console.log(
