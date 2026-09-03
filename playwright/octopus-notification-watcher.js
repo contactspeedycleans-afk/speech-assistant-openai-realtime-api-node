@@ -2352,7 +2352,18 @@ async function discoverUpcomingBookingsDirectlyFromOctopus(page) {
     );
 
     // Fail closed. Never scrape a generic/past booking screen as "upcoming".
-    if (!/upcoming/i.test(upcomingPageText)) {
+    // Octopus currently routes its Upcoming Bookings calendar to
+    // /booking?category=calendar, and that page does not always render the
+    // literal word "Upcoming" in the visible body text. Accept either the
+    // existing visible-text proof OR the exact Octopus calendar category.
+    // No other booking category is accepted here.
+    const discoveryUrl = new URL(discoveryPage.url());
+    const verifiedUpcomingPage =
+      /upcoming/i.test(upcomingPageText) ||
+      (discoveryUrl.pathname === "/booking" &&
+        discoveryUrl.searchParams.get("category") === "calendar");
+
+    if (!verifiedUpcomingPage) {
       console.log(
         "ASSIGNMENT DISCOVERY: Page did not verify itself as Upcoming; no live candidates were added."
       );
