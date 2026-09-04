@@ -6887,34 +6887,155 @@ async function main() {
    * search can no longer block En Route / Arrived / Finished / assignment
    * Make.com webhooks.
    */
+  // WATCHDOG PATCH 2026-09-04:
+  // Keep each long-running watcher on its own replaceable page. If Octopus or
+  // Playwright leaves an await permanently pending, close only that page,
+  // recreate it, and let the next cycle continue instead of leaving the
+  // in-memory running flag stuck forever.
+  const configureWatcherPage =
+    (page) => {
+      page.setDefaultTimeout(
+        30000
+      );
+
+      page.setDefaultNavigationTimeout(
+        60000
+      );
+
+      return page;
+    };
+
   let notificationPage =
-    await context.newPage();
+    configureWatcherPage(
+      await context.newPage()
+    );
 
   const dispatchPage =
-    await context.newPage();
-
-  const unassignedSweepPage =
-    await context.newPage();
-
-  for (
-    const page of [
-      notificationPage,
-      dispatchPage,
-      unassignedSweepPage
-    ]
-  ) {
-    page.setDefaultTimeout(
-      30000
+    configureWatcherPage(
+      await context.newPage()
     );
 
-    page.setDefaultNavigationTimeout(
-      60000
+  let unassignedSweepPage =
+    configureWatcherPage(
+      await context.newPage()
     );
-  }
 
-  await readNotifications(
-    notificationPage
-  );
+  const NOTIFICATION_WATCHDOG_MS =
+    Number(
+      process.env.NOTIFICATION_WATCHDOG_MS ||
+      5 * 60 * 1000
+    );
+
+  const UNASSIGNED_SWEEP_WATCHDOG_MS =
+    Number(
+      process.env.UNASSIGNED_SWEEP_WATCHDOG_MS ||
+      15 * 60 * 1000
+    );
+
+  const runWithPageWatchdog =
+    async ({
+      label,
+      timeoutMs,
+      getPage,
+      replacePage,
+      task
+    }) => {
+      let timedOut =
+        false;
+
+      let timeoutHandle =
+        null;
+
+      const activePage =
+        getPage();
+
+      const timeoutPromise =
+        new Promise(
+          (_, reject) => {
+            timeoutHandle =
+              setTimeout(
+                () => {
+                  timedOut =
+                    true;
+
+                  console.error(
+                    `${label} exceeded ${Math.round(timeoutMs / 1000)} seconds. Closing its dedicated Playwright page so the watcher can self-recover.`
+                  );
+
+                  activePage
+                    .close()
+                    .catch(() => {});
+
+                  reject(
+                    new Error(
+                      `${label} watchdog timeout after ${Math.round(timeoutMs / 1000)} seconds`
+                    )
+                  );
+                },
+                timeoutMs
+              );
+          }
+        );
+
+      try {
+        await Promise.race([
+          task(activePage),
+          timeoutPromise
+        ]);
+      } finally {
+        if (timeoutHandle) {
+          clearTimeout(
+            timeoutHandle
+          );
+        }
+
+        if (timedOut) {
+          try {
+            const freshPage =
+              configureWatcherPage(
+                await context.newPage()
+              );
+
+            replacePage(
+              freshPage
+            );
+
+            console.log(
+              `${label} recovered with a fresh dedicated Playwright page.`
+            );
+          } catch (recoveryError) {
+            console.error(
+              `${label} could not create a replacement page. The shared browser/context may have crashed:`,
+              recoveryError
+            );
+
+            throw recoveryError;
+          }
+        }
+      }
+    };
+
+  await runWithPageWatchdog({
+    label:
+      "Initial notification check",
+
+    timeoutMs:
+      NOTIFICATION_WATCHDOG_MS,
+
+    getPage:
+      () => notificationPage,
+
+    replacePage:
+      (freshPage) => {
+        notificationPage =
+          freshPage;
+      },
+
+    task:
+      (page) => readNotifications(
+        page
+      )
+  });
 
   console.log(
     "Notification watcher active on dedicated page."
@@ -6939,9 +7060,27 @@ async function main() {
         true;
 
       try {
-        await readNotifications(
-          notificationPage
-        );
+        await runWithPageWatchdog({
+          label:
+            "Notification check",
+
+          timeoutMs:
+            NOTIFICATION_WATCHDOG_MS,
+
+          getPage:
+            () => notificationPage,
+
+          replacePage:
+            (freshPage) => {
+              notificationPage =
+                freshPage;
+            },
+
+          task:
+            (page) => readNotifications(
+              page
+            )
+        });
       } catch (error) {
         console.error(
           "Notification check failed:",
@@ -7053,13 +7192,33 @@ async function main() {
         true;
 
       try {
-        await ensureLoggedIn(
-          unassignedSweepPage
-        );
+        await runWithPageWatchdog({
+          label:
+            "Octopus unassigned booking sweep",
 
-        await sweepOctopusUnassignedBookings(
-          unassignedSweepPage
-        );
+          timeoutMs:
+            UNASSIGNED_SWEEP_WATCHDOG_MS,
+
+          getPage:
+            () => unassignedSweepPage,
+
+          replacePage:
+            (freshPage) => {
+              unassignedSweepPage =
+                freshPage;
+            },
+
+          task:
+            async (page) => {
+              await ensureLoggedIn(
+                page
+              );
+
+              await sweepOctopusUnassignedBookings(
+                page
+              );
+            }
+        });
       } catch (error) {
         console.error(
           "Octopus unassigned booking sweep failed:",
