@@ -6887,7 +6887,7 @@ async function main() {
    * search can no longer block En Route / Arrived / Finished / assignment
    * Make.com webhooks.
    */
-  const notificationPage =
+  let notificationPage =
     await context.newPage();
 
   const dispatchPage =
