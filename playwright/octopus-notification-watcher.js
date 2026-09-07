@@ -6940,77 +6940,69 @@ async function main() {
       replacePage,
       task
     }) => {
-      let timedOut =
-        false;
+      let timedOut = false;
+      let timeoutHandle = null;
+      const activePage = getPage();
 
-      let timeoutHandle =
-        null;
-
-      const activePage =
-        getPage();
+      const replaceCrashedPage = async (reason) => {
+        try {
+          await activePage.close().catch(() => {});
+          const freshPage = configureWatcherPage(
+            await context.newPage()
+          );
+          replacePage(freshPage);
+          console.log(
+            `${label} recovered with a fresh dedicated Playwright page after ${reason}.`
+          );
+        } catch (recoveryError) {
+          console.error(
+            `${label} could not create a replacement page. The shared browser/context may have crashed:`,
+            recoveryError
+          );
+          throw recoveryError;
+        }
+      };
 
       const timeoutPromise =
-        new Promise(
-          (_, reject) => {
-            timeoutHandle =
-              setTimeout(
-                () => {
-                  timedOut =
-                    true;
-
-                  console.error(
-                    `${label} exceeded ${Math.round(timeoutMs / 1000)} seconds. Closing its dedicated Playwright page so the watcher can self-recover.`
-                  );
-
-                  activePage
-                    .close()
-                    .catch(() => {});
-
-                  reject(
-                    new Error(
-                      `${label} watchdog timeout after ${Math.round(timeoutMs / 1000)} seconds`
-                    )
-                  );
-                },
-                timeoutMs
-              );
-          }
-        );
+        new Promise((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            timedOut = true;
+            console.error(
+              `${label} exceeded ${Math.round(timeoutMs / 1000)} seconds. Closing its dedicated Playwright page so the watcher can self-recover.`
+            );
+            activePage.close().catch(() => {});
+            reject(
+              new Error(
+                `${label} watchdog timeout after ${Math.round(timeoutMs / 1000)} seconds`
+              )
+            );
+          }, timeoutMs);
+        });
 
       try {
         await Promise.race([
           task(activePage),
           timeoutPromise
         ]);
-      } finally {
-        if (timeoutHandle) {
-          clearTimeout(
-            timeoutHandle
+      } catch (error) {
+        const message = String(error?.message || error || "").toLowerCase();
+        const pageFailed =
+          timedOut ||
+          activePage.isClosed() ||
+          message.includes("page crashed") ||
+          message.includes("target page, context or browser has been closed") ||
+          message.includes("target closed");
+
+        if (pageFailed) {
+          await replaceCrashedPage(
+            timedOut ? "watchdog timeout" : "page crash"
           );
         }
 
-        if (timedOut) {
-          try {
-            const freshPage =
-              configureWatcherPage(
-                await context.newPage()
-              );
-
-            replacePage(
-              freshPage
-            );
-
-            console.log(
-              `${label} recovered with a fresh dedicated Playwright page.`
-            );
-          } catch (recoveryError) {
-            console.error(
-              `${label} could not create a replacement page. The shared browser/context may have crashed:`,
-              recoveryError
-            );
-
-            throw recoveryError;
-          }
+        throw error;
+      } finally {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
         }
       }
     };
@@ -7178,6 +7170,13 @@ async function main() {
 
   const runUnassignedSweep =
     async () => {
+      if (notificationCheckRunning) {
+        console.log(
+          "Notification check has priority; skipping unassigned sweep cycle."
+        );
+        return;
+      }
+
       if (
         unassignedSweepRunning
       ) {
