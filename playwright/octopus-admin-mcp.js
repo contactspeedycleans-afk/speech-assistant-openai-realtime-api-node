@@ -83,6 +83,7 @@ const server=http.createServer(async(req,res)=>{
  }
  if(u.pathname!=="/mcp"||req.method!=="POST")return json(res,404,{error:"not_found"});
  const rawRpc=await body(req);
+ if(!rawRpc.length){res.writeHead(204,{"cache-control":"no-store"});return res.end()}
  let rpc;try{rpc=JSON.parse(rawRpc)}catch{console.warn("Invalid MCP JSON",{length:rawRpc.length,contentType:req.headers["content-type"],accept:req.headers.accept,prefix:rawRpc.slice(0,160)});return json(res,400,{error:"invalid_json"})}
  const base={jsonrpc:"2.0",id:rpc.id};
  try{
