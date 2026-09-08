@@ -82,7 +82,8 @@ const server=http.createServer(async(req,res)=>{
    return json(res,400,{error:"unsupported_grant_type"});
  }
  if(u.pathname!=="/mcp"||req.method!=="POST")return json(res,404,{error:"not_found"});
- let rpc;try{rpc=JSON.parse(await body(req))}catch{return json(res,400,{error:"invalid_json"})}
+ const rawRpc=await body(req);
+ let rpc;try{rpc=JSON.parse(rawRpc)}catch{console.warn("Invalid MCP JSON",{length:rawRpc.length,contentType:req.headers["content-type"],accept:req.headers.accept,prefix:rawRpc.slice(0,160)});return json(res,400,{error:"invalid_json"})}
  const base={jsonrpc:"2.0",id:rpc.id};
  try{
   if(rpc.method==="initialize")return json(res,200,{...base,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"speedycleans-octopus-admin",version:"0.3.0"},instructions:"Tool metadata is public for discovery. Every tool call requires an authorized SpeedyCleans OAuth token."}});
