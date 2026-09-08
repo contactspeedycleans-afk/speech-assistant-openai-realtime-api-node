@@ -82,14 +82,16 @@ const server=http.createServer(async(req,res)=>{
    return json(res,400,{error:"unsupported_grant_type"});
  }
  if(u.pathname!=="/mcp"||req.method!=="POST")return json(res,404,{error:"not_found"});
- try{verify(String(req.headers.authorization||"").replace(/^Bearer\s+/i,""),"access")}catch{return json(res,401,{error:"unauthorized"},{"www-authenticate":'Bearer resource_metadata="'+BASE+'/.well-known/oauth-protected-resource", scope="octopus:read octopus:write octopus:financial"'})}
  let rpc;try{rpc=JSON.parse(await body(req))}catch{return json(res,400,{error:"invalid_json"})}
  const base={jsonrpc:"2.0",id:rpc.id};
  try{
-  if(rpc.method==="initialize")return json(res,200,{...base,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"speedycleans-octopus-admin",version:"0.2.0"}}});
-  if(rpc.method==="notifications/initialized")return json(res,202,{});
+  if(rpc.method==="initialize")return json(res,200,{...base,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"speedycleans-octopus-admin",version:"0.3.0"},instructions:"Tool metadata is public for discovery. Every tool call requires an authorized SpeedyCleans OAuth token."}});
+  if(rpc.method==="notifications/initialized"){res.writeHead(204);return res.end()}
   if(rpc.method==="tools/list")return json(res,200,{...base,result:{tools}});
-  if(rpc.method==="tools/call"){const result=await callTool(rpc.params?.name,rpc.params?.arguments||{});return json(res,200,{...base,result:{content:[{type:"text",text:JSON.stringify(result)}],structuredContent:result}})}
+  if(rpc.method==="tools/call"){
+   try{verify(String(req.headers.authorization||"").replace(/^Bearer\s+/i,""),"access")}catch{return json(res,401,{error:"unauthorized"},{"www-authenticate":'Bearer resource_metadata="'+BASE+'/.well-known/oauth-protected-resource", scope="octopus:read octopus:write octopus:financial"'})}
+   const result=await callTool(rpc.params?.name,rpc.params?.arguments||{});return json(res,200,{...base,result:{content:[{type:"text",text:JSON.stringify(result)}],structuredContent:result}})
+  }
   return json(res,200,{...base,error:{code:-32601,message:"Method not found"}});
  }catch(e){return json(res,200,{...base,result:{isError:true,content:[{type:"text",text:e.message}]}})}
 });
