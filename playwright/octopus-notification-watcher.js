@@ -7097,13 +7097,6 @@ async function main() {
 
   const runDispatchCheck =
     async () => {
-      if (notificationCheckRunning) {
-        console.log(
-          "Notification check has priority; skipping dispatch cycle."
-        );
-        return;
-      }
-
       if (Date.now() < dispatchCooldownUntil) {
         console.log(
           `Dispatch cooldown active after Octopus navigation failure; skipping dispatch cycle until ${new Date(dispatchCooldownUntil).toISOString()}.`
@@ -7170,13 +7163,6 @@ async function main() {
 
   const runUnassignedSweep =
     async () => {
-      if (notificationCheckRunning) {
-        console.log(
-          "Notification check has priority; skipping unassigned sweep cycle."
-        );
-        return;
-      }
-
       if (
         unassignedSweepRunning
       ) {
