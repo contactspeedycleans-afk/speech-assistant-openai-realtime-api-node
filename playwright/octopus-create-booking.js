@@ -9,11 +9,13 @@ const LISA_AUTH_STATE_PATH =
   process.env.LISA_AUTH_STATE_PATH || "/tmp/lisa-octopus-auth.json";
 const LISA_PREWARM_ONLY = process.env.LISA_BOOKING_PREWARM === "1";
 
-const livePayload = process.env.LISA_BOOKING_PAYLOAD
+let livePayload = process.env.LISA_BOOKING_PAYLOAD
   ? JSON.parse(process.env.LISA_BOOKING_PAYLOAD)
   : null;
 
-const TEST = livePayload
+function buildBookingTest(payload) {
+  const livePayload = payload;
+  return livePayload
   ? {
       customerName:
         livePayload.customerName ||
@@ -79,6 +81,9 @@ const TEST = livePayload
       specialNotes: ".",
       accessInstructions: "."
     };
+}
+
+let TEST = buildBookingTest(livePayload);
 
 let FINAL_BOOKING_RESULT = null;
 
@@ -583,11 +588,6 @@ async function main() {
     await context.storageState({ path: LISA_AUTH_STATE_PATH });
     lisaTiming(hasWarmAuthState ? "OCTOPUS_WARM_SESSION_READY" : "OCTOPUS_LOGIN_READY");
 
-    if (LISA_PREWARM_ONLY) {
-      console.log("LISA_BOOKING_SESSION_READY");
-      return;
-    }
-
     console.log("Opening real New Booking form...");
 
     const customerSearch = page.locator(
@@ -602,6 +602,29 @@ async function main() {
     });
     await page.waitForTimeout(300);
     lisaTiming("BOOKING_PAGE_LOADED");
+
+    if (LISA_PREWARM_ONLY) {
+      console.log("LISA_BOOKING_SESSION_READY");
+      const payloadLine = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("PREWARM_PAYLOAD_TIMEOUT")),
+          30 * 60 * 1000
+        );
+        process.stdin.setEncoding("utf8");
+        process.stdin.once("data", chunk => {
+          clearTimeout(timeout);
+          resolve(String(chunk || "").trim());
+        });
+        process.stdin.once("error", error => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+      if (!payloadLine) throw new Error("PREWARM_PAYLOAD_MISSING");
+      livePayload = JSON.parse(payloadLine);
+      TEST = buildBookingTest(livePayload);
+      console.log("LISA_BOOKING_PREWARM_PAYLOAD_ACCEPTED");
+    }
 
     console.log("Filling customer through the visible Octopus selector...");
 
