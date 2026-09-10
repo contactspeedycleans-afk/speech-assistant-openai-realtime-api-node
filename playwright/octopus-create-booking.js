@@ -655,6 +655,28 @@ async function main() {
         await customerSearch.type(lookupTerm, { delay: 35 }).catch(() => {});
         await page.waitForTimeout(900 + attempt * 350);
 
+        // Octopus renders customer results as plain <li> elements. Query the
+        // one expected name directly instead of scanning every list item on the page.
+        const targetedCustomer = page
+          .locator('li:visible')
+          .filter({ hasText: TEST.customerName })
+          .last();
+
+        if (await targetedCustomer.isVisible().catch(() => false)) {
+          const targetedText = (await targetedCustomer.innerText().catch(() => ""))
+            .replace(/\s+/g, " ")
+            .trim();
+          if (
+            targetedText &&
+            targetedText.length < 500 &&
+            targetedText.toLowerCase().includes(String(TEST.customerName || "").toLowerCase())
+          ) {
+            await targetedCustomer.click({ force: true, timeout: 5000 });
+            customerSelected = true;
+            break;
+          }
+        }
+
         const candidates = page.locator(
           '[role="option"]:visible, .vs__dropdown-option:visible'
         );
