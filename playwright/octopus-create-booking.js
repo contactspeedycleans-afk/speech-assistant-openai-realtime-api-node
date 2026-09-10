@@ -634,6 +634,7 @@ async function main() {
     // name is not an exact text match. Search several identifiers and select a
     // visible result that contains the customer's name/phone/email.
     const customerLookupTerms = [
+      TEST.customerId,
       livePayload?.customerPhone,
       livePayload?.phone,
       livePayload?.customerEmail,
@@ -762,6 +763,12 @@ async function main() {
         }).catch(() => {});
         await page.waitForTimeout(600);
       }
+    }
+
+    if (!customerSelected && TEST.customerId) {
+      throw new Error(
+        `KNOWN_CUSTOMER_NOT_SELECTED: customerId=${TEST.customerId} name=${TEST.customerName}`
+      );
     }
 
     if (!customerSelected) {
@@ -1454,13 +1461,16 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       await fieldworkerSearch.type(desiredWorker, { delay: 20 });
       await page.waitForTimeout(1100);
 
-      const workerOptions = page.locator(
-        '[role="option"]:visible, .vs__dropdown-option:visible'
-      );
+      // Filter first, then inspect only the matching option. Do not enumerate
+      // every dropdown option loaded elsewhere on the Octopus page.
+      const workerOption = page
+        .locator('[role="option"]:visible, .vs__dropdown-option:visible')
+        .filter({ hasText: desiredWorker })
+        .last();
       let selectedWorker = false;
-      for (let i = 0; i < await workerOptions.count(); i++) {
-        const option = workerOptions.nth(i);
-        const optionText = (await option.innerText().catch(() => ""))
+
+      if (await workerOption.isVisible().catch(() => false)) {
+        const optionText = (await workerOption.innerText().catch(() => ""))
           .replace(/\s+/g, " ")
           .trim();
         if (
@@ -1468,11 +1478,29 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
           optionText.length < 300 &&
           optionText.toLowerCase().includes(desiredWorker.toLowerCase())
         ) {
-          await option.click({ force: true, timeout: 5000 });
+          await workerOption.click({ force: true, timeout: 5000 });
           selectedWorker = true;
-          break;
         }
       }
+
+      if (!selectedWorker) {
+        const plainListOption = page
+          .locator('li:visible')
+          .filter({ hasText: desiredWorker })
+          .last();
+        const optionText = (await plainListOption.innerText().catch(() => ""))
+          .replace(/\s+/g, " ")
+          .trim();
+        if (
+          optionText &&
+          optionText.length < 300 &&
+          optionText.toLowerCase().includes(desiredWorker.toLowerCase())
+        ) {
+          await plainListOption.click({ force: true, timeout: 5000 });
+          selectedWorker = true;
+        }
+      }
+
       if (!selectedWorker) throw new Error(`FIELDWORKER_OPTION_NOT_FOUND: ${desiredWorker}`);
       await fieldworkerSearch.press("Tab").catch(() => {});
       await page.waitForTimeout(500);
