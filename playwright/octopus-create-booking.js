@@ -1328,6 +1328,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     if (!oneTimeState.checked) {
       throw new Error("ONE_TIME_NOT_CHECKED");
     }
+    lisaTiming("ONE_TIME_COMMITTED");
 
     // Fast path: write notes directly and avoid retyping four reactive date fields.
     // The final DOM commit below reapplies dates and the verified unassigned worker ID.
@@ -1361,6 +1362,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     );
 
     console.log("Required notes exact values:", JSON.stringify(requiredNotesState));
+    lisaTiming("NOTES_COMMITTED");
 
     const appointmentCount = await page.locator('[id^="booking_visits_"]').count();
     console.log("Appointment block count:", appointmentCount);
@@ -1391,9 +1393,13 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     }
 
     await commitComponentValue(firstStartDate, expectedAppointment.startDate);
+    lisaTiming("FINAL_START_DATE_COMMITTED");
     await commitComponentValue(firstStartTime, expectedAppointment.startTime);
+    lisaTiming("FINAL_START_TIME_COMMITTED");
     await commitComponentValue(firstEndDate, expectedAppointment.endDate);
+    lisaTiming("FINAL_END_DATE_COMMITTED");
     await commitComponentValue(firstEndTime, expectedAppointment.endTime);
+    lisaTiming("FINAL_END_TIME_COMMITTED");
 
     const appointmentTimes = {
       startDate: await firstStartDate.inputValue(),
@@ -1448,6 +1454,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       if (!selectedWorker) throw new Error(`FIELDWORKER_OPTION_NOT_FOUND: ${desiredWorker}`);
       await fieldworkerSearch.press("Tab").catch(() => {});
       await page.waitForTimeout(500);
+      lisaTiming("FIELDWORKER_COMMITTED", desiredWorker);
     }
 
     console.log("Required booking fields completed.");
@@ -1571,6 +1578,18 @@ if (!nativeCustomerPayload || nativeCustomerPayload.length < 100) {
 
 
 console.log("Deposit skipped - not required.");
+
+if (livePayload?.dryRun === true) {
+  FINAL_BOOKING_RESULT = {
+    success: true,
+    dryRun: true,
+    customerId: await page.locator('input[name="customer_id"]').first().inputValue().catch(() => ""),
+    message: "Form profiled without saving a booking."
+  };
+  lisaTiming("DRY_RUN_COMPLETE");
+  console.log("LISA_BOOKING_RESULT=" + JSON.stringify(FINAL_BOOKING_RESULT));
+  return;
+}
     
 console.log("Attempting to save booking with full validation capture...");
 lisaTiming("FINAL_SUBMIT_START");
