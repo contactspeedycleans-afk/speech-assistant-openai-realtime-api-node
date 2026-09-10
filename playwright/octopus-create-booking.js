@@ -1372,17 +1372,36 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
     const UNASSIGNED_TASKS_MANAGER_ID = "47464";
 
-    if (!shouldRemainUnassigned) {
+    // The contractor must be committed through Octopus's Vue autocomplete;
+    // changing only the hidden DOM value is rejected at Save.
+    {
       const firstAppointment = page.locator('[id^="booking_visits_"]').first();
       const fieldworkerSearch = firstAppointment
         .locator('input[placeholder="Select Fieldworker"]')
         .first();
+      const desiredWorker = shouldRemainUnassigned
+        ? "Unassigned Tasks Manager"
+        : TEST.fieldworkerName;
+
       await fieldworkerSearch.waitFor({ state: "visible", timeout: 10000 });
-      await fieldworkerSearch.fill(TEST.fieldworkerName);
-      await page.waitForTimeout(900);
-      await fieldworkerSearch.press("ArrowDown").catch(() => {});
-      await fieldworkerSearch.press("Enter").catch(() => {});
+      await fieldworkerSearch.click({ force: true });
+      await fieldworkerSearch.fill(desiredWorker);
+      await page.waitForTimeout(850);
+
+      const exactWorker = page
+        .locator('[role="option"]:visible, .vs__dropdown-option:visible, li:visible')
+        .filter({ hasText: desiredWorker })
+        .first();
+
+      if (await exactWorker.isVisible().catch(() => false)) {
+        await exactWorker.click({ force: true, timeout: 5000 });
+      } else {
+        await fieldworkerSearch.press("ArrowDown").catch(() => {});
+        await fieldworkerSearch.press("Enter").catch(() => {});
+      }
       await fieldworkerSearch.press("Tab").catch(() => {});
+      await page.waitForTimeout(250);
+      console.log("Fieldworker committed through native selector:", desiredWorker);
     }
 
     console.log("Re-applying appointment after fieldworker render...");
