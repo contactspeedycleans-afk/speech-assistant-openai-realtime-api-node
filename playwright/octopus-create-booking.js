@@ -683,6 +683,8 @@ async function main() {
           const matchesEmail = email && normalized.includes(email);
           const matchesPhone =
             phone &&
+            !name &&
+            !email &&
             candidateDigits &&
             (candidateDigits.includes(phone) || phone.includes(candidateDigits));
 
@@ -714,7 +716,11 @@ async function main() {
           }
         }
 
-        if (visiblePlausible.length === 1) {
+        if (
+          visiblePlausible.length === 1 &&
+          !String(TEST.customerName || "").trim() &&
+          !String(TEST.customerEmail || "").trim()
+        ) {
           console.log(
             "Selecting sole filtered customer option:",
             visiblePlausible[0].text
@@ -1323,261 +1329,60 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       throw new Error("ONE_TIME_NOT_CHECKED");
     }
 
-    const specialNotesField = page.locator("#attribute_8087017483").first();
-    const accessInstructionsField = page.locator("#attribute_8087013969").first();
-
-    await specialNotesField.waitFor({ state: "visible", timeout: 10000 });
-    await accessInstructionsField.waitFor({ state: "visible", timeout: 10000 });
-
-    await specialNotesField.fill(TEST.specialNotes);
-    await specialNotesField.dispatchEvent("input");
-    await specialNotesField.dispatchEvent("change");
-    await specialNotesField.dispatchEvent("blur");
-
-    await accessInstructionsField.fill(TEST.accessInstructions);
-    await accessInstructionsField.dispatchEvent("input");
-    await accessInstructionsField.dispatchEvent("change");
-    await accessInstructionsField.dispatchEvent("blur");
-
-    console.log(
-      "Required notes exact values:",
-      JSON.stringify({
-        specialNotes: await specialNotesField.inputValue(),
-        accessInstructions: await accessInstructionsField.inputValue()
-      })
+    // Fast path: write notes directly and avoid retyping four reactive date fields.
+    // The final DOM commit below reapplies dates and the verified unassigned worker ID.
+    const requiredNotesState = await page.evaluate(
+      ({ specialNotes, accessInstructions }) => {
+        const setNativeValue = (el, value) => {
+          if (!el) return false;
+          const descriptor =
+            Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value") ||
+            Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+          if (descriptor?.set) descriptor.set.call(el, value);
+          else el.value = value;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          el.dispatchEvent(new Event("blur", { bubbles: true }));
+          return true;
+        };
+        const special = document.querySelector("#attribute_8087017483");
+        const access = document.querySelector("#attribute_8087013969");
+        return {
+          specialApplied: setNativeValue(special, specialNotes),
+          accessApplied: setNativeValue(access, accessInstructions),
+          specialNotes: special?.value || "",
+          accessInstructions: access?.value || ""
+        };
+      },
+      {
+        specialNotes: TEST.specialNotes,
+        accessInstructions: TEST.accessInstructions
+      }
     );
 
-    // IMPORTANT: use only the FIRST scheduled appointment.
-    // We previously created/targeted a second appointment accidentally.
-    const appointmentBlocks = page.locator('[id^="booking_visits_"]');
-    const appointmentCount = await appointmentBlocks.count();
+    console.log("Required notes exact values:", JSON.stringify(requiredNotesState));
+
+    const appointmentCount = await page.locator('[id^="booking_visits_"]').count();
     console.log("Appointment block count:", appointmentCount);
+    if (appointmentCount < 1) throw new Error("NO_APPOINTMENT_BLOCK_FOUND");
 
-    if (appointmentCount < 1) {
-      throw new Error("NO_APPOINTMENT_BLOCK_FOUND");
-    }
-
-    const firstAppointment = appointmentBlocks.first();
-
-    // Re-set ONLY the first appointment times after service frequency selection,
-    // because selecting One Time can re-render/reset the appointment.
-    const firstStartDate = firstAppointment.locator(
-      'input[name^="multi_new_stpartdate_"]'
-    ).first();
-    const firstStartTime = firstAppointment.locator(
-      'input[name^="multi_new_stparttime_"]'
-    ).first();
-    const firstEndDate = firstAppointment.locator(
-      'input[name^="multi_new_etpartdate_"]'
-    ).first();
-    const firstEndTime = firstAppointment.locator(
-      'input[name^="multi_new_etparttime_"]'
-    ).first();
-
-    async function setFirstAppointmentValue(locator, value) {
-  await locator.waitFor({
-    state: "visible",
-    timeout: 10000
-  });
-
-  await locator.scrollIntoViewIfNeeded().catch(() => {});
-  await locator.click({ force: true });
-
-  await locator.press("Control+A").catch(() => {});
-  await locator.press("Backspace").catch(() => {});
-  await locator.type(value, { delay: 20 });
-
-  await locator.press("Enter").catch(() => {});
-  await locator.press("Tab").catch(() => {});
-
-  await page.waitForTimeout(400);
-}
-
-    await setFirstAppointmentValue(firstStartDate, expectedAppointment.startDate);
-    await setFirstAppointmentValue(firstStartTime, expectedAppointment.startTime);
-    await setFirstAppointmentValue(firstEndDate, expectedAppointment.endDate);
-    await setFirstAppointmentValue(firstEndTime, expectedAppointment.endTime);
-
-    const appointmentTimes = {
-      startDate: await firstStartDate.inputValue(),
-      startTime: await firstStartTime.inputValue(),
-      endDate: await firstEndDate.inputValue(),
-      endTime: await firstEndTime.inputValue()
-    };
-
-    console.log(
-      "First appointment date/time re-applied:",
-      JSON.stringify(appointmentTimes)
-    );
-
-    if (
-      !appointmentTimes.startDate ||
-      !appointmentTimes.endDate ||
-      appointmentTimes.startTime !== expectedAppointment.startTime ||
-      appointmentTimes.endTime !== expectedAppointment.endTime
-    ) {
-      throw new Error(
-        `APPOINTMENT_TIME_NOT_STICKING: ${JSON.stringify(appointmentTimes)}`
-      );
-    }
-
-    // FIELDWORKER / UNASSIGNED HANDLING
-    // Octopus requires a fieldworker on Save. "Unassigned Tasks Manager" is the
-    // real placeholder fieldworker account we use for jobs that still need a cleaner.
-    // Historical successful tests show its contractor ID is 47464.
+    // Octopus requires a fieldworker. This verified placeholder contractor is
+    // the normal Lisa path for jobs that still need a cleaner.
     const shouldRemainUnassigned =
       /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
     const UNASSIGNED_TASKS_MANAGER_ID = "47464";
 
-if (shouldRemainUnassigned) {
-  console.log(
-    "Selecting Unassigned Tasks Manager through Octopus fieldworker UI..."
-  );
-
-  const fieldworkerSearch = firstAppointment
-    .locator('input[placeholder="Select Fieldworker"]')
-    .first();
-
-  await fieldworkerSearch.waitFor({
-    state: "visible",
-    timeout: 15000
-  });
-
-  await fieldworkerSearch.scrollIntoViewIfNeeded();
-  await fieldworkerSearch.click({ force: true });
-  await fieldworkerSearch.fill("");
-
-  await fieldworkerSearch.type("Unassigned Tasks Manager", {
-    delay: 35
-  });
-
-  await page.waitForTimeout(1500);
-
-  const workerOptions = page.locator(
-    '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
-  );
-
-  let selectedUnassigned = false;
-
-  for (let i = 0; i < await workerOptions.count(); i++) {
-    const option = workerOptions.nth(i);
-
-    const text = (await option.innerText().catch(() => ""))
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (/Unassigned Tasks Manager/i.test(text)) {
-      console.log(
-        "Selecting fieldworker option:",
-        text
-      );
-
-      await option.click({
-        force: true,
-        timeout: 10000
-      });
-
-      // Commit the Vue autocomplete selection before later appointment fields
-      // re-render. A click can visually select the worker without persisting it.
-      await fieldworkerSearch.press("Tab").catch(() => {});
-      await page.waitForTimeout(350);
-
-      selectedUnassigned = true;
-      break;
-    }
-  }
-
-  if (!selectedUnassigned) {
-    // Octopus sometimes hides this dropdown option. The final DOM step below
-    // still writes the verified placeholder contractor ID 47464, and Octopus
-    // Save remains the authoritative validation.
-    console.log(
-      "Unassigned Tasks Manager option was temporarily absent; using verified contractor ID 47464 fallback."
-    );
-  } else {
-    await page.waitForTimeout(500);
-    console.log(
-      "Unassigned Tasks Manager selected through native Octopus UI."
-    );
-  }
-} else {
-      console.log("Selecting requested fieldworker with component-native input...");
-
+    if (!shouldRemainUnassigned) {
+      const firstAppointment = page.locator('[id^="booking_visits_"]').first();
       const fieldworkerSearch = firstAppointment
         .locator('input[placeholder="Select Fieldworker"]')
         .first();
-
-      await fieldworkerSearch.waitFor({
-        state: "visible",
-        timeout: 15000
-      });
-
-      await fieldworkerSearch.scrollIntoViewIfNeeded();
-      await fieldworkerSearch.click({ force: true });
-      await fieldworkerSearch.fill("");
-
-      await fieldworkerSearch.type(TEST.fieldworkerName, {
-        delay: 35
-      });
-
-      await page.waitForTimeout(1500);
-
-      const visibleWorkerOptions = page.locator(
-        '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
-      );
-
-      const workerOptionsBefore = [];
-      for (let i = 0; i < await visibleWorkerOptions.count(); i++) {
-        const option = visibleWorkerOptions.nth(i);
-        const txt = (await option.innerText().catch(() => ""))
-          .replace(/\s+/g, " ")
-          .trim();
-
-        if (
-          txt &&
-          String(TEST.fieldworkerName || "")
-            .toLowerCase()
-            .split(/\s+/)
-            .every(part => txt.toLowerCase().includes(part))
-        ) {
-          workerOptionsBefore.push(txt);
-        }
-      }
-
-      console.log(
-        "Matching fieldworker options:",
-        JSON.stringify(workerOptionsBefore)
-      );
-
+      await fieldworkerSearch.waitFor({ state: "visible", timeout: 10000 });
+      await fieldworkerSearch.fill(TEST.fieldworkerName);
+      await page.waitForTimeout(900);
       await fieldworkerSearch.press("ArrowDown").catch(() => {});
-      await page.waitForTimeout(250);
       await fieldworkerSearch.press("Enter").catch(() => {});
-      await page.waitForTimeout(1000);
-
-      let fieldworkerSearchValue =
-        await fieldworkerSearch.inputValue().catch(() => "");
-
-      if (!fieldworkerSearchValue) {
-        const exactWorkerOption = page
-          .getByText(TEST.fieldworkerName, { exact: false })
-          .filter({ visible: true })
-          .last();
-
-        if (await exactWorkerOption.isVisible().catch(() => false)) {
-          await exactWorkerOption.click({
-            force: true,
-            timeout: 10000
-          });
-          await page.waitForTimeout(700);
-          await fieldworkerSearch.press("Tab").catch(() => {});
-          await page.waitForTimeout(700);
-        }
-      }
-
-      console.log(
-        "Requested fieldworker selection attempt completed:",
-        TEST.fieldworkerName
-      );
+      await fieldworkerSearch.press("Tab").catch(() => {});
     }
 
     console.log("Re-applying appointment after fieldworker render...");
