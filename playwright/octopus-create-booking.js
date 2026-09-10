@@ -1372,138 +1372,47 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
     const UNASSIGNED_TASKS_MANAGER_ID = "47464";
 
-    console.log("Re-applying appointment after fieldworker render...");
+    console.log("Committing final appointment values through Octopus components...");
 
-    // FAST/STABLE FINAL APPOINTMENT SET:
-    // Do not use click/type here. Octopus can re-render these controls after
-    // the fieldworker area changes, and Playwright can sit on stale/reactive
-    // inputs for 30+ seconds per field. Set the live DOM values directly and
-    // dispatch the same input/change/blur events Octopus listens for.
-    const finalAppointmentState = await page.evaluate(
-      ({ expectedAppointment, shouldRemainUnassigned }) => {
-        const appointment = document.querySelector('[id^="booking_visits_"]');
+    const firstAppointment = page.locator('[id^="booking_visits_"]').first();
+    const firstStartDate = firstAppointment.locator('input[name^="multi_new_stpartdate_"]').first();
+    const firstStartTime = firstAppointment.locator('input[name^="multi_new_stparttime_"]').first();
+    const firstEndDate = firstAppointment.locator('input[name^="multi_new_etpartdate_"]').first();
+    const firstEndTime = firstAppointment.locator('input[name^="multi_new_etparttime_"]').first();
 
-        if (!appointment) {
-          return {
-            error: "NO_LIVE_APPOINTMENT_BLOCK",
-            startDate: "",
-            startTime: "",
-            endDate: "",
-            endTime: "",
-            fieldworkerId: ""
-          };
-        }
-
-        const find = prefix =>
-          appointment.querySelector(`input[name^="${prefix}"]`);
-
-        const setNativeValue = (el, value) => {
-          if (!el) return false;
-
-          const proto = Object.getPrototypeOf(el);
-          const descriptor =
-            Object.getOwnPropertyDescriptor(proto, "value") ||
-            Object.getOwnPropertyDescriptor(
-              window.HTMLInputElement.prototype,
-              "value"
-            );
-
-          if (descriptor && descriptor.set) {
-            descriptor.set.call(el, value);
-          } else {
-            el.value = value;
-          }
-
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          el.dispatchEvent(new Event("blur", { bubbles: true }));
-          return true;
-        };
-
-        const startDateEl = find("multi_new_stpartdate_");
-        const startTimeEl = find("multi_new_stparttime_");
-        const endDateEl = find("multi_new_etpartdate_");
-        const endTimeEl = find("multi_new_etparttime_");
-        const contractorEl = appointment.querySelector(
-          'input[name^="contractor_"]'
-        );
-
-        const applied = {
-          startDate: setNativeValue(
-            startDateEl,
-            expectedAppointment.startDate
-          ),
-          startTime: setNativeValue(
-            startTimeEl,
-            expectedAppointment.startTime
-          ),
-          endDate: setNativeValue(
-            endDateEl,
-            expectedAppointment.endDate
-          ),
-          endTime: setNativeValue(
-            endTimeEl,
-            expectedAppointment.endTime
-          )
-        };
-
-        return {
-          applied,
-          startDate: startDateEl?.value || "",
-          startTime: startTimeEl?.value || "",
-          endDate: endDateEl?.value || "",
-          endTime: endTimeEl?.value || "",
-          fieldworkerId: contractorEl?.value || ""
-        };
-      },
-      {
-        expectedAppointment,
-        shouldRemainUnassigned
-      }
-    );
-
-    console.log(
-      "FINAL appointment + fieldworker state:",
-      JSON.stringify(finalAppointmentState)
-    );
-
-    if (finalAppointmentState.error) {
-      throw new Error(
-        `FINAL_APPOINTMENT_DOM_ERROR: ${JSON.stringify(finalAppointmentState)}`
-      );
+    async function commitComponentValue(locator, value) {
+      await locator.waitFor({ state: "visible", timeout: 10000 });
+      await locator.click({ force: true });
+      await locator.press("Control+A").catch(() => {});
+      await locator.fill(value);
+      await locator.press("Enter").catch(() => {});
+      await locator.press("Tab").catch(() => {});
+      await page.waitForTimeout(100);
     }
+
+    await commitComponentValue(firstStartDate, expectedAppointment.startDate);
+    await commitComponentValue(firstStartTime, expectedAppointment.startTime);
+    await commitComponentValue(firstEndDate, expectedAppointment.endDate);
+    await commitComponentValue(firstEndTime, expectedAppointment.endTime);
+
+    const appointmentTimes = {
+      startDate: await firstStartDate.inputValue(),
+      startTime: await firstStartTime.inputValue(),
+      endDate: await firstEndDate.inputValue(),
+      endTime: await firstEndTime.inputValue()
+    };
 
     if (
-      finalAppointmentState.startDate !== expectedAppointment.startDate ||
-      finalAppointmentState.startTime !== expectedAppointment.startTime ||
-      finalAppointmentState.endDate !== expectedAppointment.endDate ||
-      finalAppointmentState.endTime !== expectedAppointment.endTime
+      appointmentTimes.startDate !== expectedAppointment.startDate ||
+      appointmentTimes.startTime !== expectedAppointment.startTime ||
+      appointmentTimes.endDate !== expectedAppointment.endDate ||
+      appointmentTimes.endTime !== expectedAppointment.endTime
     ) {
-      throw new Error(
-        `FINAL_APPOINTMENT_NOT_STICKING: ${JSON.stringify(finalAppointmentState)}`
-      );
+      throw new Error(`APPOINTMENT_COMPONENT_COMMIT_FAILED: ${JSON.stringify(appointmentTimes)}`);
     }
-if (!finalAppointmentState.fieldworkerId) {
-  if (shouldRemainUnassigned) {
-    console.log(
-      "No contractor input/value present for unassigned booking. Continuing to Save so Octopus can validate the real form state."
-    );
-  } else {
-    throw new Error(
-      `FIELDWORKER_ID_MISSING: ${JSON.stringify(finalAppointmentState)}`
-    );
-  }
-} else {
-  console.log(
-    "Fieldworker id committed:",
-    finalAppointmentState.fieldworkerId,
-    shouldRemainUnassigned ? "(Unassigned Tasks Manager placeholder)" : ""
-  );
-}
-    // Commit the worker through the exact visible Octopus option. A broad
-    // hasText locator can hit a parent <li> and leave Vue's contractor model empty.
+
+    // Select the worker last so no later visit change can clear Vue's model.
     {
-      const firstAppointment = page.locator('[id^="booking_visits_"]').first();
       const fieldworkerSearch = firstAppointment
         .locator('input[placeholder="Select Fieldworker"]')
         .first();
@@ -1521,13 +1430,11 @@ if (!finalAppointmentState.fieldworkerId) {
         '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
       );
       let selectedWorker = false;
-
       for (let i = 0; i < await workerOptions.count(); i++) {
         const option = workerOptions.nth(i);
         const optionText = (await option.innerText().catch(() => ""))
           .replace(/\s+/g, " ")
           .trim();
-
         if (
           optionText &&
           optionText.length < 300 &&
@@ -1538,14 +1445,9 @@ if (!finalAppointmentState.fieldworkerId) {
           break;
         }
       }
-
-      if (!selectedWorker) {
-        throw new Error(`FIELDWORKER_OPTION_NOT_FOUND: ${desiredWorker}`);
-      }
-
+      if (!selectedWorker) throw new Error(`FIELDWORKER_OPTION_NOT_FOUND: ${desiredWorker}`);
       await fieldworkerSearch.press("Tab").catch(() => {});
       await page.waitForTimeout(500);
-      console.log("Fieldworker committed through exact native option:", desiredWorker);
     }
 
     console.log("Required booking fields completed.");
