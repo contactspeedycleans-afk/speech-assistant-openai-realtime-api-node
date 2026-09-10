@@ -8,4 +8,4 @@ RUN npm install
 
 COPY . .
 
-CMD ["node", "playwright/octopus-notification-watcher.js"]
+CMD ["node", "index.js"]
