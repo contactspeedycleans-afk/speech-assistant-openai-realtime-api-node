@@ -1372,54 +1372,6 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
     const UNASSIGNED_TASKS_MANAGER_ID = "47464";
 
-    // Commit the worker through the exact visible Octopus option. A broad
-    // hasText locator can hit a parent <li> and leave Vue's contractor model empty.
-    {
-      const firstAppointment = page.locator('[id^="booking_visits_"]').first();
-      const fieldworkerSearch = firstAppointment
-        .locator('input[placeholder="Select Fieldworker"]')
-        .first();
-      const desiredWorker = shouldRemainUnassigned
-        ? "Unassigned Tasks Manager"
-        : TEST.fieldworkerName;
-
-      await fieldworkerSearch.waitFor({ state: "visible", timeout: 10000 });
-      await fieldworkerSearch.click({ force: true });
-      await fieldworkerSearch.fill("");
-      await fieldworkerSearch.type(desiredWorker, { delay: 20 });
-      await page.waitForTimeout(1100);
-
-      const workerOptions = page.locator(
-        '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
-      );
-      let selectedWorker = false;
-
-      for (let i = 0; i < await workerOptions.count(); i++) {
-        const option = workerOptions.nth(i);
-        const optionText = (await option.innerText().catch(() => ""))
-          .replace(/\s+/g, " ")
-          .trim();
-
-        if (
-          optionText &&
-          optionText.length < 300 &&
-          optionText.toLowerCase().includes(desiredWorker.toLowerCase())
-        ) {
-          await option.click({ force: true, timeout: 5000 });
-          selectedWorker = true;
-          break;
-        }
-      }
-
-      if (!selectedWorker) {
-        throw new Error(`FIELDWORKER_OPTION_NOT_FOUND: ${desiredWorker}`);
-      }
-
-      await fieldworkerSearch.press("Tab").catch(() => {});
-      await page.waitForTimeout(500);
-      console.log("Fieldworker committed through exact native option:", desiredWorker);
-    }
-
     console.log("Re-applying appointment after fieldworker render...");
 
     // FAST/STABLE FINAL APPOINTMENT SET:
@@ -1495,10 +1447,6 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
           )
         };
 
-        if (shouldRemainUnassigned && contractorEl) {
-          setNativeValue(contractorEl, "47464");
-        }
-
         return {
           applied,
           startDate: startDateEl?.value || "",
@@ -1552,6 +1500,54 @@ if (!finalAppointmentState.fieldworkerId) {
     shouldRemainUnassigned ? "(Unassigned Tasks Manager placeholder)" : ""
   );
 }
+    // Commit the worker through the exact visible Octopus option. A broad
+    // hasText locator can hit a parent <li> and leave Vue's contractor model empty.
+    {
+      const firstAppointment = page.locator('[id^="booking_visits_"]').first();
+      const fieldworkerSearch = firstAppointment
+        .locator('input[placeholder="Select Fieldworker"]')
+        .first();
+      const desiredWorker = shouldRemainUnassigned
+        ? "Unassigned Tasks Manager"
+        : TEST.fieldworkerName;
+
+      await fieldworkerSearch.waitFor({ state: "visible", timeout: 10000 });
+      await fieldworkerSearch.click({ force: true });
+      await fieldworkerSearch.fill("");
+      await fieldworkerSearch.type(desiredWorker, { delay: 20 });
+      await page.waitForTimeout(1100);
+
+      const workerOptions = page.locator(
+        '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
+      );
+      let selectedWorker = false;
+
+      for (let i = 0; i < await workerOptions.count(); i++) {
+        const option = workerOptions.nth(i);
+        const optionText = (await option.innerText().catch(() => ""))
+          .replace(/\s+/g, " ")
+          .trim();
+
+        if (
+          optionText &&
+          optionText.length < 300 &&
+          optionText.toLowerCase().includes(desiredWorker.toLowerCase())
+        ) {
+          await option.click({ force: true, timeout: 5000 });
+          selectedWorker = true;
+          break;
+        }
+      }
+
+      if (!selectedWorker) {
+        throw new Error(`FIELDWORKER_OPTION_NOT_FOUND: ${desiredWorker}`);
+      }
+
+      await fieldworkerSearch.press("Tab").catch(() => {});
+      await page.waitForTimeout(500);
+      console.log("Fieldworker committed through exact native option:", desiredWorker);
+    }
+
     console.log("Required booking fields completed.");
     lisaTiming("REQUIRED_FIELDS_COMPLETE");
 
