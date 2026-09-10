@@ -114,6 +114,16 @@ fastify.register(fastifyWs);
 // Octopus New Booking page, accepts one payload, then is replaced immediately.
 let warmBookingWorkerPromise = null;
 let fastBookingQueue = Promise.resolve();
+let warmBookingState = {
+    status: 'starting',
+    updatedAt: new Date().toISOString(),
+    detail: 'Launching persistent Octopus browser.'
+};
+
+function setWarmBookingState(status, detail) {
+    warmBookingState = { status, updatedAt: new Date().toISOString(), detail };
+    console.log(`[FAST_BOOKING_STATE] ${status}: ${detail}`);
+}
 
 function createWarmBookingWorker() {
     return new Promise((resolve, reject) => {
@@ -135,38 +145,48 @@ function createWarmBookingWorker() {
         let stderr = '';
         let settled = false;
 
+        setWarmBookingState('starting', 'Chromium child started; opening Octopus New Booking.');
+
         const readyTimeout = setTimeout(() => {
             if (!settled) {
                 settled = true;
+                const detail = `Ready timeout. stdout=${stdout.slice(-2500)} stderr=${stderr.slice(-2500)}`;
+                setWarmBookingState('failed', detail);
                 child.kill('SIGTERM');
-                reject(new Error('FAST_BOOKING_WORKER_READY_TIMEOUT'));
+                reject(new Error(`FAST_BOOKING_WORKER_READY_TIMEOUT ${detail}`));
             }
-        }, 90000);
+        }, 120000);
 
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
 
         child.stdout.on('data', chunk => {
             stdout += chunk;
+            for (const line of String(chunk).split(/\r?\n/)) {
+                if (/LISA_|Octopus|BOOKING_PAGE|login|Error/i.test(line) && line.trim()) {
+                    console.log(`[FAST_BOOKING_WORKER] ${line.trim()}`);
+                }
+            }
             if (!settled && stdout.includes('LISA_BOOKING_SESSION_READY')) {
                 settled = true;
                 clearTimeout(readyTimeout);
-                console.log('Fast Octopus booking worker is ready.');
+                setWarmBookingState('ready', 'Authenticated New Booking page is open and interactive.');
                 resolve({ child, getStdout: () => stdout, getStderr: () => stderr });
             }
         });
 
         child.stderr.on('data', chunk => {
             stderr += chunk;
+            if (String(chunk).trim()) console.error(`[FAST_BOOKING_WORKER_STDERR] ${String(chunk).trim()}`);
         });
 
         child.once('exit', code => {
             if (!settled) {
                 settled = true;
                 clearTimeout(readyTimeout);
-                reject(new Error(
-                    `FAST_BOOKING_WORKER_EXITED_BEFORE_READY code=${code} stderr=${stderr.slice(-2000)}`
-                ));
+                const detail = `Exited before ready, code=${code}, stdout=${stdout.slice(-2000)}, stderr=${stderr.slice(-2000)}`;
+                setWarmBookingState('failed', detail);
+                reject(new Error(`FAST_BOOKING_WORKER_EXITED_BEFORE_READY ${detail}`));
             }
         });
     });
@@ -3189,6 +3209,14 @@ if (customer) {
             });
         }
     );
+});
+
+fastify.get('/lisa/fast-booking-status', async (_request, reply) => {
+    return reply.send({
+        success: warmBookingState.status === 'ready',
+        testOnly: process.env.LISA_FAST_BOOKING_TEST_ONLY === '1',
+        worker: warmBookingState
+    });
 });
 
 fastify.get('/dev/test-technicians', async (request, reply) => {
