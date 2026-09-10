@@ -18,7 +18,7 @@ import { buildSessionContext } from './lib/sessionContextBuilder.js';
 import { buildOpenAiSession } from './lib/openAiSessionBuilder.js';
 import { createTechnicianSearch } from './lib/technicianSearch.js';
 import { runSmsReceptionist } from './lib/smsReceptionist.js';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -107,7 +107,145 @@ db.query('SELECT NOW()')
 const fastify = Fastify();
 
 fastify.register(fastifyFormBody);
+
 fastify.register(fastifyWs);
+
+// Isolated fast-booking worker. One authenticated Chromium process waits on the
+// Octopus New Booking page, accepts one payload, then is replaced immediately.
+let warmBookingWorkerPromise = null;
+let fastBookingQueue = Promise.resolve();
+
+function createWarmBookingWorker() {
+    return new Promise((resolve, reject) => {
+        const child = spawn(
+            process.execPath,
+            ['playwright/octopus-create-booking.js'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    LISA_BOOKING_PREWARM: '1',
+                    LISA_BOOKING_PAYLOAD: ''
+                },
+                stdio: ['pipe', 'pipe', 'pipe']
+            }
+        );
+
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+
+        const readyTimeout = setTimeout(() => {
+            if (!settled) {
+                settled = true;
+                child.kill('SIGTERM');
+                reject(new Error('FAST_BOOKING_WORKER_READY_TIMEOUT'));
+            }
+        }, 90000);
+
+        child.stdout.setEncoding('utf8');
+        child.stderr.setEncoding('utf8');
+
+        child.stdout.on('data', chunk => {
+            stdout += chunk;
+            if (!settled && stdout.includes('LISA_BOOKING_SESSION_READY')) {
+                settled = true;
+                clearTimeout(readyTimeout);
+                console.log('Fast Octopus booking worker is ready.');
+                resolve({ child, getStdout: () => stdout, getStderr: () => stderr });
+            }
+        });
+
+        child.stderr.on('data', chunk => {
+            stderr += chunk;
+        });
+
+        child.once('exit', code => {
+            if (!settled) {
+                settled = true;
+                clearTimeout(readyTimeout);
+                reject(new Error(
+                    `FAST_BOOKING_WORKER_EXITED_BEFORE_READY code=${code} stderr=${stderr.slice(-2000)}`
+                ));
+            }
+        });
+    });
+}
+
+function ensureWarmBookingWorker() {
+    if (!warmBookingWorkerPromise) {
+        warmBookingWorkerPromise = createWarmBookingWorker().catch(error => {
+            warmBookingWorkerPromise = null;
+            throw error;
+        });
+    }
+    return warmBookingWorkerPromise;
+}
+
+async function runWithWarmBookingWorker(body) {
+    const worker = await ensureWarmBookingWorker();
+    warmBookingWorkerPromise = null;
+
+    return await new Promise((resolve, reject) => {
+        const { child, getStdout, getStderr } = worker;
+        let finished = false;
+
+        const timeout = setTimeout(() => {
+            if (!finished) {
+                finished = true;
+                child.kill('SIGTERM');
+                reject(new Error('FAST_BOOKING_RESULT_TIMEOUT'));
+            }
+        }, 150000);
+
+        const finishFromOutput = () => {
+            if (finished) return;
+            const marker = getStdout()
+                .split(/\r?\n/)
+                .find(line => line.startsWith('LISA_BOOKING_RESULT='));
+            if (!marker) return;
+
+            finished = true;
+            clearTimeout(timeout);
+            try {
+                resolve(JSON.parse(marker.substring('LISA_BOOKING_RESULT='.length)));
+            } catch (error) {
+                reject(error);
+            } finally {
+                ensureWarmBookingWorker().catch(error => {
+                    console.error('Replacement fast-booking worker failed:', error.message);
+                });
+            }
+        };
+
+        child.stdout.on('data', finishFromOutput);
+        child.once('exit', code => {
+            finishFromOutput();
+            if (!finished) {
+                finished = true;
+                clearTimeout(timeout);
+                ensureWarmBookingWorker().catch(() => {});
+                reject(new Error(
+                    `FAST_BOOKING_WORKER_FAILED code=${code} stderr=${getStderr().slice(-3000)}`
+                ));
+            }
+        });
+
+        child.stdin.write(JSON.stringify(body) + '\n');
+        child.stdin.end();
+    });
+}
+
+function enqueueFastBooking(body) {
+    const job = fastBookingQueue.then(() => runWithWarmBookingWorker(body));
+    fastBookingQueue = job.catch(() => {});
+    return job;
+}
+
+// Begin warming without delaying HTTP startup.
+ensureWarmBookingWorker().catch(error => {
+    console.error('Initial fast-booking worker failed:', error.message);
+});
 
 
 function normalizeLisaPhone(value) {
@@ -305,6 +443,38 @@ fastify.post(
                     });
 
                 return reply.send(result);
+            }
+
+            if (action === 'create_fast') {
+                if (body.customerConfirmed !== true) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'confirmation_required',
+                        error: 'The customer must explicitly confirm the complete booking first.'
+                    });
+                }
+
+                const startedAt = Date.now();
+                const result = await enqueueFastBooking(body);
+                const bookingId = result.bookingId || result.booking_id || null;
+                const bookingNumber = result.bookingNumber || result.booking_number || null;
+                const verified =
+                    result.success === true &&
+                    Boolean(bookingId && bookingNumber);
+
+                if (verified) {
+                    await cacheLisaCreatedBooking({ bookingId, bookingNumber, body });
+                }
+
+                return reply.send({
+                    ...result,
+                    success: verified,
+                    verified_created_in_octopus: verified,
+                    bookingId,
+                    bookingNumber,
+                    fastBookingElapsedMs: Date.now() - startedAt,
+                    outcome: verified ? 'created_fast' : (result.outcome || 'verification_failed')
+                });
             }
 
             if (action === 'create') {
