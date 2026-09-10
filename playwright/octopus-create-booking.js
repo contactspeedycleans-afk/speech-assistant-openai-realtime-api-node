@@ -787,7 +787,10 @@ async function main() {
     await visibleBookingAddress.click();
     await visibleBookingAddress.fill(bookingAddress);
 
-    await page.waitForTimeout(3500);
+    await page.waitForFunction(
+      () => document.querySelectorAll('[role="option"], .pac-item, .vs__dropdown-option').length > 0,
+      { timeout: 4000 }
+    ).catch(() => {});
 
     // Google/Octopus address suggestions frequently expand abbreviations
     // (Ct -> Court, Rd -> Road, St -> Street) or change punctuation. Do NOT
@@ -819,9 +822,6 @@ async function main() {
     const targetState = normalizeAddressText(TEST.state);
     const targetZip = String(TEST.postcode || "").replace(/\D/g, "");
     const targetNumber = String(TEST.streetNumber || "").replace(/\D/g, "");
-
-    // Wait briefly for autocomplete options to appear.
-    await page.waitForTimeout(1200);
 
     const addressCandidates = page.locator(
       '[role="option"]:visible, .pac-item:visible, .vs__dropdown-option:visible, li:visible'
@@ -935,7 +935,19 @@ async function main() {
       timeout: 10000
     });
 
-    await page.waitForTimeout(3000);
+    await page.waitForFunction(() => {
+      const value = placeholder =>
+        Array.from(document.querySelectorAll(`input[placeholder="${placeholder}"]`))
+          .find(el => {
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
+            return s.display !== "none" && s.visibility !== "hidden" && r.width > 0 && r.height > 0;
+          })?.value || "";
+      return value("Address Line 1") && value("Suburb / Locality") &&
+             value("Postal / Zip code") && value("State") &&
+             document.querySelector("#lat-test-input")?.value &&
+             document.querySelector("#lng-test-input")?.value;
+    }, { timeout: 5000 }).catch(() => {});
 
     const selectedLocation = await page.evaluate(() => {
       const bookingAddressInput =
@@ -1052,8 +1064,6 @@ await servicesDropdown.evaluate(element => {
   );
 });
 
-await page.waitForTimeout(2000);
-
 const cleanAsDirected = page
   .locator('li[role="option"][aria-label="Standard Cleaning"]')
   .filter({ hasText: "$82.5" })
@@ -1095,7 +1105,10 @@ await cleanAsDirected.evaluate(element => {
   );
 });
 
-await page.waitForTimeout(3000);
+await page.waitForFunction(() => {
+  const text = document.body?.innerText || "";
+  return /Service Details/i.test(text) && /Standard Cleaning/i.test(text);
+}, { timeout: 5000 }).catch(() => {});
 
 const serviceState = await page.evaluate(() => {
   const dropdown =
@@ -1236,7 +1249,7 @@ await forceInputValue(
   expectedAppointment.endTime
 );
 
-await page.waitForTimeout(2000);
+await page.waitForTimeout(250);
 
 console.log("Appointment date/time set.");
 lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
@@ -1285,7 +1298,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       el.dispatchEvent(new Event("change", { bubbles: true }));
     });
 
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(200);
 
     const oneTimeState = await oneTimeInput.evaluate(el => ({
       id: el.id || "",
@@ -1367,7 +1380,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
   await locator.press("Enter").catch(() => {});
   await locator.press("Tab").catch(() => {});
 
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(120);
 }
 
     await setFirstAppointmentValue(firstStartDate, expectedAppointment.startDate);
@@ -1407,71 +1420,9 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     const UNASSIGNED_TASKS_MANAGER_ID = "47464";
 
 if (shouldRemainUnassigned) {
-  console.log(
-    "Selecting Unassigned Tasks Manager through Octopus fieldworker UI..."
-  );
-
-  const fieldworkerSearch = firstAppointment
-    .locator('input[placeholder="Select Fieldworker"]')
-    .first();
-
-  await fieldworkerSearch.waitFor({
-    state: "visible",
-    timeout: 15000
-  });
-
-  await fieldworkerSearch.scrollIntoViewIfNeeded();
-  await fieldworkerSearch.click({ force: true });
-  await fieldworkerSearch.fill("");
-
-  await fieldworkerSearch.type("Unassigned Tasks Manager", {
-    delay: 35
-  });
-
-  await page.waitForTimeout(1500);
-
-  const workerOptions = page.locator(
-    '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
-  );
-
-  let selectedUnassigned = false;
-
-  for (let i = 0; i < await workerOptions.count(); i++) {
-    const option = workerOptions.nth(i);
-
-    const text = (await option.innerText().catch(() => ""))
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (/Unassigned Tasks Manager/i.test(text)) {
-      console.log(
-        "Selecting fieldworker option:",
-        text
-      );
-
-      await option.click({
-        force: true,
-        timeout: 10000
-      });
-
-      selectedUnassigned = true;
-      break;
-    }
-  }
-
-  if (!selectedUnassigned) {
-    // Octopus sometimes hides this dropdown option. The final DOM step below
-    // still writes the verified placeholder contractor ID 47464, and Octopus
-    // Save remains the authoritative validation.
-    console.log(
-      "Unassigned Tasks Manager option was temporarily absent; using verified contractor ID 47464 fallback."
-    );
-  } else {
-    await page.waitForTimeout(500);
-    console.log(
-      "Unassigned Tasks Manager selected through native Octopus UI."
-    );
-  }
+  // The verified placeholder contractor ID is written in the final DOM pass
+  // below. Skipping the slow remote dropdown avoids an unnecessary network wait.
+  console.log("Using verified Unassigned Tasks Manager contractor ID 47464.");
 } else {
       console.log("Selecting requested fieldworker with component-native input...");
 
@@ -2019,11 +1970,11 @@ lisaTiming("FINAL_SUBMIT_START");
       ]);
     }
 
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(250);
 
     const saveDiagnostics = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
-      const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
+      const bokMatch = `${document.title || ""} ${bodyText}`.match(/\bBOK-\d+\b/i);
       const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
 
       const visible = el => {
