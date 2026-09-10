@@ -476,6 +476,15 @@ fastify.post(
 
                 const startedAt = Date.now();
                 const result = await enqueueFastBooking(body);
+                if (body.dryRun === true && result.dryRun === true) {
+                    return reply.send({
+                        ...result,
+                        success: true,
+                        fastBookingElapsedMs: Date.now() - startedAt,
+                        outcome: 'profiled_no_save'
+                    });
+                }
+
                 const bookingId = result.bookingId || result.booking_id || null;
                 const bookingNumber = result.bookingNumber || result.booking_number || null;
                 const verified =
