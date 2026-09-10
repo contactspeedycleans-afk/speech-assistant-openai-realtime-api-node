@@ -1454,6 +1454,11 @@ if (shouldRemainUnassigned) {
         timeout: 10000
       });
 
+      // Commit the Vue autocomplete selection before later appointment fields
+      // re-render. A click can visually select the worker without persisting it.
+      await fieldworkerSearch.press("Tab").catch(() => {});
+      await page.waitForTimeout(350);
+
       selectedUnassigned = true;
       break;
     }
@@ -1867,14 +1872,14 @@ lisaTiming("FINAL_SUBMIT_START");
       request =>
         request.method() === "POST" &&
         /\/booking-add\?old=1/i.test(request.url()),
-      { timeout: 15000 }
+      { timeout: 10000 }
     ).catch(() => null);
 
     const normalSaveResponsePromise = page.waitForResponse(
       response =>
         response.request().method() === "POST" &&
         /\/booking-add\?old=1/i.test(response.url()),
-      { timeout: 20000 }
+      { timeout: 10000 }
     ).catch(() => null);
 
     await saveButton.click({
@@ -1902,11 +1907,11 @@ lisaTiming("FINAL_SUBMIT_START");
 
     // First give normal browser behavior a short chance to complete.
     await Promise.race([
-      page.waitForURL(/\/booking\/view\/\d+/i, { timeout: 8000 }).catch(() => null),
+      page.waitForURL(/\/booking\/view\/\d+/i, { timeout: 4000 }).catch(() => null),
       page.getByText("Notify Customer", { exact: true })
-        .waitFor({ state: "visible", timeout: 8000 })
+        .waitFor({ state: "visible", timeout: 4000 })
         .catch(() => null),
-      page.waitForTimeout(8000)
+      page.waitForTimeout(4000)
     ]);
 
     // Some Octopus versions POST the exact form but fail because a blank booking_id
