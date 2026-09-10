@@ -5665,6 +5665,50 @@ function cleanupLisaBookingJobs() {
 
 setInterval(cleanupLisaBookingJobs, 10 * 60 * 1000).unref();
 
+let lisaBookingWarmupPromise = null;
+
+function ensureLisaBookingSessionReady() {
+  if (lisaBookingWarmupPromise) return lisaBookingWarmupPromise;
+
+  console.log("Prewarming Lisa's authenticated OctopusPro booking session.");
+
+  lisaBookingWarmupPromise = execFileAsync(
+    process.execPath,
+    ["playwright/octopus-create-booking.js"],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        LISA_BOOKING_PREWARM: "1",
+        LISA_AUTH_STATE_PATH:
+          process.env.LISA_AUTH_STATE_PATH || "/tmp/lisa-octopus-auth.json"
+      },
+      timeout: 120000,
+      maxBuffer: 2 * 1024 * 1024
+    }
+  )
+    .then(({ stdout, stderr }) => {
+      if (!String(stdout || "").includes("LISA_BOOKING_SESSION_READY")) {
+        throw new Error("Booking session warmup did not report ready.");
+      }
+      if (String(stderr || "").trim()) {
+        console.log("Lisa booking-session warmup stderr:", String(stderr).slice(-4000));
+      }
+      console.log("Lisa authenticated OctopusPro booking session is ready.");
+      return true;
+    })
+    .catch(error => {
+      lisaBookingWarmupPromise = null;
+      console.error(
+        "Lisa booking-session warmup failed; bookings retain the full-login fallback:",
+        error?.message || error
+      );
+      return false;
+    });
+
+  return lisaBookingWarmupPromise;
+}
+
 async function runLisaBookingInBackground(requestId, body) {
   const existing = lisaBookingJobs.get(requestId);
   if (!existing) return;
@@ -5676,6 +5720,10 @@ async function runLisaBookingInBackground(requestId, body) {
   });
 
   console.log("Lisa async booking background job started:", requestId);
+
+  // Wait for the startup warmup when it is still running. If it failed, the
+  // creator safely falls back to a normal OctopusPro login.
+  await ensureLisaBookingSessionReady();
 
   let stdout = "";
   let stderr = "";
@@ -6861,6 +6909,10 @@ async function main() {
   );
 
   startHttpServer();
+
+  // Prime the authenticated booking session without blocking the health endpoint
+  // or the notification/dispatch watcher startup.
+  ensureLisaBookingSessionReady().catch(() => {});
 
   const browser =
     await chromium.launch({
