@@ -590,19 +590,20 @@ async function main() {
 
     console.log("Opening real New Booking form...");
 
-    await page.waitForTimeout(5000);
-    lisaTiming("BOOKING_PAGE_LOADED");
-
-    console.log("Filling customer through the visible Octopus selector...");
-
     const customerSearch = page.locator(
       'input[placeholder="Find customer"]'
     ).first();
 
+    // Continue as soon as the real form is interactive. The visibility check
+    // retains the slow-Octopus safety margin when the page genuinely needs it.
     await customerSearch.waitFor({
       state: "visible",
       timeout: 20000
     });
+    await page.waitForTimeout(300);
+    lisaTiming("BOOKING_PAGE_LOADED");
+
+    console.log("Filling customer through the visible Octopus selector...");
 
     let customerSelected = false;
 
@@ -624,11 +625,12 @@ async function main() {
 
       console.log(`Customer lookup using: ${lookupTerm}`);
 
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      // Avoid multiplying every phone/email/name miss into a long hold.
+      for (let attempt = 1; attempt <= 2; attempt++) {
         await customerSearch.click({ force: true }).catch(() => {});
         await customerSearch.fill("").catch(() => {});
         await customerSearch.type(lookupTerm, { delay: 35 }).catch(() => {});
-        await page.waitForTimeout(1400 + attempt * 500);
+        await page.waitForTimeout(900 + attempt * 350);
 
         const candidates = page.locator(
           '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
@@ -1458,16 +1460,18 @@ if (shouldRemainUnassigned) {
   }
 
   if (!selectedUnassigned) {
-    throw new Error(
-      "UNASSIGNED_TASKS_MANAGER_OPTION_NOT_FOUND"
+    // Octopus sometimes hides this dropdown option. The final DOM step below
+    // still writes the verified placeholder contractor ID 47464, and Octopus
+    // Save remains the authoritative validation.
+    console.log(
+      "Unassigned Tasks Manager option was temporarily absent; using verified contractor ID 47464 fallback."
+    );
+  } else {
+    await page.waitForTimeout(500);
+    console.log(
+      "Unassigned Tasks Manager selected through native Octopus UI."
     );
   }
-
-  await page.waitForTimeout(1200);
-
-  console.log(
-    "Unassigned Tasks Manager selected through native Octopus UI."
-  );
 } else {
       console.log("Selecting requested fieldworker with component-native input...");
 
