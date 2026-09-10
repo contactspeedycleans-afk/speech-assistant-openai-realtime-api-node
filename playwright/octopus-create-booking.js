@@ -656,7 +656,7 @@ async function main() {
         await page.waitForTimeout(900 + attempt * 350);
 
         const candidates = page.locator(
-          '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
+          '[role="option"]:visible, .vs__dropdown-option:visible'
         );
 
         const candidateCount = await candidates.count().catch(() => 0);
@@ -1433,7 +1433,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       await page.waitForTimeout(1100);
 
       const workerOptions = page.locator(
-        '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
+        '[role="option"]:visible, .vs__dropdown-option:visible'
       );
       let selectedWorker = false;
       for (let i = 0; i < await workerOptions.count(); i++) {
