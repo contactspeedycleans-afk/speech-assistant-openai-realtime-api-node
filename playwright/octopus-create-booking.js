@@ -1,9 +1,13 @@
 import { chromium } from "playwright";
+import { existsSync } from "node:fs";
 
 const OCTOPUS_EMAIL = process.env.OCTOPUS_EMAIL;
 const OCTOPUS_PASSWORD = process.env.OCTOPUS_PASSWORD;
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME || "SpeedyCleans";
+const LISA_AUTH_STATE_PATH =
+  process.env.LISA_AUTH_STATE_PATH || "/tmp/lisa-octopus-auth.json";
+const LISA_PREWARM_ONLY = process.env.LISA_BOOKING_PREWARM === "1";
 
 const livePayload = process.env.LISA_BOOKING_PAYLOAD
   ? JSON.parse(process.env.LISA_BOOKING_PAYLOAD)
@@ -542,24 +546,49 @@ async function main() {
   lisaTiming("BROWSER_LAUNCHED");
 
   try {
+    const hasWarmAuthState = existsSync(LISA_AUTH_STATE_PATH);
     const context = await browser.newContext({
       viewport: {
         width: 1600,
         height: 1000
-      }
+      },
+      ...(hasWarmAuthState ? { storageState: LISA_AUTH_STATE_PATH } : {})
     });
 
     const page = await context.newPage();
 
-    await login(page);
-    lisaTiming("OCTOPUS_LOGIN_READY");
+    if (hasWarmAuthState) {
+      console.log("Using Lisa's warmed OctopusPro session.");
+      await page.goto("https://admin.octopuspro.com/booking/add", {
+        waitUntil: "domcontentloaded",
+        timeout: 60000
+      });
+
+      if (page.url().toLowerCase().includes("/login")) {
+        console.log("Warmed OctopusPro session expired; using verified full login fallback.");
+        await login(page);
+        await page.goto("https://admin.octopuspro.com/booking/add", {
+          waitUntil: "domcontentloaded",
+          timeout: 60000
+        });
+      }
+    } else {
+      await login(page);
+      await page.goto("https://admin.octopuspro.com/booking/add", {
+        waitUntil: "domcontentloaded",
+        timeout: 60000
+      });
+    }
+
+    await context.storageState({ path: LISA_AUTH_STATE_PATH });
+    lisaTiming(hasWarmAuthState ? "OCTOPUS_WARM_SESSION_READY" : "OCTOPUS_LOGIN_READY");
+
+    if (LISA_PREWARM_ONLY) {
+      console.log("LISA_BOOKING_SESSION_READY");
+      return;
+    }
 
     console.log("Opening real New Booking form...");
-
-    await page.goto("https://admin.octopuspro.com/booking/add", {
-      waitUntil: "domcontentloaded",
-      timeout: 60000
-    });
 
     await page.waitForTimeout(5000);
     lisaTiming("BOOKING_PAGE_LOADED");
