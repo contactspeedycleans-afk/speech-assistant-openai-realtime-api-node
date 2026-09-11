@@ -1344,50 +1344,60 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
 
     console.log("Completing required booking fields with exact DOM inspection...");
 
-    // ONE-TIME ONLY MODE.
-    // IMPORTANT: set the hidden checkbox ONCE and do NOT dispatch a click event.
-    // A synthetic click on a checkbox toggles it back off.
-    console.log("SETTING ONE TIME CLEANING = TRUE...");
+    // Commit the customer-facing cleaning frequency through the service's
+    // own visible custom-field labels. Attribute ids differ by service.
+    const frequencyLabel =
+      /tri|3.?week/i.test(frequencyText) ? "Tri-weekly Cleans" :
+      /bi|2.?week|every.?other/i.test(frequencyText) ? "Bi-weekly Cleans" :
+      /month|4.?week/i.test(frequencyText) ? "Monthly Cleans" :
+      /week/i.test(frequencyText) ? "Weekly Cleans" :
+      "One Time Cleaning";
 
-    const oneTimeInput = page.locator(
-      'input[name="attribute_8087013985[]"][value="37558"]'
-    ).first();
+    console.log("SETTING CLEANING FREQUENCY:", frequencyLabel);
+    const frequencyChoice = page
+      .locator("label.checkbox-label")
+      .filter({ hasText: frequencyLabel })
+      .first();
+    await frequencyChoice.waitFor({ state: "visible", timeout: 10000 });
+    const frequencyFor = await frequencyChoice.getAttribute("for");
+    if (!frequencyFor) throw new Error(`FREQUENCY_CONTROL_NOT_FOUND: ${frequencyLabel}`);
 
-    await oneTimeInput.waitFor({
-      state: "attached",
-      timeout: 10000
-    });
+    const frequencyState = await page.evaluate(
+      ({ targetId, targetLabel }) => {
+        const target = document.getElementById(targetId);
+        if (!target) return { applied: false, targetId, targetLabel };
+        const groupName = target.getAttribute("name");
+        const group = groupName
+          ? Array.from(document.querySelectorAll(`input[name="${CSS.escape(groupName)}"]`))
+          : [target];
+        for (const input of group) {
+          const setter = Object.getOwnPropertyDescriptor(
+            Object.getPrototypeOf(input), "checked"
+          )?.set;
+          if (setter) setter.call(input, input === target);
+          else input.checked = input === target;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        return {
+          applied: target.checked,
+          targetId,
+          targetLabel,
+          groupName,
+          selected: group.filter(x => x.checked).map(x => ({
+            id: x.id,
+            value: x.value
+          }))
+        };
+      },
+      { targetId: frequencyFor, targetLabel: frequencyLabel }
+    );
 
-    await oneTimeInput.evaluate(el => {
-      const proto = Object.getPrototypeOf(el);
-      const checkedSetter =
-        Object.getOwnPropertyDescriptor(proto, "checked")?.set;
-
-      if (checkedSetter) {
-        checkedSetter.call(el, true);
-      } else {
-        el.checked = true;
-      }
-
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    await page.waitForTimeout(800);
-
-    const oneTimeState = await oneTimeInput.evaluate(el => ({
-      id: el.id || "",
-      name: el.getAttribute("name") || "",
-      value: el.value || "",
-      checked: !!el.checked
-    }));
-
-    console.log("ONE TIME FINAL STATE:", JSON.stringify(oneTimeState));
-
-    if (!oneTimeState.checked) {
-      throw new Error("ONE_TIME_NOT_CHECKED");
+    console.log("FREQUENCY FINAL STATE:", JSON.stringify(frequencyState));
+    if (!frequencyState.applied || frequencyState.selected?.length !== 1) {
+      throw new Error(`FREQUENCY_NOT_COMMITTED: ${JSON.stringify(frequencyState)}`);
     }
-    lisaTiming("ONE_TIME_COMMITTED");
+    lisaTiming("FREQUENCY_COMMITTED", `frequency=${frequencyLabel}`);
 
     // Fast path: write notes directly and avoid retyping four reactive date fields.
     // The final DOM commit below reapplies dates and the verified unassigned worker ID.
