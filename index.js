@@ -656,7 +656,7 @@ fastify.post(
                         error: `Missing required booking fields: ${missing.join(', ')}`
                     });
                 }
-                const result = await stageFastBooking(body);
+                const result = await beginFastBookingDraft(body);
                 return reply.send(result);
             }
 
