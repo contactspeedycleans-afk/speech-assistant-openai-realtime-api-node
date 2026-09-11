@@ -609,9 +609,13 @@ async function cancelBooking(page) {
     }
     await voidInvoiceButton.click();
 
-    const okButton = await waitForLargestVisibleExactText(page, "Ok", 20000);
-    if (!okButton) throw new Error("Could not find the visible Ok button");
-    await okButton.click();
+    const okButton = await waitForLargestVisibleExactText(page, "Ok", 5000);
+    if (okButton) {
+      await okButton.click();
+    } else {
+      console.log("Invoice void completed without a visible Ok button; closing the remaining dialog.");
+      await closeVisibleDialog(page);
+    }
     invoiceVoided = true;
   }
 
