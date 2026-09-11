@@ -746,6 +746,7 @@ fastify.post(
             if (action === 'draft_fast') {
                 const required = [
                     ['customerName', body.customerName],
+                    ['customerEmail', body.customerEmail || body.email],
                     ['streetNumber', body.streetNumber],
                     ['street', body.street || body.streetAddress],
                     ['city', body.city || body.suburb],
@@ -757,6 +758,15 @@ fastify.post(
                 const missing = required
                     .filter(([, value]) => !String(value || '').trim())
                     .map(([name]) => name);
+                const normalizedEmail = String(
+                    body.customerEmail || body.email || ''
+                ).trim().toLowerCase();
+                if (
+                    normalizedEmail &&
+                    !/^[^@\\s]+@[^@\\s]+\\.[a-z]{2,}$/i.test(normalizedEmail)
+                ) {
+                    missing.push('customerEmail');
+                }
                 if (missing.length) {
                     return reply.send({
                         success: false,
