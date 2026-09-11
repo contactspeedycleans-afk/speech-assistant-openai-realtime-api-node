@@ -851,6 +851,51 @@ async function main() {
       );
     }
 
+    // A short spoken name such as "Pat" must never attach the booking to a
+    // different Patricia. When there is no trusted customer ID, validate the
+    // committed Octopus profile against the caller's phone/email before any
+    // address, service, or Save work continues.
+    if (!TEST.customerId) {
+      let committedCustomers = [];
+      try {
+        committedCustomers = JSON.parse(customerState.customers || "[]");
+      } catch {}
+      const committed = committedCustomers[0] || {};
+      const expectedPhone = String(
+        livePayload?.customerPhone || livePayload?.phone || ""
+      ).replace(/\D/g, "").slice(-10);
+      const expectedEmail = String(
+        livePayload?.customerEmail || livePayload?.email || ""
+      ).trim().toLowerCase();
+      const committedEmails = [
+        committed.email,
+        committed.email1,
+        committed.email2,
+        committed.email3,
+        ...(committed.contacts || []).flatMap(contact => contact.emails || [])
+      ].map(value => String(value || "").trim().toLowerCase()).filter(Boolean);
+      const committedPhones = [
+        committed.phone,
+        committed.phone1,
+        committed.phone2,
+        committed.phone3,
+        committed.mobile1,
+        committed.mobile2,
+        committed.mobile3,
+        ...(committed.contacts || []).flatMap(contact => [
+          ...(contact.phones || []),
+          ...(contact.mobiles || [])
+        ])
+      ].map(value => String(value || "").replace(/\D/g, "").slice(-10)).filter(Boolean);
+      const phoneMatches = expectedPhone && committedPhones.includes(expectedPhone);
+      const emailMatches = expectedEmail && committedEmails.includes(expectedEmail);
+      if ((expectedPhone || expectedEmail) && !phoneMatches && !emailMatches) {
+        throw new Error(
+          `CUSTOMER_IDENTITY_MISMATCH: selected=${customerState.customer_id} phoneMatch=${Boolean(phoneMatches)} emailMatch=${Boolean(emailMatches)}`
+        );
+      }
+    }
+
     lisaTiming("CUSTOMER_FOUND_OR_CREATED", `customerId=${customerState.customer_id}`);
 
     // IMPORTANT: do not overwrite customer_id/customers.
