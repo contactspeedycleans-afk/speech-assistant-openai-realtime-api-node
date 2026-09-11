@@ -95,10 +95,16 @@ const {
             const bookingNumber = result.bookingNumber || result.booking_number || null;
             const verified = result.success === true && Boolean(bookingId && bookingNumber);
             if (verified) {
+                const verifiedBody = result.stagedBody || payload;
                 await cacheLisaCreatedBooking({
                     bookingId,
                     bookingNumber,
-                    body: result.stagedBody || payload
+                    body: verifiedBody
+                });
+                await sendFastBookingSuccessWebhook({
+                    bookingId,
+                    bookingNumber,
+                    body: verifiedBody
                 });
             }
             const { stagedBody, ...publicResult } = result;
@@ -481,6 +487,81 @@ async function cacheLisaCreatedBooking({ bookingId, bookingNumber, body }) {
         console.error('Lisa immediate booking cache failed:', error?.message || error);
     }
 }
+
+const fastBookingWebhookDeliveries = new Set();
+
+async function sendFastBookingSuccessWebhook({ bookingId, bookingNumber, body }) {
+    const successWebhookUrl = String(
+        process.env.LISA_BOOKING_SUCCESS_WEBHOOK_URL || ''
+    ).trim();
+
+    if (!successWebhookUrl || !bookingId || !bookingNumber) {
+        if (!successWebhookUrl) {
+            console.log('LISA_BOOKING_SUCCESS_WEBHOOK_URL not configured; skipping fast-booking notification.');
+        }
+        return false;
+    }
+
+    const deliveryKey = String(bookingNumber);
+    if (fastBookingWebhookDeliveries.has(deliveryKey)) {
+        console.log('Fast-booking success webhook already delivered:', bookingNumber);
+        return true;
+    }
+
+    const successPayload = {
+        event: 'LISA_BOOKING_CREATED',
+        bookingNumber,
+        bookingId,
+        customerName: body.customerName || '',
+        customerPhone: body.customerPhone || body.phone || '',
+        customerEmail: body.customerEmail || body.email || '',
+        serviceAddress:
+            body.serviceAddress ||
+            [
+                body.streetNumber,
+                body.street || body.streetAddress,
+                body.city || body.suburb,
+                body.state,
+                body.zip || body.postcode
+            ].filter(Boolean).join(', '),
+        streetNumber: body.streetNumber || '',
+        street: body.street || body.streetAddress || '',
+        city: body.city || body.suburb || '',
+        state: body.state || '',
+        zip: body.zip || body.postcode || '',
+        requestedDate: body.requestedDate || '',
+        requestedStartTime: body.requestedStartTime || '',
+        arrivalWindow: body.arrivalWindow || '',
+        durationMinutes:
+            body.durationMinutes ||
+            (Number(body.durationHours || 0) * 60 || ''),
+        quotedPrice: body.quotedPrice || body.price || '',
+        serviceType: body.serviceType || body.serviceName || '',
+        recurringFrequency: body.recurringFrequency || '',
+        source: 'LISA_VOICE_FAST',
+        createdAt: new Date().toISOString()
+    };
+
+    try {
+        const hookResponse = await fetch(successWebhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(successPayload),
+            signal: AbortSignal.timeout(15000)
+        });
+        if (!hookResponse.ok) {
+            console.error('Fast-booking success webhook returned HTTP', hookResponse.status);
+            return false;
+        }
+        fastBookingWebhookDeliveries.add(deliveryKey);
+        console.log('Fast-booking success webhook delivered:', bookingNumber);
+        return true;
+    } catch (hookError) {
+        console.error('Fast-booking success webhook failed:', hookError?.message || hookError);
+        return false;
+    }
+}
+
 fastify.post(
     '/lisa/booking-action',
     async (request, reply) => {
@@ -685,10 +766,16 @@ fastify.post(
                 const bookingNumber = result.bookingNumber || result.booking_number || null;
                 const verified = result.success === true && Boolean(bookingId && bookingNumber);
                 if (verified) {
+                    const verifiedBody = result.stagedBody || body;
                     await cacheLisaCreatedBooking({
                         bookingId,
                         bookingNumber,
-                        body: result.stagedBody || body
+                        body: verifiedBody
+                    });
+                    await sendFastBookingSuccessWebhook({
+                        bookingId,
+                        bookingNumber,
+                        body: verifiedBody
                     });
                 }
                 const { stagedBody, ...publicResult } = result;
@@ -730,6 +817,11 @@ fastify.post(
 
                 if (verified) {
                     await cacheLisaCreatedBooking({ bookingId, bookingNumber, body });
+                    await sendFastBookingSuccessWebhook({
+                        bookingId,
+                        bookingNumber,
+                        body
+                    });
                 }
 
                 return reply.send({
