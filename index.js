@@ -20,6 +20,7 @@ import { createTechnicianSearch } from './lib/technicianSearch.js';
 import { runSmsReceptionist } from './lib/smsReceptionist.js';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 
 const execFileAsync = promisify(execFile);
 
@@ -114,6 +115,7 @@ fastify.register(fastifyWs);
 // Octopus New Booking page, accepts one payload, then is replaced immediately.
 let warmBookingWorkerPromise = null;
 let fastBookingQueue = Promise.resolve();
+const activeFastBookingDrafts = new Map();
 let warmBookingState = {
     status: 'starting',
     updatedAt: new Date().toISOString(),
@@ -260,6 +262,132 @@ function enqueueFastBooking(body) {
     const job = fastBookingQueue.then(() => runWithWarmBookingWorker(body));
     fastBookingQueue = job.catch(() => {});
     return job;
+}
+
+function waitForWorkerMarker(worker, prefix, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const { child, getStdout, getStderr } = worker;
+        let finished = false;
+        const cleanup = () => {
+            child.stdout.off('data', inspect);
+            child.off('exit', exited);
+            clearTimeout(timeout);
+        };
+        const inspect = () => {
+            if (finished) return;
+            const marker = getStdout()
+                .split(/\r?\n/)
+                .reverse()
+                .find(line => line.startsWith(prefix));
+            if (!marker) return;
+            finished = true;
+            cleanup();
+            try {
+                resolve(JSON.parse(marker.substring(prefix.length)));
+            } catch (error) {
+                reject(error);
+            }
+        };
+        const exited = code => {
+            inspect();
+            if (finished) return;
+            finished = true;
+            cleanup();
+            reject(new Error(
+                `FAST_BOOKING_WORKER_FAILED code=${code} stderr=${getStderr().slice(-3000)}`
+            ));
+        };
+        const timeout = setTimeout(() => {
+            if (finished) return;
+            finished = true;
+            cleanup();
+            child.kill('SIGTERM');
+            reject(new Error(`FAST_BOOKING_MARKER_TIMEOUT ${prefix}`));
+        }, timeoutMs);
+        child.stdout.on('data', inspect);
+        child.once('exit', exited);
+        inspect();
+    });
+}
+
+async function stageFastBooking(body) {
+    const worker = await ensureWarmBookingWorker();
+    warmBookingWorkerPromise = null;
+
+    // Replace the warm worker immediately so a second call can begin staging.
+    ensureWarmBookingWorker().catch(error => {
+        console.error('Replacement draft worker failed:', error.message);
+    });
+
+    const draftId = randomUUID();
+    const stagedAt = Date.now();
+    worker.child.stdin.write(JSON.stringify({ ...body, phase: 'draft' }) + '\n');
+
+    try {
+        const staged = await waitForWorkerMarker(
+            worker,
+            'LISA_BOOKING_DRAFT_READY=',
+            150000
+        );
+        const expiryTimer = setTimeout(() => {
+            const draft = activeFastBookingDrafts.get(draftId);
+            if (!draft) return;
+            activeFastBookingDrafts.delete(draftId);
+            draft.worker.child.kill('SIGTERM');
+            console.log('[FAST_BOOKING_DRAFT] expired:', draftId);
+        }, 10 * 60 * 1000);
+        expiryTimer.unref?.();
+        activeFastBookingDrafts.set(draftId, {
+            worker,
+            body,
+            stagedAt,
+            expiryTimer
+        });
+        return {
+            ...staged,
+            draftId,
+            draftElapsedMs: Date.now() - stagedAt,
+            outcome: 'staged_before_save'
+        };
+    } catch (error) {
+        worker.child.kill('SIGTERM');
+        throw error;
+    }
+}
+
+async function finalizeFastBooking(body) {
+    const draftId = String(body.draftId || '').trim();
+    const draft = activeFastBookingDrafts.get(draftId);
+    if (!draft) {
+        return {
+            success: false,
+            outcome: 'draft_not_found',
+            error: 'The staged booking expired or was already finalized.'
+        };
+    }
+
+    activeFastBookingDrafts.delete(draftId);
+    clearTimeout(draft.expiryTimer);
+    const startedAt = Date.now();
+    const resultPromise = waitForWorkerMarker(
+        draft.worker,
+        'LISA_BOOKING_RESULT=',
+        60000
+    );
+    draft.worker.child.stdin.write(JSON.stringify({
+        phase: 'finalize',
+        customerConfirmed: body.customerConfirmed === true,
+        dryRun: body.dryRun === true
+    }) + '\n');
+    draft.worker.child.stdin.end();
+
+    const result = await resultPromise;
+    return {
+        ...result,
+        finalizeElapsedMs: Date.now() - startedAt,
+        totalElapsedMs: Date.now() - draft.stagedAt,
+        stagedBody: draft.body
+    };
 }
 
 // Begin warming without delaying HTTP startup.
@@ -463,6 +591,68 @@ fastify.post(
                     });
 
                 return reply.send(result);
+            }
+
+            if (action === 'draft_fast') {
+                const required = [
+                    ['customerName', body.customerName],
+                    ['streetNumber', body.streetNumber],
+                    ['street', body.street || body.streetAddress],
+                    ['city', body.city || body.suburb],
+                    ['state', body.state],
+                    ['zip', body.zip || body.postcode],
+                    ['requestedDate', body.requestedDate],
+                    ['requestedStartTime', body.requestedStartTime]
+                ];
+                const missing = required
+                    .filter(([, value]) => !String(value || '').trim())
+                    .map(([name]) => name);
+                if (missing.length) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'missing_booking_fields',
+                        error: `Missing required booking fields: ${missing.join(', ')}`
+                    });
+                }
+                const result = await stageFastBooking(body);
+                return reply.send(result);
+            }
+
+            if (action === 'finalize_fast') {
+                if (body.customerConfirmed !== true && body.dryRun !== true) {
+                    return reply.send({
+                        success: false,
+                        outcome: 'confirmation_required',
+                        error: 'The customer must explicitly confirm the complete booking first.'
+                    });
+                }
+                const result = await finalizeFastBooking(body);
+                if (result.dryRun === true) {
+                    return reply.send({
+                        ...result,
+                        success: true,
+                        outcome: 'profiled_staged_no_save'
+                    });
+                }
+                const bookingId = result.bookingId || result.booking_id || null;
+                const bookingNumber = result.bookingNumber || result.booking_number || null;
+                const verified = result.success === true && Boolean(bookingId && bookingNumber);
+                if (verified) {
+                    await cacheLisaCreatedBooking({
+                        bookingId,
+                        bookingNumber,
+                        body: result.stagedBody || body
+                    });
+                }
+                const { stagedBody, ...publicResult } = result;
+                return reply.send({
+                    ...publicResult,
+                    success: verified,
+                    verified_created_in_octopus: verified,
+                    bookingId,
+                    bookingNumber,
+                    outcome: verified ? 'created_from_staged_form' : (result.outcome || 'verification_failed')
+                });
             }
 
             if (action === 'create_fast') {
