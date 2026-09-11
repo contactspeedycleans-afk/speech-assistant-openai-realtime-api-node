@@ -1065,9 +1065,31 @@ async function main() {
       timeout: 10000
     });
 
-    await page.waitForTimeout(3000);
+    // Octopus sometimes paints the address text before its hidden
+    // location fields finish updating. Give that component a bounded chance
+    // to commit instead of rejecting a valid autocomplete click immediately.
+    await page.waitForFunction(() => {
+      const visible = element => {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return style.display !== "none" && style.visibility !== "hidden" &&
+          rect.width > 0 && rect.height > 0;
+      };
+      const value = placeholder => Array.from(
+        document.querySelectorAll(`input[placeholder="${placeholder}"]`)
+      ).find(visible)?.value || "";
+      return Boolean(
+        value("Address Line 1") &&
+        value("Suburb / Locality") &&
+        value("Postal / Zip code") &&
+        value("State") &&
+        document.querySelector("#lat-test-input")?.value &&
+        document.querySelector("#lng-test-input")?.value
+      );
+    }, { timeout: 10000 }).catch(() => null);
 
-    const selectedLocation = await page.evaluate(() => {
+    let selectedLocation = await page.evaluate(() => {
       const bookingAddressInput =
         document.querySelector('input[placeholder="Booking address"]');
 
@@ -1110,15 +1132,56 @@ async function main() {
       JSON.stringify(selectedLocation)
     );
 
-    if (
-      !selectedLocation.bookingAddress ||
-      !selectedLocation.addressLine1 ||
-      !selectedLocation.suburb ||
-      !selectedLocation.postcode ||
-      !selectedLocation.state ||
-      !selectedLocation.latitude ||
-      !selectedLocation.longitude
-    ) {
+    const locationComplete = value => Boolean(
+      value.bookingAddress &&
+      value.addressLine1 &&
+      value.suburb &&
+      value.postcode &&
+      value.state &&
+      value.latitude &&
+      value.longitude
+    );
+
+    if (!locationComplete(selectedLocation)) {
+      console.warn("Location component incomplete after click; retrying autocomplete once.");
+      const retryInput = page.locator('input[placeholder="Booking address"]').first();
+      await retryInput.click({ force: true }).catch(() => {});
+      await retryInput.fill(bookingAddress).catch(() => {});
+      await page.waitForTimeout(1500);
+      const retryCandidate = page.locator(".pac-item").first();
+      if (await retryCandidate.isVisible().catch(() => false)) {
+        await retryCandidate.click({ force: true }).catch(() => {});
+      } else {
+        await retryInput.press("ArrowDown").catch(() => {});
+        await retryInput.press("Enter").catch(() => {});
+      }
+      await page.waitForTimeout(3500);
+      selectedLocation = await page.evaluate(() => {
+        const visible = element => {
+          if (!element) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return style.display !== "none" && style.visibility !== "hidden" &&
+            rect.width > 0 && rect.height > 0;
+        };
+        const value = placeholder => Array.from(
+          document.querySelectorAll(`input[placeholder="${placeholder}"]`)
+        ).find(visible)?.value || null;
+        return {
+          bookingAddress: document.querySelector('input[placeholder="Booking address"]')?.value || null,
+          addressLine1: value("Address Line 1"),
+          addressLine2: value("Address Line 2"),
+          suburb: value("Suburb / Locality"),
+          postcode: value("Postal / Zip code"),
+          state: value("State"),
+          latitude: document.querySelector("#lat-test-input")?.value || null,
+          longitude: document.querySelector("#lng-test-input")?.value || null
+        };
+      });
+      console.log("Selected location after retry:", JSON.stringify(selectedLocation));
+    }
+
+    if (!locationComplete(selectedLocation)) {
       throw new Error(
         "LOCATION_NOT_SELECTED: Octopus did not fully populate the selected address."
       );
@@ -2174,11 +2237,21 @@ lisaTiming("FINAL_SUBMIT_START");
     }
 
   } finally {
-    await browser.close();
+    // A broken Octopus component must never leave the live caller waiting for
+    // the browser-close promise. Cap cleanup and let the worker exit promptly.
+    await Promise.race([
+      browser.close().catch(() => {}),
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ]);
   }
 }
 
 main().catch(error => {
   console.error(error);
+  console.log("LISA_BOOKING_DRAFT_FAILED=" + JSON.stringify({
+    success: false,
+    error: error?.message || String(error),
+    outcome: "draft_failed"
+  }));
   process.exitCode = 1;
 });
