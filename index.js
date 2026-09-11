@@ -493,10 +493,15 @@ fastify.post(
             String(
                 request.headers['x-lisa-secret'] || ''
             ).trim();
+        const isolatedTestSecret =
+            String(process.env.LISA_FAST_BOOKING_TEST_ONLY || '').toLowerCase() === 'true'
+                ? String(process.env.LISA_TEST_ACTION_SECRET || '').trim()
+                : '';
 
         if (
             !configuredSecret ||
-            suppliedSecret !== configuredSecret
+            (suppliedSecret !== configuredSecret &&
+             (!isolatedTestSecret || suppliedSecret !== isolatedTestSecret))
         ) {
             return reply
                 .code(401)
