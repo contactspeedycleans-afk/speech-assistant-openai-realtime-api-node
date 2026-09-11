@@ -1247,7 +1247,7 @@ async function main() {
       [/carpet/i, "Carpet Cleaning"],
       [/junk/i, "Junk Removal"],
       [/directed/i, "Clean as Directed"],
-      [/standard|recurring/i, "Standard Cleaning"]
+      [/standard|recurring|one.?time|house cleaning|regular cleaning/i, "Standard Cleaning"]
     ];
     const desiredService =
       serviceAliases.find(([pattern]) => pattern.test(rawService))?.[1] ||
