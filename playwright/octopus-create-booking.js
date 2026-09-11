@@ -87,6 +87,37 @@ let TEST = buildBookingTest(livePayload);
 
 let FINAL_BOOKING_RESULT = null;
 
+function readJsonLine(timeoutMs, timeoutCode) {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(timeoutCode));
+    }, timeoutMs);
+    const onData = chunk => {
+      buffer += String(chunk || "");
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const line = buffer.slice(0, newline).trim();
+      cleanup();
+      if (!line) reject(new Error("BOOKING_PAYLOAD_MISSING"));
+      else {
+        try { resolve(JSON.parse(line)); }
+        catch (error) { reject(error); }
+      }
+    };
+    const onError = error => { cleanup(); reject(error); };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      process.stdin.off("data", onData);
+      process.stdin.off("error", onError);
+    };
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", onData);
+    process.stdin.once("error", onError);
+  });
+}
+
 // ============================================================
 // LISA BOOKING PERFORMANCE TIMING
 // Diagnostic only: does not change booking behavior.
@@ -605,23 +636,10 @@ async function main() {
 
     if (LISA_PREWARM_ONLY) {
       console.log("LISA_BOOKING_SESSION_READY");
-      const payloadLine = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(
-          () => reject(new Error("PREWARM_PAYLOAD_TIMEOUT")),
-          30 * 60 * 1000
-        );
-        process.stdin.setEncoding("utf8");
-        process.stdin.once("data", chunk => {
-          clearTimeout(timeout);
-          resolve(String(chunk || "").trim());
-        });
-        process.stdin.once("error", error => {
-          clearTimeout(timeout);
-          reject(error);
-        });
-      });
-      if (!payloadLine) throw new Error("PREWARM_PAYLOAD_MISSING");
-      livePayload = JSON.parse(payloadLine);
+      livePayload = await readJsonLine(
+        30 * 60 * 1000,
+        "PREWARM_PAYLOAD_TIMEOUT"
+      );
       TEST = buildBookingTest(livePayload);
       console.log("LISA_BOOKING_PREWARM_PAYLOAD_ACCEPTED");
     }
@@ -821,6 +839,15 @@ async function main() {
     ) {
       throw new Error(
         `CUSTOMER_NOT_COMMITTED: ${JSON.stringify(customerState)}`
+      );
+    }
+
+    if (
+      TEST.customerId &&
+      String(customerState.customer_id) !== String(TEST.customerId)
+    ) {
+      throw new Error(
+        `WRONG_CUSTOMER_SELECTED: expected=${TEST.customerId} actual=${customerState.customer_id}`
       );
     }
 
@@ -1488,9 +1515,11 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
           .locator('li:visible')
           .filter({ hasText: desiredWorker })
           .last();
-        const optionText = (await plainListOption.innerText().catch(() => ""))
-          .replace(/\s+/g, " ")
-          .trim();
+        const optionText = await plainListOption.isVisible().catch(() => false)
+          ? (await plainListOption.innerText({ timeout: 1500 }).catch(() => ""))
+              .replace(/\s+/g, " ")
+              .trim()
+          : "";
         if (
           optionText &&
           optionText.length < 300 &&
@@ -1628,6 +1657,28 @@ if (!nativeCustomerPayload || nativeCustomerPayload.length < 100) {
 
 
 console.log("Deposit skipped - not required.");
+
+if (livePayload?.phase === "draft") {
+  const draftSnapshot = {
+    success: true,
+    customerId: await page.locator('input[name="customer_id"]').first().inputValue().catch(() => ""),
+    message: "Complete Octopus booking form is staged immediately before save."
+  };
+  lisaTiming("DRAFT_READY");
+  console.log("LISA_BOOKING_DRAFT_READY=" + JSON.stringify(draftSnapshot));
+  const finalizePayload = await readJsonLine(
+    10 * 60 * 1000,
+    "DRAFT_FINALIZE_TIMEOUT"
+  );
+  if (finalizePayload?.phase !== "finalize") {
+    throw new Error("DRAFT_FINALIZE_PHASE_REQUIRED");
+  }
+  livePayload = { ...livePayload, ...finalizePayload };
+  if (finalizePayload.customerConfirmed !== true && finalizePayload.dryRun !== true) {
+    throw new Error("DRAFT_FINAL_CONFIRMATION_REQUIRED");
+  }
+  lisaTiming("FINALIZE_ACCEPTED");
+}
 
 if (livePayload?.dryRun === true) {
   FINAL_BOOKING_RESULT = {
