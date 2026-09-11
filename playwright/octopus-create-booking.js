@@ -1220,7 +1220,17 @@ async function main() {
         const bodyLines = (document.body?.innerText || "").split("\n")
           .map(x => x.trim()).filter(x => /repeat|recurr|frequency|one.?time|weekly|fortnight|month/i.test(x))
           .slice(0, 100);
-        return { controls, bodyLines };
+        const matchingElements = Array.from(document.querySelectorAll("label, button, [role=button], span, div"))
+          .filter(el => /^(One Time Cleaning|Monthly Cleans|Bi-weekly Cleans|Tri-weekly Cleans|Weekly Cleans|Repeat once|Multiple repeat)$/i.test(String(el.innerText || el.textContent || "").trim()))
+          .slice(0, 30)
+          .map(el => ({
+            tag: el.tagName,
+            id: el.id || "",
+            className: String(el.className || "").slice(0, 300),
+            html: String(el.outerHTML || "").replace(/\s+/g, " ").slice(0, 1500),
+            parentHtml: String(el.parentElement?.outerHTML || "").replace(/\s+/g, " ").slice(0, 2500)
+          }));
+        return { controls, bodyLines, matchingElements };
       });
       FINAL_BOOKING_RESULT = { success: true, inspectRecurring: true, recurringCatalog };
       console.log("LISA_BOOKING_RESULT=" + JSON.stringify(FINAL_BOOKING_RESULT));
