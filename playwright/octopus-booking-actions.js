@@ -554,6 +554,21 @@ async function cancelBooking(page) {
     await reasonSelect.selectOption({
       label: (requestedMatch || otherMatch || options.find(Boolean)).trim()
     });
+  } else {
+    const reasonControl = modal
+      .locator('[role="combobox"], .p-dropdown, .vs__dropdown-toggle, input')
+      .filter({ hasNot: modal.locator('input[type="hidden"]') })
+      .first();
+    if (await reasonControl.isVisible().catch(() => false)) {
+      await reasonControl.click({ force: true });
+      await page.waitForTimeout(500);
+    }
+    const otherReason = await waitForLargestVisibleExactText(page, "Other", 5000);
+    if (!otherReason) {
+      throw new Error("Could not select the visible Other cancellation reason");
+    }
+    await otherReason.click({ force: true });
+    await page.waitForTimeout(500);
   }
 
   const cancelWithoutFeeButton = await getLargestVisibleExactText(
