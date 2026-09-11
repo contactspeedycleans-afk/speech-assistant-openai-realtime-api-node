@@ -77,6 +77,7 @@ const {
     handleKnowledgeTool,
     handleTechnicianStatusTool,
     handleBillingLookupTool,
+    handleCreateBookingTool,
     handleCancelBookingTool,
     handleRescheduleBookingTool,
     cancelBookingAction,
@@ -84,6 +85,33 @@ const {
 } = createOpenAiToolHandlers({
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
+    createBookingAction: async payload => {
+        if (payload.phase === 'draft') {
+            return await beginFastBookingDraft(payload);
+        }
+        if (payload.phase === 'finalize') {
+            const result = await finalizeFastBooking(payload);
+            const bookingId = result.bookingId || result.booking_id || null;
+            const bookingNumber = result.bookingNumber || result.booking_number || null;
+            const verified = result.success === true && Boolean(bookingId && bookingNumber);
+            if (verified) {
+                await cacheLisaCreatedBooking({
+                    bookingId,
+                    bookingNumber,
+                    body: result.stagedBody || payload
+                });
+            }
+            const { stagedBody, ...publicResult } = result;
+            return {
+                ...publicResult,
+                success: verified,
+                verified_created_in_octopus: verified,
+                bookingId,
+                bookingNumber
+            };
+        }
+        return await enqueueFastBooking({ ...payload, action: 'create_fast' });
+    },
     db
 });
 
@@ -310,21 +338,18 @@ function waitForWorkerMarker(worker, prefix, timeoutMs) {
     });
 }
 
-async function stageFastBooking(body) {
-    const worker = await ensureWarmBookingWorker();
-    warmBookingWorkerPromise = null;
+function beginFastBookingDraft(body) {
+    return ensureWarmBookingWorker().then(worker => {
+        warmBookingWorkerPromise = null;
+        ensureWarmBookingWorker().catch(error => {
+            console.error('Replacement draft worker failed:', error.message);
+        });
 
-    // Replace the warm worker immediately so a second call can begin staging.
-    ensureWarmBookingWorker().catch(error => {
-        console.error('Replacement draft worker failed:', error.message);
-    });
+        const draftId = randomUUID();
+        const stagedAt = Date.now();
+        worker.child.stdin.write(JSON.stringify({ ...body, phase: 'draft' }) + '\n');
 
-    const draftId = randomUUID();
-    const stagedAt = Date.now();
-    worker.child.stdin.write(JSON.stringify({ ...body, phase: 'draft' }) + '\n');
-
-    try {
-        const staged = await waitForWorkerMarker(
+        const stagedPromise = waitForWorkerMarker(
             worker,
             'LISA_BOOKING_DRAFT_READY=',
             150000
@@ -337,22 +362,38 @@ async function stageFastBooking(body) {
             console.log('[FAST_BOOKING_DRAFT] expired:', draftId);
         }, 10 * 60 * 1000);
         expiryTimer.unref?.();
+
         activeFastBookingDrafts.set(draftId, {
             worker,
             body,
             stagedAt,
+            stagedPromise,
             expiryTimer
         });
+        stagedPromise.catch(error => {
+            console.error('[FAST_BOOKING_DRAFT] staging failed:', draftId, error.message);
+        });
+
         return {
-            ...staged,
+            success: true,
             draftId,
-            draftElapsedMs: Date.now() - stagedAt,
-            outcome: 'staged_before_save'
+            staging: true,
+            outcome: 'staging_started',
+            message: 'Octopus booking form is loading in the background.'
         };
-    } catch (error) {
-        worker.child.kill('SIGTERM');
-        throw error;
-    }
+    });
+}
+
+async function stageFastBooking(body) {
+    const begun = await beginFastBookingDraft(body);
+    const draft = activeFastBookingDrafts.get(begun.draftId);
+    const staged = await draft.stagedPromise;
+    return {
+        ...staged,
+        draftId: begun.draftId,
+        draftElapsedMs: Date.now() - draft.stagedAt,
+        outcome: 'staged_before_save'
+    };
 }
 
 async function finalizeFastBooking(body) {
@@ -369,6 +410,7 @@ async function finalizeFastBooking(body) {
     activeFastBookingDrafts.delete(draftId);
     clearTimeout(draft.expiryTimer);
     const startedAt = Date.now();
+    await draft.stagedPromise;
     const resultPromise = waitForWorkerMarker(
         draft.worker,
         'LISA_BOOKING_RESULT=',
@@ -3122,21 +3164,43 @@ try {
                 });
 
             if (!billingHandled) {
-                const cancellationHandled =
-                    await handleCancelBookingTool({
+                const bookingHandled =
+                    await handleCreateBookingTool({
                         response,
                         openAiWs,
                         WebSocket,
-                        customerBookings
+                        callerPhone,
+                        bookingDefaults: {
+                            customerId: customer?.id || '',
+                            customerName: [customer?.first_name, customer?.last_name].filter(Boolean).join(' '),
+                            customerFirstName: customer?.first_name || '',
+                            customerLastName: customer?.last_name || '',
+                            customerPhone: callerPhone || customer?.phone || '',
+                            customerEmail: customer?.email || '',
+                            serviceAddress: customer?.address || '',
+                            city: customer?.city || '',
+                            state: customer?.state || '',
+                            zip: customer?.zip || ''
+                        }
                     });
 
-                if (!cancellationHandled) {
-                    await handleRescheduleBookingTool({
+                if (!bookingHandled) {
+                    const cancellationHandled =
+                        await handleCancelBookingTool({
+                            response,
+                            openAiWs,
+                            WebSocket,
+                            customerBookings
+                        });
+
+                    if (!cancellationHandled) {
+                        await handleRescheduleBookingTool({
                         response,
                         openAiWs,
                         WebSocket,
-                        customerBookings
-                    });
+                            customerBookings
+                        });
+                    }
                 }
             }
         }
