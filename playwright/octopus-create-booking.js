@@ -57,8 +57,12 @@ function buildBookingTest(payload) {
       ),
       price: String(livePayload.quotedPrice || livePayload.price || "150"),
       fieldworkerName: livePayload.fieldworkerName || "Unassigned Tasks Manager",
-      specialNotes: livePayload.specialNotes || ".",
-      accessInstructions: livePayload.accessInstructions || "."
+      specialNotes:
+        livePayload.specialNotes ||
+        "No special cleaning priorities or pets reported.",
+      accessInstructions:
+        livePayload.accessInstructions ||
+        "No special access instructions reported."
     }
   : {
       customerName: "Gina Manciolini",
@@ -1858,6 +1862,27 @@ if (livePayload?.phase === "draft") {
     throw new Error("DRAFT_FINAL_CONFIRMATION_REQUIRED");
   }
   lisaTiming("FINALIZE_ACCEPTED");
+
+  // The caller's priority, pet, and access answers arrive while the staged
+  // Octopus form is already loading. Reapply those final answers immediately
+  // before Save so the booking never keeps the draft placeholders.
+  TEST.specialNotes =
+    String(livePayload.specialNotes || "").trim() ||
+    "No special cleaning priorities or pets reported.";
+  TEST.accessInstructions =
+    String(livePayload.accessInstructions || "").trim() ||
+    "No special access instructions reported.";
+  await commitRequiredNote(
+    "#attribute_8087017483",
+    TEST.specialNotes,
+    "Special Notes"
+  );
+  await commitRequiredNote(
+    "#attribute_8087013969",
+    TEST.accessInstructions,
+    "Access Instructions"
+  );
+  lisaTiming("FINAL_NOTES_REAPPLIED");
 }
 
 if (livePayload?.dryRun === true) {
