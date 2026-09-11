@@ -309,10 +309,31 @@ function waitForWorkerMarker(worker, prefix, timeoutMs) {
         };
         const inspect = () => {
             if (finished) return;
-            const marker = getStdout()
-                .split(/\r?\n/)
-                .reverse()
-                .find(line => line.startsWith(prefix));
+            const lines = getStdout().split(/\r?\n/).reverse();
+            const failurePrefixes = [
+                'LISA_BOOKING_DRAFT_FAILED=',
+                'LISA_BOOKING_RESULT_FAILED='
+            ];
+            const failureLine = lines.find(line =>
+                failurePrefixes.some(failurePrefix => line.startsWith(failurePrefix))
+            );
+            if (failureLine) {
+                finished = true;
+                cleanup();
+                const failurePrefix = failurePrefixes.find(value => failureLine.startsWith(value));
+                let failure;
+                try {
+                    failure = JSON.parse(failureLine.substring(failurePrefix.length));
+                } catch {
+                    failure = { error: failureLine };
+                }
+                reject(new Error(
+                    `FAST_BOOKING_STAGE_FAILED ${failure.error || failure.outcome || 'unknown'}`
+                ));
+                return;
+            }
+
+            const marker = lines.find(line => line.startsWith(prefix));
             if (!marker) return;
             finished = true;
             cleanup();
