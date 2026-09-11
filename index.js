@@ -510,6 +510,7 @@ async function sendFastBookingSuccessWebhook({ bookingId, bookingNumber, body })
 
     const successPayload = {
         event: 'LISA_BOOKING_CREATED',
+        verified_created_in_octopus: true,
         bookingNumber,
         bookingId,
         customerName: body.customerName || '',
