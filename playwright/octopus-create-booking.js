@@ -1108,165 +1108,124 @@ async function main() {
     console.log("Location confirmed.");
     lisaTiming("ADDRESS_SELECTED", `address=${bookingAddress}`);
 
-    console.log("Selecting One Time Standard Cleaning...");
+    const frequencyText = String(
+      livePayload?.recurringFrequency || livePayload?.frequency || "one_time"
+    ).trim().toLowerCase();
+    const isRecurringBooking =
+      Boolean(frequencyText) &&
+      !/^(one.?time|once|single|none|n\/a)$/i.test(frequencyText);
+    const rawService = String(TEST.serviceName || "Standard Cleaning").trim();
+    const serviceAliases = [
+      [/move.?in|move.?out/i, "Move In/Out Cleaning"],
+      [/deep/i, "Deep Cleaning"],
+      [/commercial|office/i, "Commercial Cleaning"],
+      [/carpet/i, "Carpet Cleaning"],
+      [/junk/i, "Junk Removal"],
+      [/directed/i, "Clean as Directed"],
+      [/standard|recurring/i, "Standard Cleaning"]
+    ];
+    const desiredService =
+      serviceAliases.find(([pattern]) => pattern.test(rawService))?.[1] ||
+      rawService;
 
-const servicesDropdown = page.locator("#servicesdropdown").first();
+    console.log(
+      `Selecting ${isRecurringBooking ? "recurring" : "one-time"} service: ${desiredService}`
+    );
 
-await servicesDropdown.waitFor({
-  state: "visible",
-  timeout: 15000
-});
+    const servicesDropdown = page.locator("#servicesdropdown").first();
+    await servicesDropdown.waitFor({ state: "visible", timeout: 15000 });
+    await servicesDropdown.scrollIntoViewIfNeeded();
+    await servicesDropdown.evaluate(element => {
+      element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+    });
+    await page.waitForTimeout(1200);
 
-await servicesDropdown.scrollIntoViewIfNeeded();
+    let serviceOptions = page
+      .locator('li[role="option"]')
+      .filter({ has: page.locator(`[aria-label="${desiredService}"]`) });
 
-await servicesDropdown.evaluate(element => {
-  element.dispatchEvent(
-    new MouseEvent("mousedown", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
+    // PrimeVue puts aria-label directly on the li, so use that exact selector first.
+    serviceOptions = page.locator(
+      `li[role="option"][aria-label="${desiredService}"]`
+    );
 
-  element.dispatchEvent(
-    new MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-});
+    if (isRecurringBooking && /standard/i.test(desiredService)) {
+      const dedicatedRecurring = page.locator(
+        'li[role="option"][aria-label="Recurring Standard Cleaning"]'
+      ).first();
+      if (await dedicatedRecurring.isVisible().catch(() => false)) {
+        serviceOptions = dedicatedRecurring;
+      }
+    }
 
-await page.waitForTimeout(2000);
+    const serviceCount = await serviceOptions.count().catch(() => 0);
+    if (serviceCount < 1) {
+      throw new Error(`SERVICE_OPTION_NOT_FOUND: ${desiredService}`);
+    }
 
-if (livePayload?.inspectCatalog === true) {
-  const catalog = await page.evaluate(() => {
-    const visible = el => {
-      const rect = el.getBoundingClientRect();
-      const style = getComputedStyle(el);
-      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
-    };
-    const serviceOptions = Array.from(document.querySelectorAll('li[role="option"]'))
-      .filter(visible)
-      .map(el => ({
-        text: String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim(),
-        ariaLabel: el.getAttribute("aria-label") || "",
-        value: el.getAttribute("value") || "",
-        id: el.id || "",
-        data: Object.fromEntries(Array.from(el.attributes).filter(a => a.name.startsWith("data-")).map(a => [a.name, a.value]))
-      }));
-    const controls = Array.from(document.querySelectorAll('input, select, textarea'))
-      .filter(visible)
-      .map(el => ({
-        tag: el.tagName,
-        type: el.getAttribute("type") || "",
-        name: el.getAttribute("name") || "",
-        id: el.id || "",
-        value: el.value || "",
-        placeholder: el.getAttribute("placeholder") || ""
-      }))
-      .filter(x => /repeat|recurr|frequency|service|one.?time|weekly|month|attribute_8087013985/i.test(JSON.stringify(x)));
-    return { serviceOptions, controls };
-  });
-  FINAL_BOOKING_RESULT = { success: true, inspectCatalog: true, catalog };
-  console.log("LISA_BOOKING_RESULT=" + JSON.stringify(FINAL_BOOKING_RESULT));
-  return;
-}
+    const chosenService = isRecurringBooking
+      ? serviceOptions.last()
+      : serviceOptions.first();
+    await chosenService.waitFor({ state: "visible", timeout: 10000 });
+    const chosenServiceText = (await chosenService.innerText()).replace(/\s+/g, " ").trim();
+    console.log("Found service:", chosenServiceText);
+    await chosenService.evaluate(element => {
+      for (const type of ["mousedown", "mouseup", "click"]) {
+        element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      }
+    });
+    await page.waitForTimeout(2200);
 
-const cleanAsDirected = page
-  .locator('li[role="option"][aria-label="Standard Cleaning"]')
-  .filter({ hasText: "$82.5" })
-  .first();
+    const serviceState = await page.evaluate((serviceName) => {
+      const bodyText = document.body?.innerText || "";
+      const selectedOptions = Array.from(
+        document.querySelectorAll('li[role="option"][aria-selected="true"]')
+      ).map(el => String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim());
+      return {
+        selectedOptions,
+        serviceDetailsPresent:
+          /Service Details/i.test(bodyText) &&
+          bodyText.toLowerCase().includes(serviceName.toLowerCase())
+      };
+    }, desiredService);
 
-await cleanAsDirected.waitFor({
-  state: "visible",
-  timeout: 10000
-});
+    console.log("Service state:", JSON.stringify(serviceState));
+    if (
+      !serviceState.selectedOptions.some(x =>
+        x.toLowerCase().includes(desiredService.toLowerCase())
+      ) &&
+      !serviceState.serviceDetailsPresent
+    ) {
+      throw new Error(`SERVICE_NOT_SELECTED: ${JSON.stringify(serviceState)}`);
+    }
 
-console.log(
-  "Found service:",
-  (await cleanAsDirected.innerText()).replace(/\s+/g, " ").trim()
-);
+    console.log("Service selected: true");
+    lisaTiming("SERVICE_SELECTED", `service=${desiredService} recurring=${isRecurringBooking}`);
 
-await cleanAsDirected.evaluate(element => {
-  element.dispatchEvent(
-    new MouseEvent("mousedown", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-
-  element.dispatchEvent(
-    new MouseEvent("mouseup", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-
-  element.dispatchEvent(
-    new MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-});
-
-await page.waitForTimeout(3000);
-
-const serviceState = await page.evaluate(() => {
-  const dropdown =
-    document.querySelector("#servicesdropdown");
-
-  const bodyText = document.body?.innerText || "";
-
-  const selectedOptions = Array.from(
-    document.querySelectorAll(
-      'li[role="option"][aria-selected="true"]'
-    )
-  ).map(el =>
-    String(el.innerText || el.textContent || "")
-      .replace(/\s+/g, " ")
-      .trim()
-  );
-
-  const serviceDetailsPresent =
-    /Service Details/i.test(bodyText) &&
-    /Standard Cleaning/i.test(bodyText);
-
-  return {
-    dropdownText: String(
-      dropdown?.innerText ||
-      dropdown?.textContent ||
-      ""
-    )
-      .replace(/\s+/g, " ")
-      .trim(),
-    selectedOptions,
-    serviceDetailsPresent
-  };
-});
-
-console.log(
-  "Service state:",
-  JSON.stringify(serviceState)
-);
-
-if (
-  !serviceState.selectedOptions.some(x =>
-    /Standard Cleaning/i.test(x)
-  ) &&
-  !serviceState.serviceDetailsPresent
-) {
-  throw new Error(
-    `SERVICE_NOT_SELECTED: ${JSON.stringify(serviceState)}`
-  );
-}
-
-console.log("Service selected: true");
-lisaTiming("SERVICE_SELECTED");
+    if (livePayload?.inspectRecurring === true) {
+      const recurringCatalog = await page.evaluate(() => {
+        const controls = Array.from(document.querySelectorAll('input, select, textarea, button'))
+          .map(el => ({
+            tag: el.tagName,
+            type: el.getAttribute("type") || "",
+            name: el.getAttribute("name") || "",
+            id: el.id || "",
+            value: el.value || "",
+            checked: Boolean(el.checked),
+            placeholder: el.getAttribute("placeholder") || "",
+            text: String(el.innerText || "").replace(/\s+/g, " ").trim().slice(0, 200)
+          }))
+          .filter(x => /repeat|recurr|frequency|one.?time|weekly|fortnight|month|attribute_8087013985/i.test(JSON.stringify(x)));
+        const bodyLines = (document.body?.innerText || "").split("\n")
+          .map(x => x.trim()).filter(x => /repeat|recurr|frequency|one.?time|weekly|fortnight|month/i.test(x))
+          .slice(0, 100);
+        return { controls, bodyLines };
+      });
+      FINAL_BOOKING_RESULT = { success: true, inspectRecurring: true, recurringCatalog };
+      console.log("LISA_BOOKING_RESULT=" + JSON.stringify(FINAL_BOOKING_RESULT));
+      return;
+    }
 
 function parseLocalDateTime(dateIso, time24) {
   const [y, m, d] = dateIso.split("-").map(Number);
