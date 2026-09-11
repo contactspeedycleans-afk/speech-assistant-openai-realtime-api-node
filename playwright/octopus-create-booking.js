@@ -1683,13 +1683,18 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
 
         const candidates = [
           page
-            .locator('[role="option"]:visible, .vs__dropdown-option:visible')
+            .locator(
+              '[role="option"]:visible, .vs__dropdown-option:visible, ' +
+              '[data-id="47464"]:visible, [data-value="47464"]:visible, ' +
+              '[value="47464"]:visible'
+            )
             .filter({ hasText: desiredWorker })
             .last(),
           page
             .locator('li:visible')
             .filter({ hasText: desiredWorker })
-            .last()
+            .last(),
+          page.getByText(desiredWorker, { exact: true }).last()
         ];
 
         for (const candidate of candidates) {
