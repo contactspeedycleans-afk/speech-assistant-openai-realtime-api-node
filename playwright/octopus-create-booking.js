@@ -1496,54 +1496,54 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
         : TEST.fieldworkerName;
 
       await fieldworkerSearch.waitFor({ state: "visible", timeout: 10000 });
-      await fieldworkerSearch.click({ force: true });
-      await fieldworkerSearch.fill("");
-      await fieldworkerSearch.type(desiredWorker, { delay: 20 });
-      await page.waitForTimeout(1100);
 
-      // Filter first, then inspect only the matching option. Do not enumerate
-      // every dropdown option loaded elsewhere on the Octopus page.
-      const workerOption = page
-        .locator('[role="option"]:visible, .vs__dropdown-option:visible')
-        .filter({ hasText: desiredWorker })
-        .last();
+      // Octopus sometimes renders this remote worker list very slowly. Keep
+      // retrying the exact option while the customer conversation continues.
+      // This avoids a false booking failure without ever choosing a different
+      // worker or saving an unverified value.
       let selectedWorker = false;
+      const workerDeadline = Date.now() + 35000;
 
-      if (await workerOption.isVisible().catch(() => false)) {
-        const optionText = (await workerOption.innerText().catch(() => ""))
-          .replace(/\s+/g, " ")
-          .trim();
-        if (
-          optionText &&
-          optionText.length < 300 &&
-          optionText.toLowerCase().includes(desiredWorker.toLowerCase())
-        ) {
-          await workerOption.click({ force: true, timeout: 5000 });
-          selectedWorker = true;
+      while (!selectedWorker && Date.now() < workerDeadline) {
+        await fieldworkerSearch.click({ force: true }).catch(() => {});
+        await fieldworkerSearch.fill("").catch(() => {});
+        await fieldworkerSearch.type(desiredWorker, { delay: 10 }).catch(() => {});
+        await page.waitForTimeout(650);
+
+        const candidates = [
+          page
+            .locator('[role="option"]:visible, .vs__dropdown-option:visible')
+            .filter({ hasText: desiredWorker })
+            .last(),
+          page
+            .locator('li:visible')
+            .filter({ hasText: desiredWorker })
+            .last()
+        ];
+
+        for (const candidate of candidates) {
+          if (!(await candidate.isVisible().catch(() => false))) continue;
+          const optionText = (await candidate.innerText({ timeout: 1000 }).catch(() => ""))
+            .replace(/\s+/g, " ")
+            .trim();
+          if (
+            optionText &&
+            optionText.length < 300 &&
+            optionText.toLowerCase().includes(desiredWorker.toLowerCase())
+          ) {
+            await candidate.click({ force: true, timeout: 3000 }).catch(() => {});
+            selectedWorker = true;
+            break;
+          }
+        }
+
+        if (!selectedWorker) {
+          await fieldworkerSearch.press("Escape").catch(() => {});
+          await page.waitForTimeout(350);
         }
       }
 
-      if (!selectedWorker) {
-        const plainListOption = page
-          .locator('li:visible')
-          .filter({ hasText: desiredWorker })
-          .last();
-        const optionText = await plainListOption.isVisible().catch(() => false)
-          ? (await plainListOption.innerText({ timeout: 1500 }).catch(() => ""))
-              .replace(/\s+/g, " ")
-              .trim()
-          : "";
-        if (
-          optionText &&
-          optionText.length < 300 &&
-          optionText.toLowerCase().includes(desiredWorker.toLowerCase())
-        ) {
-          await plainListOption.click({ force: true, timeout: 5000 });
-          selectedWorker = true;
-        }
-      }
-
-      if (!selectedWorker) throw new Error(`FIELDWORKER_OPTION_NOT_FOUND: ${desiredWorker}`);
+      if (!selectedWorker) throw new Error(`FIELDWORKER_OPTION_NOT_FOUND_AFTER_RETRIES: ${desiredWorker}`);
       await fieldworkerSearch.press("Tab").catch(() => {});
       await page.waitForTimeout(500);
       lisaTiming("FIELDWORKER_COMMITTED", desiredWorker);
