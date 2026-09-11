@@ -1481,15 +1481,32 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     // in a dry run but Octopus rejects Save unless the actual components receive
     // keyboard input and blur events.
     async function commitRequiredNote(selector, value, label) {
-      const field = page.locator(`${selector}:visible`).last();
-      await field.waitFor({ state: "visible", timeout: 10000 });
-      await field.click({ force: true });
-      await field.fill(String(value || ""));
-      await field.press("Tab").catch(() => {});
-      await page.waitForTimeout(250);
-      const committed = await field.inputValue();
+      const labelNode = page.locator("label").filter({ hasText: label }).last();
+      await labelNode.waitFor({ state: "visible", timeout: 10000 });
+      const container = labelNode.locator(
+        'xpath=ancestor::*[contains(@class,"service-attribute-groups__field")][1]'
+      );
+      const visibleField = container
+        .locator('textarea:visible, input:visible, [contenteditable="true"]:visible')
+        .first();
+      await visibleField.waitFor({ state: "visible", timeout: 10000 });
+      await visibleField.click({ force: true });
+      const tag = await visibleField.evaluate(el => el.tagName.toLowerCase());
+      if (tag === "input" || tag === "textarea") {
+        await visibleField.fill(String(value || ""));
+      } else {
+        await visibleField.press("Control+A").catch(() => {});
+        await visibleField.type(String(value || ""), { delay: 5 });
+      }
+      await visibleField.press("Tab").catch(() => {});
+      await page.waitForTimeout(350);
+      const committed = tag === "input" || tag === "textarea"
+        ? await visibleField.inputValue()
+        : String(await visibleField.textContent() || "").trim();
       if (committed !== String(value || "")) {
-        throw new Error(`REQUIRED_NOTE_NOT_COMMITTED: ${label}`);
+        throw new Error(
+          `REQUIRED_NOTE_NOT_COMMITTED: ${label} selector=${selector} actual=${committed}`
+        );
       }
     }
 
