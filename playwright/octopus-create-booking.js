@@ -1476,6 +1476,25 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     );
 
     console.log("Required notes exact values:", JSON.stringify(requiredNotesState));
+
+    // These service attributes are Vue-managed. Direct DOM values look correct
+    // in a dry run but Octopus rejects Save unless the actual components receive
+    // keyboard input and blur events.
+    async function commitRequiredNote(selector, value, label) {
+      const field = page.locator(selector).filter({ visible: true }).last();
+      await field.waitFor({ state: "visible", timeout: 10000 });
+      await field.click({ force: true });
+      await field.fill(String(value || ""));
+      await field.press("Tab").catch(() => {});
+      await page.waitForTimeout(250);
+      const committed = await field.inputValue();
+      if (committed !== String(value || "")) {
+        throw new Error(`REQUIRED_NOTE_NOT_COMMITTED: ${label}`);
+      }
+    }
+
+    await commitRequiredNote("#attribute_8087017483", TEST.specialNotes, "Special Notes");
+    await commitRequiredNote("#attribute_8087013969", TEST.accessInstructions, "Access Instructions");
     lisaTiming("NOTES_COMMITTED");
 
     const appointmentCount = await page.locator('[id^="booking_visits_"]').count();
