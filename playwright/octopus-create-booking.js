@@ -1994,6 +1994,32 @@ lisaTiming("FINAL_SUBMIT_START");
         )
         .filter(Boolean);
 
+      const alertContexts = Array.from(
+        document.querySelectorAll(
+          '.alert, .alert-danger, .alert-warning, .invalid-feedback, .text-danger, .error, [role="alert"], .toast, .notification'
+        )
+      )
+        .filter(visible)
+        .map(el => {
+          const container =
+            el.closest('.form-group, .form-row, .row, [class*="field"], [class*="input"]') ||
+            el.parentElement;
+          const labels = container
+            ? Array.from(container.querySelectorAll('label, legend'))
+                .map(label => String(label.innerText || label.textContent || "").replace(/\s+/g, " ").trim())
+                .filter(Boolean)
+            : [];
+          return {
+            alert: String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim(),
+            labels,
+            context: String(container?.innerText || container?.textContent || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 800),
+            containerClass: String(container?.className || "").slice(0, 300)
+          };
+        });
+
       const invalidFields = Array.from(
         document.querySelectorAll("input, textarea, select")
       )
@@ -2051,6 +2077,7 @@ lisaTiming("FINAL_SUBMIT_START");
         booking_id: urlMatch ? urlMatch[1] : null,
         notify_customer_visible: notifyCustomerVisible,
         visibleAlerts,
+        alertContexts,
         invalidFields,
         errorLines,
         allTextTail
@@ -2113,6 +2140,7 @@ lisaTiming("FINAL_SUBMIT_START");
     } else {
       throw new Error(
         `BOOKING_NOT_CREATED: alerts=${JSON.stringify(saveDiagnostics.visibleAlerts)} ` +
+        `contexts=${JSON.stringify(saveDiagnostics.alertContexts)} ` +
         `invalid=${JSON.stringify(saveDiagnostics.invalidFields)} ` +
         `normalSaveBody=${JSON.stringify(normalSaveBody.slice(0, 4000))}`
       );
