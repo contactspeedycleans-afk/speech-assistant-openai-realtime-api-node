@@ -1481,7 +1481,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     // in a dry run but Octopus rejects Save unless the actual components receive
     // keyboard input and blur events.
     async function commitRequiredNote(selector, value, label) {
-      const field = page.locator(selector).filter({ visible: true }).last();
+      const field = page.locator(`${selector}:visible`).last();
       await field.waitFor({ state: "visible", timeout: 10000 });
       await field.click({ force: true });
       await field.fill(String(value || ""));
