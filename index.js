@@ -763,7 +763,7 @@ fastify.post(
                 ).trim().toLowerCase();
                 if (
                     normalizedEmail &&
-                    !/^[^@\\s]+@[^@\\s]+\\.[a-z]{2,}$/i.test(normalizedEmail)
+                    !/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(normalizedEmail)
                 ) {
                     missing.push('customerEmail');
                 }
