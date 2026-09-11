@@ -1195,15 +1195,6 @@ async function main() {
       `li[role="option"][aria-label="${desiredService}"]`
     );
 
-    if (isRecurringBooking && /standard/i.test(desiredService)) {
-      const dedicatedRecurring = page.locator(
-        'li[role="option"][aria-label="Recurring Standard Cleaning"]'
-      ).first();
-      if (await dedicatedRecurring.isVisible().catch(() => false)) {
-        serviceOptions = dedicatedRecurring;
-      }
-    }
-
     const serviceCount = await serviceOptions.count().catch(() => 0);
     if (serviceCount < 1) {
       throw new Error(`SERVICE_OPTION_NOT_FOUND: ${desiredService}`);
