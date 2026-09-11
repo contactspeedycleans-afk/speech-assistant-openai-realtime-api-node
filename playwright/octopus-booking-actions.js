@@ -613,8 +613,20 @@ async function cancelBooking(page) {
     if (okButton) {
       await okButton.click();
     } else {
-      console.log("Invoice void completed without a visible Ok button; closing the remaining dialog.");
-      await closeVisibleDialog(page);
+      const voidMessageDialog = page.locator("#convert-invoice-to-void-message-dialogId");
+      if (await voidMessageDialog.isVisible().catch(() => false)) {
+        const dialogText = String(await voidMessageDialog.innerText().catch(() => ""))
+          .replace(/\s+/g, " ")
+          .trim();
+        const dialogButtons = await voidMessageDialog
+          .locator("button:visible")
+          .allTextContents()
+          .catch(() => []);
+        throw new Error(
+          `INVOICE_VOID_DIALOG_REQUIRES_EXPLICIT_HANDLER: text=${JSON.stringify(dialogText)} buttons=${JSON.stringify(dialogButtons)}`
+        );
+      }
+      console.log("Invoice void completed without a visible Ok button or remaining dialog.");
     }
     invoiceVoided = true;
   }
