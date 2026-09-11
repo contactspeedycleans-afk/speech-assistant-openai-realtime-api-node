@@ -797,7 +797,7 @@ fastify.post(
                         error: 'The customer must explicitly confirm the complete booking first.'
                     });
                 }
-                const result = await finalizeFastBooking(body);
+                let result = await finalizeFastBooking(body);
                 if (result.dryRun === true) {
                     return reply.send({
                         ...result,
@@ -806,7 +806,62 @@ fastify.post(
                     });
                 }
                 const bookingId = result.bookingId || result.booking_id || null;
-                const bookingNumber = result.bookingNumber || result.booking_number || null;
+                let bookingNumber = result.bookingNumber || result.booking_number || null;
+
+                // Octopus can return "Saved successfully" with the internal booking
+                // ID before the page exposes the public BOK. Verify that exact saved
+                // record read-only instead of declaring failure or creating again.
+                if (result.success === true && bookingId && !bookingNumber) {
+                    try {
+                        const { stdout } = await execFileAsync(
+                            process.execPath,
+                            ['playwright/octopus-live-lookup.js'],
+                            {
+                                cwd: process.cwd(),
+                                env: {
+                                    ...process.env,
+                                    LISA_LOOKUP_PAYLOAD: JSON.stringify({
+                                        bookingId,
+                                        scope: 'all',
+                                        limit: 1
+                                    })
+                                },
+                                timeout: 90000,
+                                maxBuffer: 10 * 1024 * 1024
+                            }
+                        );
+                        const marker = stdout
+                            .split(/\r?\n/)
+                            .find(line => line.startsWith('LISA_LOOKUP_RESULT='));
+                        if (marker) {
+                            const lookup = JSON.parse(
+                                marker.substring('LISA_LOOKUP_RESULT='.length)
+                            );
+                            bookingNumber =
+                                lookup.booking?.bookingNumber ||
+                                lookup.bookings?.[0]?.bookingNumber ||
+                                null;
+                            if (bookingNumber) {
+                                result = {
+                                    ...result,
+                                    bookingNumber,
+                                    verifiedBySavedBookingLookup: true
+                                };
+                                console.log(
+                                    'Recovered BOK from exact saved booking ID:',
+                                    bookingId,
+                                    bookingNumber
+                                );
+                            }
+                        }
+                    } catch (lookupError) {
+                        console.error(
+                            'Exact saved-booking BOK lookup failed:',
+                            lookupError?.message || lookupError
+                        );
+                    }
+                }
+
                 const verified = result.success === true && Boolean(bookingId && bookingNumber);
                 if (verified) {
                     const verifiedBody = result.stagedBody || body;
