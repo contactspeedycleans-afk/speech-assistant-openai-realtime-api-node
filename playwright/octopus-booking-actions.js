@@ -603,6 +603,22 @@ async function cancelBooking(page) {
   let notificationSent = false;
   let sendButton = await getLargestVisibleExactText(page, "Send");
 
+  const cancellationFeesModal = page.locator(
+    "#GLOBAL_CANCEL_BOOKING_BASED_CANCELATION_FEES_MODAL_ID"
+  );
+  if (await cancellationFeesModal.isVisible().catch(() => false)) {
+    const feeText = String(await cancellationFeesModal.innerText().catch(() => ""))
+      .replace(/\s+/g, " ")
+      .trim();
+    const feeButtons = await cancellationFeesModal
+      .locator("button:visible")
+      .allTextContents()
+      .catch(() => []);
+    throw new Error(
+      `CANCELLATION_FEE_MODAL_REQUIRES_EXPLICIT_HANDLER: text=${JSON.stringify(feeText)} buttons=${JSON.stringify(feeButtons)}`
+    );
+  }
+
   if (!sendButton) {
     const saveChangesButton = await waitForLargestVisibleExactText(
       page,
