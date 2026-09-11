@@ -438,12 +438,23 @@ async function finalizeFastBooking(body) {
     clearTimeout(draft.expiryTimer);
     const startedAt = Date.now();
     await draft.stagedPromise;
+    const mergedBody = {
+        ...draft.body,
+        ...body,
+        specialNotes:
+            String(body.specialNotes || draft.body.specialNotes || '').trim() ||
+            'No special cleaning priorities or pets reported.',
+        accessInstructions:
+            String(body.accessInstructions || draft.body.accessInstructions || '').trim() ||
+            'No special access instructions reported.'
+    };
     const resultPromise = waitForWorkerMarker(
         draft.worker,
         'LISA_BOOKING_RESULT=',
         60000
     );
     draft.worker.child.stdin.write(JSON.stringify({
+        ...mergedBody,
         phase: 'finalize',
         customerConfirmed: body.customerConfirmed === true,
         dryRun: body.dryRun === true
@@ -455,7 +466,7 @@ async function finalizeFastBooking(body) {
         ...result,
         finalizeElapsedMs: Date.now() - startedAt,
         totalElapsedMs: Date.now() - draft.stagedAt,
-        stagedBody: draft.body
+        stagedBody: mergedBody
     };
 }
 
