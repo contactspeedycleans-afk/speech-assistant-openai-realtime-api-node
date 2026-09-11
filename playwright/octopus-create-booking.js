@@ -1266,18 +1266,33 @@ async function main() {
     });
     await page.waitForTimeout(1200);
 
-    let serviceOptions = page
-      .locator('li[role="option"]')
-      .filter({ has: page.locator(`[aria-label="${desiredService}"]`) });
-
-    // PrimeVue puts aria-label directly on the li, so use that exact selector first.
-    serviceOptions = page.locator(
-      `li[role="option"][aria-label="${desiredService}"]`
+    let selectedServiceName = desiredService;
+    let serviceOptions = page.locator(
+      `li[role="option"][aria-label="${selectedServiceName}"]`
     );
 
-    const serviceCount = await serviceOptions.count().catch(() => 0);
+    let serviceCount = await serviceOptions.count().catch(() => 0);
     if (serviceCount < 1) {
-      throw new Error(`SERVICE_OPTION_NOT_FOUND: ${desiredService}`);
+      // Booking continuity wins over a wording mismatch. Octopus uses Standard
+      // Cleaning as the safe schedulable fallback; retain the caller's requested
+      // service wording in notes for staff/cleaner visibility.
+      console.warn(
+        `Service option "${desiredService}" not found; falling back to Standard Cleaning.`
+      );
+      selectedServiceName = "Standard Cleaning";
+      serviceOptions = page.locator(
+        'li[role="option"][aria-label="Standard Cleaning"]'
+      );
+      serviceCount = await serviceOptions.count().catch(() => 0);
+      if (serviceCount < 1) {
+        throw new Error(
+          `SERVICE_OPTION_NOT_FOUND: requested=${desiredService} fallback=Standard Cleaning`
+        );
+      }
+      const requestedServiceNote = `Requested service: ${rawService}.`;
+      if (!String(TEST.specialNotes || "").includes(requestedServiceNote)) {
+        TEST.specialNotes = `${requestedServiceNote} ${TEST.specialNotes || ""}`.trim();
+      }
     }
 
     const chosenService = isRecurringBooking
@@ -1304,12 +1319,12 @@ async function main() {
           /Service Details/i.test(bodyText) &&
           bodyText.toLowerCase().includes(serviceName.toLowerCase())
       };
-    }, desiredService);
+    }, selectedServiceName);
 
     console.log("Service state:", JSON.stringify(serviceState));
     if (
       !serviceState.selectedOptions.some(x =>
-        x.toLowerCase().includes(desiredService.toLowerCase())
+        x.toLowerCase().includes(selectedServiceName.toLowerCase())
       ) &&
       !serviceState.serviceDetailsPresent
     ) {
