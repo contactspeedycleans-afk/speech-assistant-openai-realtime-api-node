@@ -917,7 +917,10 @@ async function main() {
 
     console.log("Selecting booking location...");
 
-    const bookingAddress = `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state} ${TEST.postcode}`;
+    // Let Octopus/Google autocomplete supply and normalize the ZIP from a
+    // partial street + city/state query. A misheard ZIP should not poison an
+    // otherwise recognizable address.
+    const bookingAddress = `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state}`;
 
     const visibleBookingAddress = page
       .locator('input[placeholder="Booking address"]')
