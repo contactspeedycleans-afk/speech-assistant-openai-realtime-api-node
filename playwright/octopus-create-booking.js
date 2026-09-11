@@ -1139,6 +1139,40 @@ await servicesDropdown.evaluate(element => {
 
 await page.waitForTimeout(2000);
 
+if (livePayload?.inspectCatalog === true) {
+  const catalog = await page.evaluate(() => {
+    const visible = el => {
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const serviceOptions = Array.from(document.querySelectorAll('li[role="option"]'))
+      .filter(visible)
+      .map(el => ({
+        text: String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim(),
+        ariaLabel: el.getAttribute("aria-label") || "",
+        value: el.getAttribute("value") || "",
+        id: el.id || "",
+        data: Object.fromEntries(Array.from(el.attributes).filter(a => a.name.startsWith("data-")).map(a => [a.name, a.value]))
+      }));
+    const controls = Array.from(document.querySelectorAll('input, select, textarea'))
+      .filter(visible)
+      .map(el => ({
+        tag: el.tagName,
+        type: el.getAttribute("type") || "",
+        name: el.getAttribute("name") || "",
+        id: el.id || "",
+        value: el.value || "",
+        placeholder: el.getAttribute("placeholder") || ""
+      }))
+      .filter(x => /repeat|recurr|frequency|service|one.?time|weekly|month|attribute_8087013985/i.test(JSON.stringify(x)));
+    return { serviceOptions, controls };
+  });
+  FINAL_BOOKING_RESULT = { success: true, inspectCatalog: true, catalog };
+  console.log("LISA_BOOKING_RESULT=" + JSON.stringify(FINAL_BOOKING_RESULT));
+  return;
+}
+
 const cleanAsDirected = page
   .locator('li[role="option"][aria-label="Standard Cleaning"]')
   .filter({ hasText: "$82.5" })
