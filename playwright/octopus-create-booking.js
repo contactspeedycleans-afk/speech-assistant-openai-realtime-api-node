@@ -651,16 +651,21 @@ async function main() {
     // Lisa live bookings may refer to an existing Octopus customer whose displayed
     // name is not an exact text match. Search several identifiers and select a
     // visible result that contains the customer's name/phone/email.
-    const customerLookupTerms = [
+    const trustedCustomerLookupTerms = [
       TEST.customerId,
       livePayload?.customerPhone,
       livePayload?.phone,
       livePayload?.customerEmail,
-      livePayload?.email,
-      TEST.customerName
+      livePayload?.email
     ]
       .map(value => String(value || "").trim())
       .filter((value, index, arr) => value && arr.indexOf(value) === index);
+    // A name alone is not an identity match. Many customers share names, and
+    // selecting by name can attach a new caller to an unrelated old profile.
+    // Use the name only when no trusted ID, phone, or email exists at all.
+    const customerLookupTerms = trustedCustomerLookupTerms.length
+      ? trustedCustomerLookupTerms
+      : [String(TEST.customerName || "").trim()].filter(Boolean);
 
     for (const lookupTerm of customerLookupTerms) {
       if (customerSelected) break;
@@ -681,7 +686,10 @@ async function main() {
           .filter({ hasText: TEST.customerName })
           .last();
 
-        if (await targetedCustomer.isVisible().catch(() => false)) {
+        if (
+          !trustedCustomerLookupTerms.length &&
+          await targetedCustomer.isVisible().catch(() => false)
+        ) {
           const targetedText = (await targetedCustomer.innerText().catch(() => ""))
             .replace(/\s+/g, " ")
             .trim();
@@ -724,12 +732,18 @@ async function main() {
           const matchesEmail = email && normalized.includes(email);
           const matchesPhone =
             phone &&
-            !name &&
-            !email &&
             candidateDigits &&
             (candidateDigits.includes(phone) || phone.includes(candidateDigits));
+          const hasTrustedIdentity = Boolean(TEST.customerId || phone || email);
+          const maySelect = hasTrustedIdentity
+            ? Boolean(
+                (TEST.customerId && normalized.includes(String(TEST.customerId))) ||
+                matchesEmail ||
+                matchesPhone
+              )
+            : matchesName;
 
-          if (matchesName || matchesEmail || matchesPhone) {
+          if (maySelect) {
             console.log("Selecting customer option:", text);
             await candidate.click({ force: true, timeout: 10000 });
             customerSelected = true;
