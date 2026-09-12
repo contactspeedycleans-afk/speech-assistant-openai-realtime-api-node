@@ -238,6 +238,32 @@ function ensureWarmBookingWorker() {
     return warmBookingWorkerPromise;
 }
 
+async function acquireWritableWarmBookingWorker() {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const worker = await ensureWarmBookingWorker();
+        const child = worker?.child;
+        const writable = Boolean(
+            child &&
+            child.exitCode === null &&
+            child.killed !== true &&
+            child.stdin &&
+            child.stdin.writable &&
+            child.stdin.destroyed !== true
+        );
+
+        if (writable) {
+            return worker;
+        }
+
+        console.warn(
+            `[FAST_BOOKING_WORKER] Discarding stale prewarmed worker before booking; attempt=${attempt}`
+        );
+        warmBookingWorkerPromise = null;
+    }
+
+    throw new Error('FAST_BOOKING_NO_WRITABLE_WARM_WORKER');
+}
+
 async function runWithWarmBookingWorker(body) {
     const worker = await ensureWarmBookingWorker();
     warmBookingWorkerPromise = null;
@@ -366,7 +392,7 @@ function waitForWorkerMarker(worker, prefix, timeoutMs) {
 }
 
 function beginFastBookingDraft(body) {
-    return ensureWarmBookingWorker().then(worker => {
+    return acquireWritableWarmBookingWorker().then(worker => {
         warmBookingWorkerPromise = null;
         ensureWarmBookingWorker().catch(error => {
             console.error('Replacement draft worker failed:', error.message);
