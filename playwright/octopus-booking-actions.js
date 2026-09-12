@@ -618,15 +618,37 @@ async function cancelBooking(page) {
         const dialogText = String(await voidMessageDialog.innerText().catch(() => ""))
           .replace(/\s+/g, " ")
           .trim();
-        const dialogButtons = await voidMessageDialog
-          .locator("button:visible")
-          .allTextContents()
-          .catch(() => []);
-        throw new Error(
-          `INVOICE_VOID_DIALOG_REQUIRES_EXPLICIT_HANDLER: text=${JSON.stringify(dialogText)} buttons=${JSON.stringify(dialogButtons)}`
-        );
+        const voidSucceeded =
+          /success/i.test(dialogText) &&
+          /invoice/i.test(dialogText) &&
+          /void/i.test(dialogText);
+
+        if (!voidSucceeded) {
+          const dialogButtons = await voidMessageDialog
+            .locator("button:visible")
+            .allTextContents()
+            .catch(() => []);
+          throw new Error(
+            `INVOICE_VOID_DIALOG_REQUIRES_EXPLICIT_HANDLER: text=${JSON.stringify(dialogText)} buttons=${JSON.stringify(dialogButtons)}`
+          );
+        }
+
+        console.log("Invoice void success message confirmed.");
+        await voidMessageDialog
+          .waitFor({ state: "hidden", timeout: 8000 })
+          .catch(async () => {
+            const closeControl = voidMessageDialog
+              .locator('[data-dismiss="modal"], .close, button.close, [aria-label="Close"]')
+              .first();
+            if (await closeControl.isVisible().catch(() => false)) {
+              await closeControl.click({ force: true });
+            } else {
+              await page.keyboard.press("Escape");
+            }
+          });
+      } else {
+        console.log("Invoice void completed without a visible Ok button or remaining dialog.");
       }
-      console.log("Invoice void completed without a visible Ok button or remaining dialog.");
     }
     invoiceVoided = true;
   }
