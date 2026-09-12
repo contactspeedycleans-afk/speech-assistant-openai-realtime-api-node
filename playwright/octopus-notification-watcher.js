@@ -27,6 +27,12 @@ const MAKE_WEBHOOK_URL =
 const ASSIGNMENT_MAKE_WEBHOOK_URL =
   process.env.ASSIGNMENT_MAKE_WEBHOOK_URL;
 
+const DUPLICATE_ASSIGNED_RECOVERY_COOLDOWN_MS =
+  15 * 60 * 1000;
+
+const duplicateAssignedRecoverySentAt =
+  new Map();
+
 const JOB_REQUEST_SENT_WEBHOOK_URL =
   process.env.JOB_REQUEST_SENT_WEBHOOK_URL;
 
@@ -890,6 +896,60 @@ async function saveNotification(
     }
 
 
+    if (
+      notification.eventType ===
+        "ASSIGNED"
+    ) {
+      const recoveryKey =
+        `${notification.bookingNumber}|${notification.fieldworkerName || ""}`;
+
+      const lastRecoveryAt =
+        duplicateAssignedRecoverySentAt.get(
+          recoveryKey
+        ) || 0;
+
+      if (
+        Date.now() -
+          lastRecoveryAt >=
+        DUPLICATE_ASSIGNED_RECOVERY_COOLDOWN_MS
+      ) {
+        try {
+          await sendAssignmentToMake({
+            bookingNumber:
+              notification.bookingNumber,
+
+            cleanerName:
+              notification.fieldworkerName,
+
+            assignmentAction:
+              notification.eventType,
+
+            notificationText:
+              notification.text
+          });
+
+          await upsertDispatchState(
+            notification
+          );
+
+          duplicateAssignedRecoverySentAt.set(
+            recoveryKey,
+            Date.now()
+          );
+
+          console.log(
+            `Duplicate ASSIGNED recovery webhook sent: ${notification.bookingNumber} ${notification.fieldworkerName || ""}`
+          );
+        } catch (error) {
+          console.error(
+            `Failed duplicate ASSIGNED recovery for ${notification.bookingNumber}:`,
+            error
+          );
+        }
+      }
+    }
+
+
     return false;
   }
 
@@ -943,6 +1003,19 @@ async function saveNotification(
         notificationText:
           notification.text
       });
+
+      if (
+        notification.eventType ===
+          "ASSIGNED"
+      ) {
+        const recoveryKey =
+          `${notification.bookingNumber}|${notification.fieldworkerName || ""}`;
+
+        duplicateAssignedRecoverySentAt.set(
+          recoveryKey,
+          Date.now()
+        );
+      }
     }
   } catch (error) {
     console.error(
