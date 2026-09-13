@@ -34,7 +34,7 @@ if (process.env.LISA_BOOKING_PROFILE_TEST) {
         for (const line of stdout.split(/\r?\n/)) if (/LISA_TIMING|LISA_BOOKING_RESULT=|LISA_ADDRESS_LOOKUP_RESULT=|LISA_CUSTOMER_DIAGNOSTIC=/.test(line)) console.log('[BOOKING_PROFILE]',line);
     }).catch(error=>{
         for (const line of String(error.stdout || '').split(/\r?\n/)) if (/LISA_TIMING|LISA_CUSTOMER_DIAGNOSTIC=/.test(line)) console.log('[BOOKING_PROFILE]',line);
-        console.error('LISA_BOOKING_PROFILE_FAILED',error.message.slice(-1500));
+        console.error('LISA_BOOKING_PROFILE_FAILED',error.message.slice(0,650),error.message.slice(-500));
     });
 }
 
@@ -3794,6 +3794,5 @@ fastify.listen(
         );
     }
 );
-
 
 

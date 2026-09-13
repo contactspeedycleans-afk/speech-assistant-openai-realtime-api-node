@@ -927,6 +927,21 @@ async function main() {
 
     lisaTiming("CUSTOMER_FOUND_OR_CREATED", `customerId=${customerState.customer_id}`);
 
+    // Selecting an existing customer can open an informational/customer-location
+    // dialog. Dismiss its native backdrop before editing the booking address;
+    // never force a click through it or overwrite the selected customer object.
+    const customerDialog = page.locator('div[role="dialog"].m-backdrop.--present').last();
+    if (await customerDialog.isVisible().catch(() => false)) {
+      if (livePayload?.dryRun) console.log('LISA_CUSTOMER_DIAGNOSTIC=' + JSON.stringify({dialog:(await customerDialog.innerText()).slice(0,700)}));
+      const dismiss = customerDialog.locator('button.m-backdrop-overlay').first();
+      if (await dismiss.isVisible().catch(() => false)) {
+        await dismiss.click({position:{x:5,y:5},timeout:3000});
+        await customerDialog.waitFor({state:'hidden',timeout:5000});
+      }
+      const retainedId = await page.locator('input[name="customer_id"]').first().inputValue();
+      if (retainedId !== String(customerState.customer_id)) throw new Error('CUSTOMER_CHANGED_WHILE_CLOSING_DIALOG');
+    }
+
     // IMPORTANT: do not overwrite customer_id/customers.
     // Octopus fills these with its full native customer object after the real UI selection.
 
@@ -1988,4 +2003,3 @@ main().catch(error => {
   }));
   process.exitCode = 1;
 });
-
