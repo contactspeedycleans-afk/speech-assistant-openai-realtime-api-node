@@ -1,6 +1,13 @@
 import { mergeNote } from '../lib/booking-note-rules.js';
 import { selectSingleFrequency } from './octopus-frequency.js';
 
+export function resolveNoteFields(ids) {
+  const special = ids.filter(id=>/^attribute_\d+17483$/.test(id));
+  const access = ids.filter(id=>/^attribute_\d+13969$/.test(id));
+  if (special.length !== 1 || access.length !== 1 || special[0].slice(0,-5) !== access[0].slice(0,-5)) throw new Error('NOTE_FIELD_AMBIGUOUS');
+  return {specialNotes:'#'+special[0],accessInstructions:'#'+access[0]};
+}
+
 export async function updateBookingNotes(page, payload) {
   const { bookingNumber, baseline = {}, notes = {} } = payload;
   if (!/^BOK-\d+$/.test(bookingNumber || '')) throw new Error('INVALID_BOOKING_REFERENCE');
@@ -13,7 +20,8 @@ export async function updateBookingNotes(page, payload) {
     await page.waitForTimeout(2000);
     return {success:true,outcome:'notes_read_only_inspection',bookingNumber,fields:await page.locator('textarea, input[id^="attribute_"]').evaluateAll(nodes=>nodes.map(n=>({id:n.id,name:n.name,type:n.type,visible:!!n.getClientRects().length}))),labels:await page.locator('label').allTextContents()};
   }
-  const fields = {specialNotes:'#attribute_8087017483',accessInstructions:'#attribute_8087013969'};
+  await page.locator('textarea[id^="attribute_"]').first().waitFor({state:'attached',timeout:15000});
+  const fields = resolveNoteFields(await page.locator('textarea[id^="attribute_"]').evaluateAll(nodes=>nodes.map(node=>node.id)));
   const expected = {};
   let changed = false;
   for (const [key, selector] of Object.entries(fields)) {

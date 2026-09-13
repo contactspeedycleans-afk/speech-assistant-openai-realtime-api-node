@@ -83,6 +83,11 @@ const bookingNoteQueue = createBookingNoteQueue(db, async job=>{
     const {sendNoteReviewAlert} = await import('./lib/lisa-readiness-audit.js');
     return sendNoteReviewAlert(twilioClient,job);
 });
+if (process.env.LISA_NOTES_RETRY_BOOKING === 'BOK-27944') {
+    setTimeout(()=>void db.query("UPDATE public.lisa_booking_note_jobs SET status='pending',attempts=0,available_at=NOW(),updated_at=NOW() WHERE payload->>'bookingNumber'=$1 AND status='needs_review' AND last_error LIKE '%NOTE_FIELD_AMBIGUOUS%' AND COALESCE((extracted->>'needsReview')::boolean,true)=false RETURNING job_key", ['BOK-27944'])
+      .then(({rowCount})=>console.log('LISA_NOTES_TARGETED_RETRY',rowCount))
+      .catch(error=>console.error('LISA_NOTES_TARGETED_RETRY_FAILED',error.message)),10000);
+}
 if (process.env.LISA_BOOKING_PROFILE_TEST) {
     setTimeout(()=>void db.query("SELECT payload->>'bookingNumber' AS booking, status, attempts, last_error, result FROM public.lisa_booking_note_jobs ORDER BY updated_at DESC LIMIT 3")
       .then(({rows})=>console.log('LISA_NOTES_AUDIT=' + JSON.stringify(rows)))
