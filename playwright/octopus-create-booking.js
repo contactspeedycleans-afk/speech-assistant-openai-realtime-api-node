@@ -947,8 +947,13 @@ async function main() {
     console.log("Confirming location modal...");
 
     const nativeLocationModal = page.locator('div[role="dialog"].m-backdrop.--present').last();
-    const hasNativeLocationModal = await nativeLocationModal.isVisible().catch(() => false);
+    let hasNativeLocationModal = await nativeLocationModal.isVisible().catch(() => false);
     if (livePayload?.dryRun && hasNativeLocationModal) console.log('LISA_CUSTOMER_DIAGNOSTIC=' + JSON.stringify({locationDialog:(await nativeLocationModal.innerText()).slice(0,1600),buttons:await nativeLocationModal.getByRole('button').allTextContents()}));
+    if (hasNativeLocationModal && /update the Google Maps pin to reflect the change of address/i.test(await nativeLocationModal.innerText())) {
+      await nativeLocationModal.getByRole('button', {name:'Update Pin',exact:true}).click({timeout:10000});
+      await page.getByText('Would you like to update the Google Maps pin to reflect the change of address?', {exact:true}).waitFor({state:'hidden',timeout:10000});
+      hasNativeLocationModal = await nativeLocationModal.isVisible().catch(() => false);
+    }
     const locationModal = hasNativeLocationModal ? nativeLocationModal : page.locator("#GLOBAL_ADD_LOCATION_MODAL_ID");
 
     await locationModal.waitFor({

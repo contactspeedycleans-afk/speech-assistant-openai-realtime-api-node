@@ -30,8 +30,13 @@ if (process.env.LISA_BOOKING_PROFILE_TEST) {
     profile.dryRun = true;
     execFileAsync(process.execPath, ['playwright/octopus-create-booking.js'], {
         env:{...process.env,LISA_BOOKING_PREWARM:'0',LISA_BOOKING_PAYLOAD:JSON.stringify(profile)},timeout:120000,maxBuffer:4*1024*1024
-    }).then(({stdout})=>{
+    }).then(async ({stdout})=>{
         for (const line of stdout.split(/\r?\n/)) if (/LISA_TIMING|LISA_BOOKING_RESULT=|LISA_ADDRESS_LOOKUP_RESULT=|LISA_CUSTOMER_DIAGNOSTIC=/.test(line)) console.log('[BOOKING_PROFILE]',line);
+        const marker = stdout.split(/\r?\n/).find(line=>line.startsWith('LISA_BOOKING_RESULT='));
+        if (marker && process.env.LISA_OWNER_READY_NOTICE) {
+            const {sendOwnerReadyNotice} = await import('./lib/lisa-readiness-audit.js');
+            await sendOwnerReadyNotice(twilioClient, JSON.parse(marker.slice('LISA_BOOKING_RESULT='.length)));
+        }
     }).catch(error=>{
         for (const line of String(error.stdout || '').split(/\r?\n/)) if (/LISA_TIMING|LISA_CUSTOMER_DIAGNOSTIC=/.test(line)) console.log('[BOOKING_PROFILE]',line);
         console.error('LISA_BOOKING_PROFILE_FAILED',error.message.slice(0,650),error.message.slice(-500));
@@ -76,9 +81,9 @@ const db = new Pool({
 });
 const bookingNoteQueue = createBookingNoteQueue(db);
 if (process.env.LISA_BOOKING_PROFILE_TEST) {
-    db.query("SELECT payload->>'bookingNumber' AS booking, status, attempts, last_error, result FROM public.lisa_booking_note_jobs ORDER BY updated_at DESC LIMIT 3")
+    setTimeout(()=>void db.query("SELECT payload->>'bookingNumber' AS booking, status, attempts, last_error, result FROM public.lisa_booking_note_jobs ORDER BY updated_at DESC LIMIT 3")
       .then(({rows})=>console.log('LISA_NOTES_AUDIT=' + JSON.stringify(rows)))
-      .catch(error=>console.error('LISA_NOTES_AUDIT_FAILED',error.message));
+      .catch(error=>console.error('LISA_NOTES_AUDIT_FAILED',error.message)), 10000);
 }
 const {
     searchTechnicians
@@ -3799,4 +3804,3 @@ fastify.listen(
         );
     }
 );
-
