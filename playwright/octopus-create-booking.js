@@ -668,7 +668,8 @@ async function main() {
       livePayload?.email,
       livePayload?.customerPhone,
       livePayload?.phone,
-      TEST.customerId
+      TEST.customerId,
+      ...(TEST.customerId ? [TEST.customerName] : [])
     ]
       .map(value => String(value || "").trim())
       .filter((value, index, arr) => value && arr.indexOf(value) === index);
@@ -699,7 +700,7 @@ async function main() {
           .last();
 
         if (
-          !trustedCustomerLookupTerms.length &&
+          (!trustedCustomerLookupTerms.length || Boolean(TEST.customerId)) &&
           await targetedCustomer.isVisible().catch(() => false)
         ) {
           const targetedText = (await targetedCustomer.innerText().catch(() => ""))

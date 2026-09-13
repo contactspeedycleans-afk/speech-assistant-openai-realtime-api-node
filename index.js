@@ -75,6 +75,11 @@ const db = new Pool({
     }
 });
 const bookingNoteQueue = createBookingNoteQueue(db);
+if (process.env.LISA_BOOKING_PROFILE_TEST) {
+    db.query("SELECT payload->>'bookingNumber' AS booking, status, attempts, last_error, result FROM public.lisa_booking_note_jobs ORDER BY updated_at DESC LIMIT 3")
+      .then(({rows})=>console.log('LISA_NOTES_AUDIT=' + JSON.stringify(rows)))
+      .catch(error=>console.error('LISA_NOTES_AUDIT_FAILED',error.message));
+}
 const {
     searchTechnicians
 } = createTechnicianSearch(db);
@@ -3794,5 +3799,4 @@ fastify.listen(
         );
     }
 );
-
 
