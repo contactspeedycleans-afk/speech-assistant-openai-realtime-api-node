@@ -9,6 +9,10 @@ export async function updateBookingNotes(page, payload) {
     if (!(text.match(/\bBOK-\d+\b/g) || []).includes(bookingNumber)) throw new Error('BOOKING_IDENTITY_MISMATCH');
   };
   await verifyIdentity();
+  if (payload.inspectOnly) {
+    await page.waitForTimeout(2000);
+    return {success:true,outcome:'notes_read_only_inspection',bookingNumber,fields:await page.locator('textarea, input[id^="attribute_"]').evaluateAll(nodes=>nodes.map(n=>({id:n.id,name:n.name,type:n.type,visible:!!n.getClientRects().length}))),labels:await page.locator('label').allTextContents()};
+  }
   const fields = {specialNotes:'#attribute_8087017483',accessInstructions:'#attribute_8087013969'};
   const expected = {};
   let changed = false;

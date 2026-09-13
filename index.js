@@ -79,7 +79,10 @@ const db = new Pool({
         rejectUnauthorized: false
     }
 });
-const bookingNoteQueue = createBookingNoteQueue(db);
+const bookingNoteQueue = createBookingNoteQueue(db, async job=>{
+    const {sendNoteReviewAlert} = await import('./lib/lisa-readiness-audit.js');
+    return sendNoteReviewAlert(twilioClient,job);
+});
 if (process.env.LISA_BOOKING_PROFILE_TEST) {
     setTimeout(()=>void db.query("SELECT payload->>'bookingNumber' AS booking, status, attempts, last_error, result FROM public.lisa_booking_note_jobs ORDER BY updated_at DESC LIMIT 3")
       .then(({rows})=>console.log('LISA_NOTES_AUDIT=' + JSON.stringify(rows)))
