@@ -34,6 +34,15 @@ if (process.env.LISA_BOOKING_PROFILE_TEST) {
         for (const line of stdout.split(/\r?\n/)) if (/LISA_TIMING|LISA_BOOKING_RESULT=|LISA_ADDRESS_LOOKUP_RESULT=|LISA_CUSTOMER_DIAGNOSTIC=/.test(line)) console.log('[BOOKING_PROFILE]',line);
         const marker = stdout.split(/\r?\n/).find(line=>line.startsWith('LISA_BOOKING_RESULT='));
         if (marker && process.env.LISA_OWNER_READY_NOTICE) {
+            let notesVerified = false;
+            for (let attempt=0;attempt<12;attempt++) {
+                const {rows} = await db.query("SELECT status,result FROM public.lisa_booking_note_jobs WHERE payload->>'bookingNumber'=$1",['BOK-27944']);
+                notesVerified = rows.length===1 && rows[0].status==='complete' && rows[0].result?.success===true;
+                if (notesVerified) break;
+                if (rows.some(row=>row.status==='needs_review')) break;
+                await new Promise(resolve=>setTimeout(resolve,10000));
+            }
+            if (!notesVerified) throw new Error('READINESS_NOTES_NOT_VERIFIED: completion SMS withheld');
             const {sendOwnerReadyNotice} = await import('./lib/lisa-readiness-audit.js');
             await sendOwnerReadyNotice(twilioClient, JSON.parse(marker.slice('LISA_BOOKING_RESULT='.length)));
         }
