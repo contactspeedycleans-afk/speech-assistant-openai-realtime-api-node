@@ -31,7 +31,7 @@ if (process.env.LISA_BOOKING_PROFILE_TEST) {
     execFileAsync(process.execPath, ['playwright/octopus-create-booking.js'], {
         env:{...process.env,LISA_BOOKING_PREWARM:'0',LISA_BOOKING_PAYLOAD:JSON.stringify(profile)},timeout:120000,maxBuffer:4*1024*1024
     }).then(({stdout})=>{
-        for (const line of stdout.split(/\r?\n/)) if (/LISA_TIMING|LISA_BOOKING_RESULT=/.test(line)) console.log('[BOOKING_PROFILE]',line);
+        for (const line of stdout.split(/\r?\n/)) if (/LISA_TIMING|LISA_BOOKING_RESULT=|LISA_ADDRESS_LOOKUP_RESULT=/.test(line)) console.log('[BOOKING_PROFILE]',line);
     }).catch(error=>console.error('LISA_BOOKING_PROFILE_FAILED',error.message.slice(-1500)));
 }
 

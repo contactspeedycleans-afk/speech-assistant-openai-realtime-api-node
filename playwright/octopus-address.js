@@ -71,6 +71,7 @@ export async function selectOctopusAddress(page, address) {
     if (location.addressLine1 && location.suburb && location.state && location.latitude && location.longitude) {
       return {success:true, outcome:'address_selected', selectedText:chosenText, ...location};
     }
+    return {success:false, outcome:'address_selection_failed', selectedText:chosenText, ...location};
   }
   return {success:false, outcome:'address_selection_failed', query, selectedText:chosenText};
 }
