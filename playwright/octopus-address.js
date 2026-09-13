@@ -57,9 +57,17 @@ export async function selectOctopusAddress(page, address) {
     await page.waitForFunction(() => {
       const value = placeholder => [...document.querySelectorAll(`input[placeholder="${placeholder}"]`)]
         .find(el => el.getBoundingClientRect().width > 0)?.value;
-      return value('Address Line 1') && value('Suburb / Locality') && value('State') &&
+      return value('Address Line 1') && value('State') &&
         document.querySelector('#lat-test-input')?.value && document.querySelector('#lng-test-input')?.value;
     }, null, {timeout:8000}).catch(() => null);
+    // Google can omit locality for township addresses even when the exact
+    // selected suggestion and coordinates are correct. Fill only that blank
+    // component from the locality already matched above; never change a number.
+    const suburbInput = page.locator('input[placeholder="Suburb / Locality"]:visible').first();
+    if (await suburbInput.count() && !(await suburbInput.inputValue()).trim()) {
+      await suburbInput.fill(String(address.suburb));
+      await page.keyboard.press('Tab');
+    }
     const location = await page.evaluate(() => {
       const value = placeholder => [...document.querySelectorAll(`input[placeholder="${placeholder}"]`)]
         .find(el => el.getBoundingClientRect().width > 0)?.value || '';
