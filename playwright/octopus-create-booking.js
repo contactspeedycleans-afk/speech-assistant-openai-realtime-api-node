@@ -1934,6 +1934,10 @@ lisaTiming("FINAL_SUBMIT_START");
         `bookingNumber=${FINAL_BOOKING_RESULT.bookingNumber || "UNKNOWN"}`
       );
 
+      FINAL_BOOKING_RESULT.noteBaseline = {
+        specialNotes: TEST.specialNotes,
+        accessInstructions: TEST.accessInstructions
+      };
       console.log(
         "LISA_BOOKING_RESULT=" +
         JSON.stringify(FINAL_BOOKING_RESULT)

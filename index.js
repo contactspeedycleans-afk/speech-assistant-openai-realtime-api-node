@@ -25,6 +25,16 @@ import { createBookingNoteQueue } from './lib/booking-note-queue.js';
 
 const execFileAsync = promisify(execFile);
 
+if (process.env.LISA_BOOKING_PROFILE_TEST) {
+    const profile = JSON.parse(process.env.LISA_BOOKING_PROFILE_TEST);
+    profile.dryRun = true;
+    execFileAsync(process.execPath, ['playwright/octopus-create-booking.js'], {
+        env:{...process.env,LISA_BOOKING_PREWARM:'0',LISA_BOOKING_PAYLOAD:JSON.stringify(profile)},timeout:120000,maxBuffer:4*1024*1024
+    }).then(({stdout})=>{
+        for (const line of stdout.split(/\r?\n/)) if (/LISA_TIMING|LISA_BOOKING_RESULT=/.test(line)) console.log('[BOOKING_PROFILE]',line);
+    }).catch(error=>console.error('LISA_BOOKING_PROFILE_FAILED',error.message.slice(-1500)));
+}
+
 // Explicit one-shot validation, disabled in ordinary operation.
 if (process.env.LISA_NOTES_SMOKE_TEST) {
     const smoke = JSON.parse(process.env.LISA_NOTES_SMOKE_TEST);

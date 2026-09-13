@@ -20,7 +20,7 @@ export async function selectSingleFrequency(page, value) {
     const checked = choice.label === wanted;
     if (await input.isChecked() !== checked) {
       if (await input.isVisible()) await input.setChecked(checked, { force:true });
-      else await page.locator(`label[for="${choice.id}"]`).click();
+      else await input.evaluate(element => element.click());
     }
   }
   await page.waitForTimeout(150);
