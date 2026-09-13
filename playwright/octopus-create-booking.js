@@ -1,3 +1,5 @@
+import { selectSingleFrequency } from "./octopus-frequency.js";
+import { selectBookingWorker } from "./octopus-worker.js";
 import { chromium } from "playwright";
 import { existsSync } from "node:fs";
 
@@ -1256,49 +1258,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
 
     console.log("Completing required booking fields with exact DOM inspection...");
 
-    // ONE-TIME ONLY MODE.
-    // IMPORTANT: set the hidden checkbox ONCE and do NOT dispatch a click event.
-    // A synthetic click on a checkbox toggles it back off.
-    console.log("SETTING ONE TIME CLEANING = TRUE...");
-
-    const oneTimeInput = page.locator(
-      'input[name="attribute_8087013985[]"][value="37558"]'
-    ).first();
-
-    await oneTimeInput.waitFor({
-      state: "attached",
-      timeout: 10000
-    });
-
-    await oneTimeInput.evaluate(el => {
-      const proto = Object.getPrototypeOf(el);
-      const checkedSetter =
-        Object.getOwnPropertyDescriptor(proto, "checked")?.set;
-
-      if (checkedSetter) {
-        checkedSetter.call(el, true);
-      } else {
-        el.checked = true;
-      }
-
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    await page.waitForTimeout(800);
-
-    const oneTimeState = await oneTimeInput.evaluate(el => ({
-      id: el.id || "",
-      name: el.getAttribute("name") || "",
-      value: el.value || "",
-      checked: !!el.checked
-    }));
-
-    console.log("ONE TIME FINAL STATE:", JSON.stringify(oneTimeState));
-
-    if (!oneTimeState.checked) {
-      throw new Error("ONE_TIME_NOT_CHECKED");
-    }
+    await selectSingleFrequency(page, livePayload?.recurringFrequency || livePayload?.frequency || "one_time");
 
     const specialNotesField = page.locator("#attribute_8087017483").first();
     const accessInstructionsField = page.locator("#attribute_8087013969").first();
@@ -1406,156 +1366,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
     const UNASSIGNED_TASKS_MANAGER_ID = "47464";
 
-if (shouldRemainUnassigned) {
-  console.log(
-    "Selecting Unassigned Tasks Manager through Octopus fieldworker UI..."
-  );
-
-  const fieldworkerSearch = firstAppointment
-    .locator('input[placeholder="Select Fieldworker"]')
-    .first();
-
-  await fieldworkerSearch.waitFor({
-    state: "visible",
-    timeout: 15000
-  });
-
-  await fieldworkerSearch.scrollIntoViewIfNeeded();
-  await fieldworkerSearch.click({ force: true });
-  await fieldworkerSearch.fill("");
-
-  await fieldworkerSearch.type("Unassigned Tasks Manager", {
-    delay: 35
-  });
-
-  await page.waitForTimeout(1500);
-
-  const workerOptions = page.locator(
-    '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
-  );
-
-  let selectedUnassigned = false;
-
-  for (let i = 0; i < await workerOptions.count(); i++) {
-    const option = workerOptions.nth(i);
-
-    const text = (await option.innerText().catch(() => ""))
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (/Unassigned Tasks Manager/i.test(text)) {
-      console.log(
-        "Selecting fieldworker option:",
-        text
-      );
-
-      await option.click({
-        force: true,
-        timeout: 10000
-      });
-
-      // Commit the Vue autocomplete selection before later appointment fields
-      // re-render. A click can visually select the worker without persisting it.
-      await fieldworkerSearch.press("Tab").catch(() => {});
-      await page.waitForTimeout(350);
-
-      selectedUnassigned = true;
-      break;
-    }
-  }
-
-  if (!selectedUnassigned) {
-    // Octopus sometimes hides this dropdown option. The final DOM step below
-    // still writes the verified placeholder contractor ID 47464, and Octopus
-    // Save remains the authoritative validation.
-    console.log(
-      "Unassigned Tasks Manager option was temporarily absent; using verified contractor ID 47464 fallback."
-    );
-  } else {
-    await page.waitForTimeout(500);
-    console.log(
-      "Unassigned Tasks Manager selected through native Octopus UI."
-    );
-  }
-} else {
-      console.log("Selecting requested fieldworker with component-native input...");
-
-      const fieldworkerSearch = firstAppointment
-        .locator('input[placeholder="Select Fieldworker"]')
-        .first();
-
-      await fieldworkerSearch.waitFor({
-        state: "visible",
-        timeout: 15000
-      });
-
-      await fieldworkerSearch.scrollIntoViewIfNeeded();
-      await fieldworkerSearch.click({ force: true });
-      await fieldworkerSearch.fill("");
-
-      await fieldworkerSearch.type(TEST.fieldworkerName, {
-        delay: 35
-      });
-
-      await page.waitForTimeout(1500);
-
-      const visibleWorkerOptions = page.locator(
-        '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
-      );
-
-      const workerOptionsBefore = [];
-      for (let i = 0; i < await visibleWorkerOptions.count(); i++) {
-        const option = visibleWorkerOptions.nth(i);
-        const txt = (await option.innerText().catch(() => ""))
-          .replace(/\s+/g, " ")
-          .trim();
-
-        if (
-          txt &&
-          String(TEST.fieldworkerName || "")
-            .toLowerCase()
-            .split(/\s+/)
-            .every(part => txt.toLowerCase().includes(part))
-        ) {
-          workerOptionsBefore.push(txt);
-        }
-      }
-
-      console.log(
-        "Matching fieldworker options:",
-        JSON.stringify(workerOptionsBefore)
-      );
-
-      await fieldworkerSearch.press("ArrowDown").catch(() => {});
-      await page.waitForTimeout(250);
-      await fieldworkerSearch.press("Enter").catch(() => {});
-      await page.waitForTimeout(1000);
-
-      let fieldworkerSearchValue =
-        await fieldworkerSearch.inputValue().catch(() => "");
-
-      if (!fieldworkerSearchValue) {
-        const exactWorkerOption = page
-          .getByText(TEST.fieldworkerName, { exact: false })
-          .filter({ visible: true })
-          .last();
-
-        if (await exactWorkerOption.isVisible().catch(() => false)) {
-          await exactWorkerOption.click({
-            force: true,
-            timeout: 10000
-          });
-          await page.waitForTimeout(700);
-          await fieldworkerSearch.press("Tab").catch(() => {});
-          await page.waitForTimeout(700);
-        }
-      }
-
-      console.log(
-        "Requested fieldworker selection attempt completed:",
-        TEST.fieldworkerName
-      );
-    }
+    await selectBookingWorker(page, firstAppointment, shouldRemainUnassigned ? "Unassigned Tasks Manager" : TEST.fieldworkerName);
 
     console.log("Re-applying appointment after fieldworker render...");
 
@@ -1582,26 +1393,10 @@ if (shouldRemainUnassigned) {
         const find = prefix =>
           appointment.querySelector(`input[name^="${prefix}"]`);
 
+        // Dates were committed before worker selection. Rewriting them here
+        // can clear Octopus's worker model; validate without firing new events.
         const setNativeValue = (el, value) => {
-          if (!el) return false;
-
-          const proto = Object.getPrototypeOf(el);
-          const descriptor =
-            Object.getOwnPropertyDescriptor(proto, "value") ||
-            Object.getOwnPropertyDescriptor(
-              window.HTMLInputElement.prototype,
-              "value"
-            );
-
-          if (descriptor && descriptor.set) {
-            descriptor.set.call(el, value);
-          } else {
-            el.value = value;
-          }
-
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          el.dispatchEvent(new Event("blur", { bubbles: true }));
+          if (!el || el.value !== value) throw new Error("FINAL_APPOINTMENT_CHANGED");
           return true;
         };
 
@@ -1633,7 +1428,7 @@ if (shouldRemainUnassigned) {
         };
 
         if (shouldRemainUnassigned && contractorEl) {
-          setNativeValue(contractorEl, "47464");
+          if (contractorEl.value && contractorEl.value !== "47464") throw new Error("WRONG_UNASSIGNED_WORKER");
         }
 
         return {
@@ -1811,6 +1606,11 @@ if (!nativeCustomerPayload || nativeCustomerPayload.length < 100) {
 
 console.log("Deposit skipped - not required.");
     
+if (livePayload?.dryRun === true) {
+  console.log("LISA_BOOKING_RESULT=" + JSON.stringify({success:true,dryRun:true,customerId:TEST.customerId}));
+  lisaTiming("DRY_RUN_COMPLETE");
+  return;
+}
 console.log("Attempting to save booking with full validation capture...");
 lisaTiming("FINAL_SUBMIT_START");
 
