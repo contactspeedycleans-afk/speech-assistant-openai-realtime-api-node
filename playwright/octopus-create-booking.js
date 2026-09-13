@@ -664,11 +664,11 @@ async function main() {
     // name is not an exact text match. Search several identifiers and select a
     // visible result that contains the customer's name/phone/email.
     const trustedCustomerLookupTerms = [
-      TEST.customerId,
+      livePayload?.customerEmail,
+      livePayload?.email,
       livePayload?.customerPhone,
       livePayload?.phone,
-      livePayload?.customerEmail,
-      livePayload?.email
+      TEST.customerId
     ]
       .map(value => String(value || "").trim())
       .filter((value, index, arr) => value && arr.indexOf(value) === index);
@@ -1399,7 +1399,9 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       }
 
       if (!selectedWorker) throw new Error(`FIELDWORKER_OPTION_NOT_FOUND_AFTER_RETRIES: ${desiredWorker}`);
-      await fieldworkerSearch.press("Tab").catch(() => {});
+      // Selection removes the search input. Do not spend Playwright's 30-second
+      // default timeout trying to focus an input that no longer exists.
+      await page.keyboard.press("Tab");
       await page.waitForTimeout(500);
       lisaTiming("FIELDWORKER_COMMITTED", desiredWorker);
     }
