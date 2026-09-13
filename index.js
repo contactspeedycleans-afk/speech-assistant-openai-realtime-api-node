@@ -31,8 +31,11 @@ if (process.env.LISA_BOOKING_PROFILE_TEST) {
     execFileAsync(process.execPath, ['playwright/octopus-create-booking.js'], {
         env:{...process.env,LISA_BOOKING_PREWARM:'0',LISA_BOOKING_PAYLOAD:JSON.stringify(profile)},timeout:120000,maxBuffer:4*1024*1024
     }).then(({stdout})=>{
-        for (const line of stdout.split(/\r?\n/)) if (/LISA_TIMING|LISA_BOOKING_RESULT=|LISA_ADDRESS_LOOKUP_RESULT=/.test(line)) console.log('[BOOKING_PROFILE]',line);
-    }).catch(error=>console.error('LISA_BOOKING_PROFILE_FAILED',error.message.slice(-1500)));
+        for (const line of stdout.split(/\r?\n/)) if (/LISA_TIMING|LISA_BOOKING_RESULT=|LISA_ADDRESS_LOOKUP_RESULT=|LISA_CUSTOMER_DIAGNOSTIC=/.test(line)) console.log('[BOOKING_PROFILE]',line);
+    }).catch(error=>{
+        for (const line of String(error.stdout || '').split(/\r?\n/)) if (/LISA_TIMING|LISA_CUSTOMER_DIAGNOSTIC=/.test(line)) console.log('[BOOKING_PROFILE]',line);
+        console.error('LISA_BOOKING_PROFILE_FAILED',error.message.slice(-1500));
+    });
 }
 
 // Explicit one-shot validation, disabled in ordinary operation.
@@ -54,6 +57,11 @@ const twilioClient = twilio(
     process.env.TWILIO_ACCT_SID,
     process.env.TWILIO_AUTH_TOKEN
 );
+
+if (process.env.LISA_READINESS_CALLS || process.env.LISA_OWNER_ALERT_SELF_TEST) {
+    import('./lib/lisa-readiness-audit.js').then(({runReadinessAudit})=>runReadinessAudit(twilioClient))
+      .catch(error=>console.error('LISA_READINESS_AUDIT_FAILED',error.message));
+}
 
 if (!OPENAI_API_KEY) {
     console.error('Missing OPENAI_API_KEY.');
@@ -3786,7 +3794,6 @@ fastify.listen(
         );
     }
 );
-
 
 
 

@@ -717,10 +717,11 @@ async function main() {
         }
 
         const candidates = page.locator(
-          '[role="option"]:visible, .vs__dropdown-option:visible'
+          '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
         );
 
         const candidateCount = await candidates.count().catch(() => 0);
+        if (livePayload?.dryRun) console.log('LISA_CUSTOMER_DIAGNOSTIC=' + JSON.stringify(await candidates.evaluateAll(nodes => nodes.slice(0,12).map(node => (node.innerText || '').replace(/\s+/g,' ').trim().slice(0,220)))));
 
         for (let i = 0; i < candidateCount; i++) {
           const candidate = candidates.nth(i);
@@ -745,7 +746,7 @@ async function main() {
           const matchesPhone =
             phone &&
             candidateDigits &&
-            (candidateDigits.includes(phone) || phone.includes(candidateDigits));
+            phone.length >= 10 && candidateDigits.includes(phone.slice(-10));
           const hasTrustedIdentity = Boolean(TEST.customerId || phone || email);
           const maySelect = hasTrustedIdentity
             ? Boolean(
@@ -785,8 +786,10 @@ async function main() {
 
         if (
           visiblePlausible.length === 1 &&
-          !String(TEST.customerName || "").trim() &&
-          !String(TEST.customerEmail || "").trim()
+          (Boolean(TEST.customerId) || (
+            !String(TEST.customerName || "").trim() &&
+            !String(TEST.customerEmail || "").trim()
+          ))
         ) {
           console.log(
             "Selecting sole filtered customer option:",
