@@ -207,7 +207,7 @@ function createWarmBookingWorker() {
                 settled = true;
                 clearTimeout(readyTimeout);
                 setWarmBookingState('ready', 'Authenticated New Booking page is open and interactive.');
-                resolve({ child, getStdout: () => stdout, getStderr: () => stderr });
+                resolve({ child, readyAt: Date.now(), claimed: false, getStdout: () => stdout, getStderr: () => stderr });
             }
         });
 
@@ -238,35 +238,37 @@ function ensureWarmBookingWorker() {
     return warmBookingWorkerPromise;
 }
 
-async function acquireWritableWarmBookingWorker() {
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-        const worker = await ensureWarmBookingWorker();
-        const child = worker?.child;
-        const writable = Boolean(
-            child &&
-            child.exitCode === null &&
-            child.killed !== true &&
-            child.stdin &&
-            child.stdin.writable &&
-            child.stdin.destroyed !== true
-        );
+function isReusableWarmBookingWorker(worker, now = Date.now()) {
+    const child = worker?.child;
+    return Boolean(
+        child && !worker.claimed && child.exitCode === null && !child.killed &&
+        child.stdin?.writable && !child.stdin.destroyed &&
+        Number.isFinite(worker.readyAt) && now - worker.readyAt < 25 * 60 * 1000 &&
+        !/LISA_BOOKING_(?:DRAFT_FAILED|RESULT_FAILED|RESULT)=/.test(worker.getStdout())
+    );
+}
 
-        if (writable) {
+async function acquireWritableWarmBookingWorker() {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const pending = ensureWarmBookingWorker();
+        const worker = await pending;
+        if (isReusableWarmBookingWorker(worker)) {
+            // Reserve before yielding: concurrent calls must never share a browser.
+            worker.claimed = true;
+            if (warmBookingWorkerPromise === pending) warmBookingWorkerPromise = null;
             return worker;
         }
-
-        console.warn(
-            `[FAST_BOOKING_WORKER] Discarding stale prewarmed worker before booking; attempt=${attempt}`
-        );
-        warmBookingWorkerPromise = null;
+        if (!worker.claimed) {
+            worker.child?.kill('SIGTERM');
+            console.warn('[FAST_BOOKING_WORKER] Replacing expired or failed waiting browser');
+        }
+        if (warmBookingWorkerPromise === pending) warmBookingWorkerPromise = null;
     }
-
     throw new Error('FAST_BOOKING_NO_WRITABLE_WARM_WORKER');
 }
 
 async function runWithWarmBookingWorker(body) {
-    const worker = await ensureWarmBookingWorker();
-    warmBookingWorkerPromise = null;
+    const worker = await acquireWritableWarmBookingWorker();
 
     return await new Promise((resolve, reject) => {
         const { child, getStdout, getStderr } = worker;
@@ -388,12 +390,12 @@ function waitForWorkerMarker(worker, prefix, timeoutMs) {
         child.stdout.on('data', inspect);
         child.once('exit', exited);
         inspect();
+        if (!finished && child.exitCode !== null) exited(child.exitCode);
     });
 }
 
 function beginFastBookingDraft(body) {
     return acquireWritableWarmBookingWorker().then(worker => {
-        warmBookingWorkerPromise = null;
         ensureWarmBookingWorker().catch(error => {
             console.error('Replacement draft worker failed:', error.message);
         });
@@ -3747,4 +3749,5 @@ fastify.listen(
         );
     }
 );
+
 
