@@ -3765,3 +3765,10 @@ fastify.listen(
 
 
 
+
+if (/^\d+$/.test(process.env.LISA_NOTES_INSPECT_BOOKING_ID || "")) {
+  execFileAsync(process.execPath, ["playwright/octopus-booking-actions.js", "notes-inspect", process.env.LISA_NOTES_INSPECT_BOOKING_ID],
+    { timeout: 90000, maxBuffer: 2*1024*1024 }).then(({stdout}) => {
+      for (const line of stdout.split(/\r?\n/)) if (line.startsWith("LISA_NOTES_INSPECT=")) console.log(line);
+    }).catch(e => console.error("LISA_NOTES_INSPECT_FAILED", e.message.slice(0,200)));
+}
