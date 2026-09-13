@@ -8,11 +8,19 @@ export function normalizeAddress(value) {
 export function matchesAddress(text, address) {
   const parts = String(text || '').split(',').map(normalizeAddress);
   const street = normalizeAddress(`${address.streetNumber} ${address.streetAddress}`);
-  const city = normalizeAddress(address.suburb);
-  const state = normalizeAddress(address.state);
-  // Exact number/street and locality; ZIP need not appear in Google's suggestion.
-  return parts.length >= 3 && parts[0] === street && parts[1] === city &&
-    (parts[2] === state || parts[2].startsWith(state + ' '));
+  const locality = value => normalizeAddress(value)
+    .replace(/^charter township of (.+)$/, '$1 township')
+    .replace(/\bcharter township\b/g, 'township')
+    .replace(/\btwp\b/g, 'township');
+  const region = value => normalizeAddress(value).replace(/^michigan\b/, 'mi');
+  const city = locality(address.suburb);
+  const state = region(address.state);
+  // Octopus sometimes inserts a county between locality and state. Preserve
+  // exact house/street/locality; accept state only as a complete region field.
+  const regions = parts.slice(2).map(region);
+  return parts.length >= 3 && parts[0] === street && locality(parts[1]) === city &&
+    regions.some(part => part === state ||
+      (part.startsWith(state + ' ') && /^\d{5}(?: \d{4})?$/.test(part.slice(state.length + 1))));
 }
 
 export async function selectOctopusAddress(page, address) {
