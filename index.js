@@ -782,6 +782,21 @@ fastify.post(
                 return reply.send(result);
             }
 
+            if (action === 'lookup_address') {
+                if (![body.streetNumber, body.street, body.city, body.state].every(value => String(value || '').trim())) {
+                    return reply.send({success:false, outcome:'address_fields_required',
+                        error:'Street number, street, city and state are required; ZIP is optional.'});
+                }
+                const { stdout } = await execFileAsync(process.execPath,
+                    ['playwright/octopus-create-booking.js'], {
+                        cwd:process.cwd(), timeout:90000, maxBuffer:2 * 1024 * 1024,
+                        env:{...process.env, LISA_BOOKING_PREWARM:'0', LISA_BOOKING_PAYLOAD:JSON.stringify(body)}
+                    });
+                const line = stdout.split(/\r?\n/).find(line => line.startsWith('LISA_ADDRESS_LOOKUP_RESULT='));
+                if (!line) throw new Error('ADDRESS_LOOKUP_RESULT_MISSING');
+                return reply.send(JSON.parse(line.slice('LISA_ADDRESS_LOOKUP_RESULT='.length)));
+            }
+
             if (action === 'draft_fast') {
                 const required = [
                     ['customerName', body.customerName],
@@ -790,7 +805,6 @@ fastify.post(
                     ['street', body.street || body.streetAddress],
                     ['city', body.city || body.suburb],
                     ['state', body.state],
-                    ['zip', body.zip || body.postcode],
                     ['requestedDate', body.requestedDate],
                     ['requestedStartTime', body.requestedStartTime]
                 ];
@@ -977,7 +991,6 @@ fastify.post(
                     ['street', body.street || body.streetAddress],
                     ['city', body.city || body.suburb],
                     ['state', body.state],
-                    ['zip', body.zip || body.postcode],
                     ['requestedDate', body.requestedDate],
                     ['requestedStartTime', body.requestedStartTime]
                 ];
@@ -3749,5 +3762,6 @@ fastify.listen(
         );
     }
 );
+
 
 

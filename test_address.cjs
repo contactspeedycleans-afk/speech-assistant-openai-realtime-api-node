@@ -1,0 +1,13 @@
+const assert = require('node:assert/strict');
+const {test} = require('node:test');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(__dirname+'/playwright/octopus-address.js','utf8').replaceAll('export ','');
+const ctx=vm.createContext({}); vm.runInContext(source,ctx);
+const address={streetNumber:'4130',streetAddress:'Sweet Road',suburb:'Howell',state:'MI'};
+test('screenshot address matches without ZIP',()=>assert.equal(ctx.matchesAddress('4130 Sweet Road, Howell, MI, United States',address),true));
+test('abbreviations are accepted',()=>assert.equal(ctx.matchesAddress('4130 Sweet Rd, Howell, MI 48843, United States',address),true));
+test('wrong state and city cannot be selected',()=>assert.equal(ctx.matchesAddress('4130 Sweet Road, Winter Park, FL, United States',address),false));
+test('house numbers must match exactly',()=>assert.equal(ctx.matchesAddress('14130 Sweet Road, Howell, MI, United States',address),false));
+test('similar sounding road is not a match',()=>assert.equal(ctx.matchesAddress('4130 Fleet Road, Howell, MI, United States',address),false));
+test('dropdown navigation labels are ignored',()=>assert.equal(ctx.matchesAddress('Bookings',address),false));

@@ -1,3 +1,4 @@
+import { selectOctopusAddress } from "./octopus-address.js";
 import { chromium } from "playwright";
 import { existsSync } from "node:fs";
 
@@ -648,6 +649,12 @@ async function main() {
       console.log("LISA_BOOKING_PREWARM_PAYLOAD_ACCEPTED");
     }
 
+    if (livePayload?.action === "lookup_address") {
+      const addressResult = await selectOctopusAddress(page, TEST);
+      console.log("LISA_ADDRESS_LOOKUP_RESULT=" + JSON.stringify(addressResult));
+      return; // Read-only: no customer creation and no booking Save.
+    }
+
     console.log("Filling customer through the visible Octopus selector...");
 
     let customerSelected = false;
@@ -921,292 +928,15 @@ async function main() {
 
     console.log("Selecting booking location...");
 
-    // Let Octopus/Google autocomplete supply and normalize the ZIP from a
-    // partial street + city/state query. A misheard ZIP should not poison an
-    // otherwise recognizable address.
-    const bookingAddress = `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state}`;
-
-    const visibleBookingAddress = page
-      .locator('input[placeholder="Booking address"]')
-      .first();
-
-    await visibleBookingAddress.waitFor({
-      state: "visible",
-      timeout: 15000
-    });
-
-    await visibleBookingAddress.click();
-    await visibleBookingAddress.fill(bookingAddress);
-
-    await page.waitForTimeout(3500);
-
-    // Google/Octopus address suggestions frequently expand abbreviations
-    // (Ct -> Court, Rd -> Road, St -> Street) or change punctuation. Do NOT
-    // require one exact rendered string. Select the best visible suggestion
-    // using street number + ZIP + city, with state/street tokens as tie-breakers.
-    console.log("Looking for tolerant address autocomplete match...");
-
-    const normalizeAddressText = value =>
-      String(value || "")
-        .toLowerCase()
-        .replace(/\bcourt\b/g, "ct")
-        .replace(/\bstreet\b/g, "st")
-        .replace(/\broad\b/g, "rd")
-        .replace(/\bavenue\b/g, "ave")
-        .replace(/\bdrive\b/g, "dr")
-        .replace(/\blane\b/g, "ln")
-        .replace(/\bboulevard\b/g, "blvd")
-        .replace(/\bplace\b/g, "pl")
-        .replace(/\bterrace\b/g, "ter")
-        .replace(/\bhighway\b/g, "hwy")
-        .replace(/[^a-z0-9]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-    const targetStreet = normalizeAddressText(
-      `${TEST.streetNumber} ${TEST.streetAddress}`
-    );
-    const targetCity = normalizeAddressText(TEST.suburb);
-    const targetState = normalizeAddressText(TEST.state);
-    const targetZip = String(TEST.postcode || "").replace(/\D/g, "");
-    const targetNumber = String(TEST.streetNumber || "").replace(/\D/g, "");
-
-    // Wait briefly for autocomplete options to appear.
-    await page.waitForTimeout(1200);
-
-    const addressCandidates = page.locator(
-      '[role="option"]:visible, .pac-item:visible, .vs__dropdown-option:visible, li:visible'
-    );
-
-    let bestAddressCandidate = null;
-    let bestAddressText = "";
-    let bestScore = -1;
-
-    const addressCandidateCount = await addressCandidates.count().catch(() => 0);
-
-    const streetTokens = targetStreet
-      .split(" ")
-      .map(token => token.trim())
-      .filter(token => token.length >= 2);
-
-    for (let i = 0; i < addressCandidateCount; i++) {
-      const candidate = addressCandidates.nth(i);
-
-      const rawText = (await candidate.innerText().catch(() => ""))
-        .replace(/\s+/g, " ")
-        .trim();
-
-      if (!rawText) continue;
-
-      const norm = normalizeAddressText(rawText);
-      const digits = rawText.replace(/\D/g, "");
-
-      const hasNumber =
-        !targetNumber || digits.includes(targetNumber);
-
-      const hasZip =
-        !targetZip || digits.includes(targetZip);
-
-      const hasCity =
-        !targetCity || norm.includes(targetCity);
-
-      const hasState =
-        !targetState || norm.includes(targetState);
-
-      const matchedStreetTokens = streetTokens.filter(token =>
-        norm.includes(token)
-      ).length;
-
-      const streetMatchRatio =
-        streetTokens.length > 0
-          ? matchedStreetTokens / streetTokens.length
-          : 0;
-
-      let score = 0;
-
-      if (targetNumber && hasNumber) score += 6;
-      if (targetZip && hasZip) score += 6;
-      if (targetCity && hasCity) score += 4;
-      if (targetState && hasState) score += 2;
-
-      score += matchedStreetTokens * 2;
-
-      const strongStreetLevelMatch =
-        streetMatchRatio >= 0.5 &&
-        hasCity &&
-        hasState &&
-        hasZip;
-
-      const strongFullAddressMatch =
-        hasNumber &&
-        streetMatchRatio >= 0.5 &&
-        (hasCity || hasZip);
-
-      const strongZipStreetMatch =
-        streetMatchRatio >= 0.5 &&
-        hasState &&
-        hasZip;
-
-      const credibleMatch =
-        strongFullAddressMatch ||
-        strongStreetLevelMatch ||
-        strongZipStreetMatch;
-
-      if (credibleMatch && score > bestScore) {
-        bestScore = score;
-        bestAddressCandidate = candidate;
-        bestAddressText = rawText;
-      }
+    const selectedLocation = await selectOctopusAddress(page, TEST);
+    const bookingAddress = selectedLocation.selectedText || `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state}`;
+    if (!selectedLocation.success) {
+      const code = selectedLocation.outcome === 'address_no_match'
+        ? 'ADDRESS_AUTOCOMPLETE_NO_MATCH' : 'LOCATION_NOT_SELECTED';
+      throw new Error(`${code}: ${JSON.stringify(selectedLocation)}`);
     }
-
-    if (!bestAddressCandidate) {
-      const visibleAddressTexts = [];
-
-      for (let i = 0; i < Math.min(addressCandidateCount, 50); i++) {
-        const txt = (await addressCandidates.nth(i).innerText().catch(() => ""))
-          .replace(/\s+/g, " ")
-          .trim();
-
-        if (txt) visibleAddressTexts.push(txt);
-      }
-
-      throw new Error(
-        `ADDRESS_AUTOCOMPLETE_NO_MATCH: target=${bookingAddress} options=${JSON.stringify(visibleAddressTexts)}`
-      );
-    }
-
-    console.log(
-      "Found tolerant address result:",
-      bestAddressText,
-      "score=" + bestScore
-    );
-
-    await bestAddressCandidate.click({
-      force: true,
-      timeout: 10000
-    });
-
-    // Octopus sometimes paints the address text before its hidden
-    // location fields finish updating. Give that component a bounded chance
-    // to commit instead of rejecting a valid autocomplete click immediately.
-    await page.waitForFunction(() => {
-      const visible = element => {
-        if (!element) return false;
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return style.display !== "none" && style.visibility !== "hidden" &&
-          rect.width > 0 && rect.height > 0;
-      };
-      const value = placeholder => Array.from(
-        document.querySelectorAll(`input[placeholder="${placeholder}"]`)
-      ).find(visible)?.value || "";
-      return Boolean(
-        value("Address Line 1") &&
-        value("Suburb / Locality") &&
-        value("Postal / Zip code") &&
-        value("State") &&
-        document.querySelector("#lat-test-input")?.value &&
-        document.querySelector("#lng-test-input")?.value
-      );
-    }, { timeout: 10000 }).catch(() => null);
-
-    let selectedLocation = await page.evaluate(() => {
-      const bookingAddressInput =
-        document.querySelector('input[placeholder="Booking address"]');
-
-      const visible = element => {
-        if (!element) return false;
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
-      };
-
-      const findVisibleValue = placeholder => {
-        const elements = Array.from(
-          document.querySelectorAll(`input[placeholder="${placeholder}"]`)
-        );
-        const match = elements.find(visible);
-        return match?.value || null;
-      };
-
-      return {
-        bookingAddress: bookingAddressInput?.value || null,
-        addressLine1: findVisibleValue("Address Line 1"),
-        addressLine2: findVisibleValue("Address Line 2"),
-        suburb: findVisibleValue("Suburb / Locality"),
-        postcode: findVisibleValue("Postal / Zip code"),
-        state: findVisibleValue("State"),
-        latitude:
-          document.querySelector("#lat-test-input")?.value || null,
-        longitude:
-          document.querySelector("#lng-test-input")?.value || null
-      };
-    });
-
-    console.log(
-      "Selected location:",
-      JSON.stringify(selectedLocation)
-    );
-
-    const locationComplete = value => Boolean(
-      value.bookingAddress &&
-      value.addressLine1 &&
-      value.suburb &&
-      value.postcode &&
-      value.state &&
-      value.latitude &&
-      value.longitude
-    );
-
-    if (!locationComplete(selectedLocation)) {
-      console.warn("Location component incomplete after click; retrying autocomplete once.");
-      const retryInput = page.locator('input[placeholder="Booking address"]').first();
-      await retryInput.click({ force: true }).catch(() => {});
-      await retryInput.fill(bookingAddress).catch(() => {});
-      await page.waitForTimeout(1500);
-      const retryCandidate = page.locator(".pac-item").first();
-      if (await retryCandidate.isVisible().catch(() => false)) {
-        await retryCandidate.click({ force: true }).catch(() => {});
-      } else {
-        await retryInput.press("ArrowDown").catch(() => {});
-        await retryInput.press("Enter").catch(() => {});
-      }
-      await page.waitForTimeout(3500);
-      selectedLocation = await page.evaluate(() => {
-        const visible = element => {
-          if (!element) return false;
-          const rect = element.getBoundingClientRect();
-          const style = getComputedStyle(element);
-          return style.display !== "none" && style.visibility !== "hidden" &&
-            rect.width > 0 && rect.height > 0;
-        };
-        const value = placeholder => Array.from(
-          document.querySelectorAll(`input[placeholder="${placeholder}"]`)
-        ).find(visible)?.value || null;
-        return {
-          bookingAddress: document.querySelector('input[placeholder="Booking address"]')?.value || null,
-          addressLine1: value("Address Line 1"),
-          addressLine2: value("Address Line 2"),
-          suburb: value("Suburb / Locality"),
-          postcode: value("Postal / Zip code"),
-          state: value("State"),
-          latitude: document.querySelector("#lat-test-input")?.value || null,
-          longitude: document.querySelector("#lng-test-input")?.value || null
-        };
-      });
-      console.log("Selected location after retry:", JSON.stringify(selectedLocation));
-    }
-
-    if (!locationComplete(selectedLocation)) {
-      throw new Error(
-        "LOCATION_NOT_SELECTED: Octopus did not fully populate the selected address."
-      );
-    }
+    if (selectedLocation.postcode) TEST.postcode = selectedLocation.postcode;
+    console.log('Selected verified location:', JSON.stringify(selectedLocation));
 
     console.log("Confirming location modal...");
 
