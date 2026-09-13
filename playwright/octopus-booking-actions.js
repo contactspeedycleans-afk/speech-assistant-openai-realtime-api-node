@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import { updateBookingNotes } from "./octopus-booking-notes.js";
 
 const OCTOPUS_EMAIL = process.env.OCTOPUS_EMAIL;
 const OCTOPUS_PASSWORD = process.env.OCTOPUS_PASSWORD;
@@ -13,7 +14,7 @@ const mode = [
   "capture-reschedule",
   "capture-assign",
   "diagnose",
-  "notes-inspect",
+  "update-notes",
   "billing"
 ].includes(requestedMode)
   ? requestedMode
@@ -2866,12 +2867,7 @@ async function main() {
     if (mode === "cancel") await cancelBooking(page);
     else if (["reschedule", "capture-reschedule"].includes(mode)) await rescheduleBooking(page);
     else if (mode === "capture-assign") await captureAssignCleaner(page);
-    else if (mode === "notes-inspect") console.log("LISA_NOTES_INSPECT=" + JSON.stringify(await page.evaluate(() => ({
-      text: document.body.innerText.slice(0,24000),
-      links: Array.from(document.querySelectorAll("a")).filter(x => /edit|service|attribute/i.test(x.outerHTML)).map(x => x.outerHTML.slice(0,1600)).slice(0,80),
-      fields: Array.from(document.querySelectorAll("input,textarea")).filter(x => /attribute|note|access/i.test(x.id+" "+x.name)).map(x => ({id:x.id,name:x.name,type:x.type,value:x.value})),
-      controls: Array.from(document.querySelectorAll("button,[onclick]")).filter(x => /edit|attribute|note/i.test(x.outerHTML)).map(x => x.outerHTML.slice(0,1600)).slice(0,60)
-    }))));
+    else if (mode === "update-notes") console.log("LISA_NOTE_UPDATE_RESULT=" + JSON.stringify(await updateBookingNotes(page, JSON.parse(process.env.LISA_NOTE_UPDATE_PAYLOAD || "{}"))));
     else if (mode === "diagnose") await diagnoseBookingPage(page);
     else if (mode === "billing") await inspectBilling(page);
     else await inspectBooking(page);
@@ -2885,6 +2881,7 @@ async function main() {
 }
 
 main();
+
 
 
 

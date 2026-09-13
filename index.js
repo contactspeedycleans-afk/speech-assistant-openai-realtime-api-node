@@ -21,8 +21,18 @@ import { runSmsReceptionist } from './lib/smsReceptionist.js';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
+import { createBookingNoteQueue } from './lib/booking-note-queue.js';
 
 const execFileAsync = promisify(execFile);
+
+// Explicit one-shot validation, disabled in ordinary operation.
+if (process.env.LISA_NOTES_SMOKE_TEST) {
+    const smoke = JSON.parse(process.env.LISA_NOTES_SMOKE_TEST);
+    execFileAsync(process.execPath, ['playwright/octopus-booking-actions.js','update-notes',String(smoke.bookingId)], {
+        env:{...process.env,LISA_NOTE_UPDATE_PAYLOAD:JSON.stringify(smoke)},timeout:110000,maxBuffer:2*1024*1024
+    }).then(({stdout})=>console.log(stdout.split(/\r?\n/).find(x=>x.startsWith('LISA_NOTE_UPDATE_RESULT=')) || 'LISA_NOTES_SMOKE_NO_RESULT'))
+      .catch(error=>console.error('LISA_NOTES_SMOKE_FAILED',error.message.slice(-1500)));
+}
 
 
 dotenv.config();
@@ -46,6 +56,7 @@ const db = new Pool({
         rejectUnauthorized: false
     }
 });
+const bookingNoteQueue = createBookingNoteQueue(db);
 const {
     searchTechnicians
 } = createTechnicianSearch(db);
@@ -680,6 +691,9 @@ fastify.post(
         );
 
         try {
+            if (action === 'reconcile_notes') {
+                return reply.send(await bookingNoteQueue.enqueue(body));
+            }
             if (action === 'lookup') {
                 const { stdout, stderr } = await execFileAsync(
                     process.execPath,
@@ -3766,9 +3780,3 @@ fastify.listen(
 
 
 
-if (/^\d+$/.test(process.env.LISA_NOTES_INSPECT_BOOKING_ID || "")) {
-  execFileAsync(process.execPath, ["playwright/octopus-booking-actions.js", "notes-inspect", process.env.LISA_NOTES_INSPECT_BOOKING_ID],
-    { timeout: 90000, maxBuffer: 2*1024*1024 }).then(({stdout}) => {
-      for (const line of stdout.split(/\r?\n/)) if (line.startsWith("LISA_NOTES_INSPECT=")) console.log(line);
-    }).catch(e => console.error("LISA_NOTES_INSPECT_FAILED", e.message.slice(0,200)));
-}

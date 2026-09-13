@@ -1,3 +1,4 @@
+import { selectSingleFrequency } from "./octopus-frequency.js";
 import { selectOctopusAddress } from "./octopus-address.js";
 import { chromium } from "playwright";
 import { existsSync } from "node:fs";
@@ -1211,57 +1212,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
 
     // Commit the customer-facing cleaning frequency through the service's
     // own visible custom-field labels. Attribute ids differ by service.
-    const frequencyLabel =
-      /tri|3.?week/i.test(frequencyText) ? "Tri-weekly Cleans" :
-      /bi|2.?week|every.?other/i.test(frequencyText) ? "Bi-weekly Cleans" :
-      /month|4.?week/i.test(frequencyText) ? "Monthly Cleans" :
-      /week/i.test(frequencyText) ? "Weekly Cleans" :
-      "One Time Cleaning";
-
-    console.log("SETTING CLEANING FREQUENCY:", frequencyLabel);
-    const frequencyChoice = page
-      .locator("label.checkbox-label")
-      .filter({ hasText: frequencyLabel })
-      .first();
-    await frequencyChoice.waitFor({ state: "visible", timeout: 10000 });
-    const frequencyFor = await frequencyChoice.getAttribute("for");
-    if (!frequencyFor) throw new Error(`FREQUENCY_CONTROL_NOT_FOUND: ${frequencyLabel}`);
-
-    const frequencyState = await page.evaluate(
-      ({ targetId, targetLabel }) => {
-        const target = document.getElementById(targetId);
-        if (!target) return { applied: false, targetId, targetLabel };
-        const groupName = target.getAttribute("name");
-        const group = groupName
-          ? Array.from(document.querySelectorAll(`input[name="${CSS.escape(groupName)}"]`))
-          : [target];
-        for (const input of group) {
-          const setter = Object.getOwnPropertyDescriptor(
-            Object.getPrototypeOf(input), "checked"
-          )?.set;
-          if (setter) setter.call(input, input === target);
-          else input.checked = input === target;
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-          input.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        return {
-          applied: target.checked,
-          targetId,
-          targetLabel,
-          groupName,
-          selected: group.filter(x => x.checked).map(x => ({
-            id: x.id,
-            value: x.value
-          }))
-        };
-      },
-      { targetId: frequencyFor, targetLabel: frequencyLabel }
-    );
-
-    console.log("FREQUENCY FINAL STATE:", JSON.stringify(frequencyState));
-    if (!frequencyState.applied || frequencyState.selected?.length !== 1) {
-      throw new Error(`FREQUENCY_NOT_COMMITTED: ${JSON.stringify(frequencyState)}`);
-    }
+    const frequencyLabel = await selectSingleFrequency(page, frequencyText);
     lisaTiming("FREQUENCY_COMMITTED", `frequency=${frequencyLabel}`);
 
     // Fast path: write notes directly and avoid retyping four reactive date fields.
@@ -1403,13 +1354,11 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       // This avoids a false booking failure without ever choosing a different
       // worker or saving an unverified value.
       let selectedWorker = false;
-      const workerDeadline = Date.now() + 35000;
+      const workerDeadline = Date.now() + 12000;
+      await fieldworkerSearch.fill(desiredWorker);
 
       while (!selectedWorker && Date.now() < workerDeadline) {
-        await fieldworkerSearch.click({ force: true }).catch(() => {});
-        await fieldworkerSearch.fill("").catch(() => {});
-        await fieldworkerSearch.type(desiredWorker, { delay: 10 }).catch(() => {});
-        await page.waitForTimeout(650);
+        await page.waitForTimeout(300);
 
         const candidates = [
           page
@@ -1444,8 +1393,8 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
         }
 
         if (!selectedWorker) {
-          await fieldworkerSearch.press("Escape").catch(() => {});
-          await page.waitForTimeout(350);
+          // Leave the dropdown open while its remote results arrive.
+          await page.waitForTimeout(100);
         }
       }
 
@@ -1598,26 +1547,9 @@ if (livePayload?.phase === "draft") {
   }
   lisaTiming("FINALIZE_ACCEPTED");
 
-  // The caller's priority, pet, and access answers arrive while the staged
-  // Octopus form is already loading. Reapply those final answers immediately
-  // before Save so the booking never keeps the draft placeholders.
-  TEST.specialNotes =
-    String(livePayload.specialNotes || "").trim() ||
-    "No special cleaning priorities or pets reported.";
-  TEST.accessInstructions =
-    String(livePayload.accessInstructions || "").trim() ||
-    "No special access instructions reported.";
-  await commitRequiredNote(
-    "#attribute_8087017483",
-    TEST.specialNotes,
-    "Special Notes"
-  );
-  await commitRequiredNote(
-    "#attribute_8087013969",
-    TEST.accessInstructions,
-    "Access Instructions"
-  );
-  lisaTiming("FINAL_NOTES_REAPPLIED");
+  // Notes are durably reconciled after the call; do not delay the BOK here.
+  await selectSingleFrequency(page, frequencyText);
+
 }
 
 if (livePayload?.dryRun === true) {
@@ -2047,3 +1979,4 @@ main().catch(error => {
   }));
   process.exitCode = 1;
 });
+

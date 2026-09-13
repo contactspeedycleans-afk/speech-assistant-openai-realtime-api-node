@@ -20,20 +20,22 @@ export async function selectOctopusAddress(page, address) {
   const input = page.locator('input[placeholder="Booking address"]').first();
   await input.waitFor({state:'visible', timeout:15000});
   let chosenText = '';
-  // Two bounded UI attempts, always selecting the validated match, never first/ArrowDown.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // One bounded query. A rejected spelling must not trigger another identical search.
+  for (let attempt = 0; attempt < 1; attempt++) {
     await input.fill('');
     await input.fill(query);
     const options = page.locator('[role="option"]:visible, .pac-item:visible, .vs__dropdown-option:visible, li:visible');
     let chosen = null;
     let suggestions = [];
-    for (let poll = 0; poll < 12 && !chosen; poll++) {
+    for (let poll = 0; poll < 10 && !chosen; poll++) {
       await page.waitForTimeout(250);
-      const count = await options.count();
+      // Read once across the process boundary, instead of dozens of slow
+      // locator reads for unrelated navigation list items on every poll.
+      const texts = await options.evaluateAll(nodes => nodes.map(x => (x.innerText || '').replace(/\s+/g,' ').trim()));
       suggestions = [];
       const matching = [];
-      for (let i = 0; i < count; i++) {
-        const text = (await options.nth(i).innerText().catch(() => '')).replace(/\s+/g,' ').trim();
+      for (let i = 0; i < texts.length; i++) {
+        const text = texts[i];
         if (/^\d/.test(text) && text.includes(',')) suggestions.push(text);
         if (matchesAddress(text, address)) matching.push({node:options.nth(i),text});
       }
@@ -41,7 +43,6 @@ export async function selectOctopusAddress(page, address) {
       if (unique.length === 1) { chosen = matching[0].node; chosenText = matching[0].text; }
     }
     if (!chosen) {
-      if (attempt === 0) continue;
       return {success:false, outcome:'address_no_match', query, suggestions:[...new Set(suggestions)].slice(0,5)};
     }
     await chosen.click({timeout:10000});
