@@ -13,16 +13,24 @@ export function actionableFrequencyChoices(rawChoices) {
   ).values()];
 }
 
+export function frequencySelectionIsCommitted(selectedLabels, wanted) {
+  const selected = (selectedLabels || []).filter(Boolean);
+  return selected.length > 0 && selected.every(label => label === wanted);
+}
+
 export async function selectSingleFrequency(page, value) {
   const wanted = frequencyLabel(value);
   const rawChoices = await page.locator('label.checkbox-label:visible').evaluateAll(labels => labels
     .filter(x => /^(One Time Cleaning|Monthly Cleans|Bi-weekly Cleans|Tri-weekly Cleans|Weekly Cleans|Wants To See How The First Visit Goes)$/.test(x.textContent.trim()))
     .map(x => ({ id:x.getAttribute('for'), label:x.textContent.trim() })));
   // Octopus renders duplicate hidden/mobile controls and occasional decorative
-  // labels without a `for` target. Only visible, actionable, unique inputs count.
+  // labels without a `for` target. It can also render more than one visible,
+  // actionable copy of the same semantic control with different ids. Treat
+  // those copies as one choice instead of asking the customer to restate the
+  // frequency.
   const choices = actionableFrequencyChoices(rawChoices);
   const target = choices.filter(x => x.label === wanted);
-  if (target.length !== 1) throw new Error('FREQUENCY_CONTROL_AMBIGUOUS');
+  if (target.length === 0) throw new Error('FREQUENCY_CONTROL_MISSING');
   // Use real clicks so Vue updates its model, not just the checkbox DOM property.
   for (const choice of choices) {
     const input = page.locator(`[id="${choice.id}"]`);
@@ -35,6 +43,6 @@ export async function selectSingleFrequency(page, value) {
   await page.waitForTimeout(150);
   const selected = [];
   for (const choice of choices) if (await page.locator(`[id="${choice.id}"]`).isChecked()) selected.push(choice.label);
-  if (selected.length !== 1 || selected[0] !== wanted) throw new Error('FREQUENCY_NOT_COMMITTED');
+  if (!frequencySelectionIsCommitted(selected, wanted)) throw new Error('FREQUENCY_NOT_COMMITTED');
   return wanted;
 }
