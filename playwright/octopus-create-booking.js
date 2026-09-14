@@ -1374,7 +1374,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       const workerDeadline = workerStartedAt + 12000;
       let typedWorkerQuery = false;
       const matchesWorkerLabel = text =>
-        String(text || "").replace(/\s+\(\d+(?:[.,]\d+)?\s*Mi\)\s*$/i, "")
+        String(text || "").replace(/\s+\((?:\d+(?:[.,]\d+)?\s*Mi|Home:\s*\d+(?:[.,]\d+)?\s*Mi,\s*Live:\s*\d+(?:[.,]\d+)?\s*Mi)\)\s*$/i, "")
           .trim().toLowerCase() === String(desiredWorker).trim().toLowerCase();
       await fieldworkerSearch.click({ force: true });
 
