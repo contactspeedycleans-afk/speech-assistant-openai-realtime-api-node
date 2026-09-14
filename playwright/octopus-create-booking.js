@@ -1429,6 +1429,17 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
 
         if (shouldRemainUnassigned && contractorEl) {
           if (contractorEl.value && contractorEl.value !== "47464") throw new Error("WRONG_UNASSIGNED_WORKER");
+          if (!contractorEl.value) {
+            const setter = Object.getOwnPropertyDescriptor(
+              HTMLInputElement.prototype,
+              "value"
+            )?.set;
+            if (setter) setter.call(contractorEl, "47464");
+            else contractorEl.value = "47464";
+            contractorEl.dispatchEvent(new Event("input", { bubbles: true }));
+            contractorEl.dispatchEvent(new Event("change", { bubbles: true }));
+            contractorEl.dispatchEvent(new Event("blur", { bubbles: true }));
+          }
         }
 
         return {
