@@ -38,3 +38,10 @@ test('duplicate visible controls with different ids count as one semantic select
     false
   );
 });
+
+test('one-time service needs no separate frequency control',async()=>{
+  const {canInferFrequencyWithoutControl}=await import('./playwright/octopus-frequency.js');
+  assert.equal(canInferFrequencyWithoutControl([], 'One Time Cleaning'), true);
+  assert.equal(canInferFrequencyWithoutControl([], 'Weekly Cleans'), false);
+  assert.equal(canInferFrequencyWithoutControl([{id:'weekly',label:'Weekly Cleans'}], 'One Time Cleaning'), true);
+});
