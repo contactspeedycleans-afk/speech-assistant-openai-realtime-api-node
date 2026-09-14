@@ -3469,6 +3469,7 @@ const toolsThatMayTakeTime = new Set([
     'search_company_knowledge',
     'record_technician_status_update',
     'lookup_octopus_billing',
+    'create_octopus_booking',
     'cancel_octopus_booking',
     'reschedule_octopus_booking'
 ]);
