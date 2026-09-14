@@ -890,9 +890,53 @@ fastify.post(
             }
 
             if (action === 'lookup_address') {
-                if (![body.streetNumber, body.street, body.city, body.state].every(value => String(value || '').trim())) {
+                const rawAddress = String(
+                    body.serviceAddress || body.customerAddress || body.fullAddress ||
+                    body.address || body.addressQuery || body.query || ''
+                ).trim();
+
+                body.streetNumber = String(
+                    body.streetNumber || body.houseNumber || body.street_number || ''
+                ).trim();
+                body.street = String(
+                    body.street || body.streetAddress || body.street_address || ''
+                ).trim();
+                body.city = String(body.city || body.suburb || body.locality || '').trim();
+                body.state = String(body.state || body.region || '').trim();
+                body.zip = String(body.zip || body.postcode || body.postalCode || '').trim();
+
+                // Accept a normal spoken/full address as well as split fields.
+                // Octopus only needs a partial house number + street query to
+                // populate the verified Google Places address itself.
+                if (rawAddress && (!body.streetNumber || !body.street)) {
+                    const commaParts = rawAddress.split(',').map(value => value.trim()).filter(Boolean);
+                    const streetMatch = commaParts[0]?.match(/^(\d+[A-Za-z-]*)\s+(.+)$/);
+                    if (streetMatch) {
+                        body.streetNumber ||= streetMatch[1];
+                        body.street ||= streetMatch[2];
+                    }
+                    if (commaParts.length >= 2) body.city ||= commaParts[1];
+                    const regionMatch = String(commaParts[2] || '').match(
+                        /^([A-Za-z]{2}|[A-Za-z ]+?)(?:\s+(\d{5}(?:-\d{4})?))?$/
+                    );
+                    if (regionMatch) {
+                        body.state ||= regionMatch[1].trim();
+                        body.zip ||= regionMatch[2] || '';
+                    }
+                }
+
+                console.log('Lisa address lookup normalized:', {
+                    rawAddress: rawAddress || null,
+                    streetNumber: body.streetNumber || null,
+                    street: body.street || null,
+                    city: body.city || null,
+                    state: body.state || null,
+                    zip: body.zip || null
+                });
+
+                if (![body.streetNumber, body.street].every(value => String(value || '').trim())) {
                     return reply.send({success:false, outcome:'address_fields_required',
-                        error:'Street number, street, city and state are required; ZIP is optional.'});
+                        error:'Send either a full/partial address query or at least the street number and street name. City, state and ZIP are optional because Octopus autocomplete supplies them.'});
                 }
                 const { stdout } = await execFileAsync(process.execPath,
                     ['playwright/octopus-create-booking.js'], {
