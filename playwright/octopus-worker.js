@@ -1,7 +1,10 @@
 export async function selectBookingWorker(page, appointment, desiredWorker) {
   const search = appointment.locator('input[placeholder="Select Fieldworker"]').first();
   await search.waitFor({ state: "visible", timeout: 10000 });
-  await search.fill(desiredWorker);
+  await search.click({ force: true });
+
+  const workerStartedAt = Date.now();
+  let typedWorkerQuery = false;
 
   const escapedWorker = [...desiredWorker]
     .map(char => "\\^$.*+?()[]{}|".includes(char) ? `\\\\${char}` : char)
@@ -11,6 +14,10 @@ export async function selectBookingWorker(page, appointment, desiredWorker) {
 
   while (Date.now() < deadline) {
     await page.waitForTimeout(300);
+    if (!typedWorkerQuery && Date.now() - workerStartedAt > 1500) {
+      await search.fill(desiredWorker).catch(() => {});
+      typedWorkerQuery = true;
+    }
     const option = page
       .getByRole("option", { name: optionName })
       .filter({ visible: true })
