@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {validateSelectedLocation, matchesAddress, chooseClosestAddress} from './octopus-address.js';
+import {validateSelectedLocation, matchesAddress, matchesStreetAndState, chooseClosestAddress} from './octopus-address.js';
 const selected='123 Example Lane, Hartland, MI, USA, United States';
 const base={addressLine1:'123',addressLine2:'Example Lane',suburb:'Hartland',state:'MI',postcode:'48353',latitude:'42.6678647',longitude:'-83.6958013'};
 const result=validateSelectedLocation(base,selected);
@@ -13,4 +13,7 @@ assert.equal(validateSelectedLocation({...base,longitude:'invalid'},selected).su
 assert.equal(validateSelectedLocation({...base,latitude:'100'},selected).success,false);
 assert.equal(matchesAddress(selected,{streetNumber:'123',streetAddress:'Example Lane',suburb:'Hartland',state:'MI'}),true);
 assert.equal(chooseClosestAddress([selected],{streetNumber:'123',streetAddress:'Example',suburb:'Hartland',state:'MI'}).text,selected);
-console.log('9 address regression checks passed');
+assert.equal(matchesStreetAndState('4827 Rolling Acres Drive, Fremont, MI, USA',{streetNumber:'4827',streetAddress:'Rolling Acres Drive',suburb:'Lansing',state:'MI'}),false);
+assert.equal(matchesStreetAndState('4247 Rolling Acres Drive, Hartland Township, MI, USA',{streetNumber:'4247',streetAddress:'Rolling Acres Drive',suburb:'Hartland',state:'MI'}),true);
+assert.equal(chooseClosestAddress(['4827 Rolling Acres Drive, Fremont, MI, USA'],{streetNumber:'4827',streetAddress:'Rolling Acres Drive',suburb:'Lansing',state:'MI'}),null);
+console.log('12 address regression checks passed');
