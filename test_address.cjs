@@ -13,3 +13,26 @@ test('postal-locality fallback rejects another state',()=>assert.equal(ctx.match
 test('house numbers must match exactly',()=>assert.equal(ctx.matchesAddress('14130 Sweet Road, Howell, MI, United States',address),false));
 test('similar sounding road is not a match',()=>assert.equal(ctx.matchesAddress('4130 Fleet Road, Howell, MI, United States',address),false));
 test('dropdown navigation labels are ignored',()=>assert.equal(ctx.matchesAddress('Bookings',address),false));
+test('partial spoken address can expand a missing number prefix',()=>{
+  const partial={streetNumber:'738',streetAddress:'Knighton Drive',suburb:'Farmington Hills',state:'MI',postcode:'48331'};
+  const picked=ctx.chooseClosestAddress([
+    '30738 Knighton Dr, Farmington Hills, MI 48331, United States',
+    '30802 Knighton Dr, Farmington Hills, MI 48331, United States'
+  ],partial);
+  assert.equal(picked.text.startsWith('30738 Knighton'),true);
+});
+test('short street prefix and number suffix pick one clear local result',()=>{
+  const partial={streetNumber:'4247',streetAddress:'roll',suburb:'Hartland',state:'MI'};
+  const picked=ctx.chooseClosestAddress([
+    '247 Rolling Acres Dr, Hartland, MI 48353, United States',
+    '4247 Rollins St, Grand Rapids, MI 49534, United States'
+  ],partial);
+  assert.equal(picked.text.startsWith('247 Rolling Acres'),true);
+});
+test('equally plausible partial results require clarification',()=>{
+  const partial={streetNumber:'247',streetAddress:'roll',suburb:'',state:''};
+  assert.equal(ctx.chooseClosestAddress([
+    '247 Rolling Acres Dr, Hartland, MI 48353, United States',
+    '247 Rolling Hills Dr, Howell, MI 48843, United States'
+  ],partial),null);
+});

@@ -34,23 +34,84 @@ export function matchesStreetAndState(text, address) {
       (part.startsWith(state + ' ') && /^\d{5}(?: \d{4})?$/.test(part.slice(state.length + 1))));
 }
 
+function addressCandidateParts(text) {
+  const parts = String(text || '').split(',').map(part => part.trim());
+  const first = normalizeAddress(parts[0]);
+  const match = first.match(/^(\d+[a-z]?)\s+(.+)$/);
+  return {
+    number: match?.[1] || '',
+    street: match?.[2] || '',
+    city: normalizeAddress(parts[1]),
+    regions: parts.slice(2).map(normalizeAddress),
+  };
+}
+
+export function scoreAddressCandidate(text, address) {
+  const candidate = addressCandidateParts(text);
+  const wantedNumber = normalizeAddress(address.streetNumber);
+  const wantedStreet = normalizeAddress(address.streetAddress);
+  if (!candidate.number || !candidate.street || !wantedNumber || !wantedStreet) return -1;
+
+  let score = 0;
+  if (candidate.number === wantedNumber) score += 50;
+  else {
+    const shorter = candidate.number.length < wantedNumber.length ? candidate.number : wantedNumber;
+    const longer = candidate.number.length < wantedNumber.length ? wantedNumber : candidate.number;
+    if (shorter.length >= 3 && longer.endsWith(shorter) && longer.length - shorter.length <= 2) score += 35;
+    else return -1;
+  }
+
+  if (candidate.street === wantedStreet) score += 35;
+  else if (candidate.street.startsWith(wantedStreet) || wantedStreet.startsWith(candidate.street)) score += 30;
+  else return -1;
+
+  const wantedCity = normalizeAddress(address.suburb);
+  const wantedState = normalizeAddress(address.state).replace(/^michigan\b/, 'mi');
+  const wantedPostcode = normalizeAddress(address.postcode);
+  if (wantedCity) score += candidate.city === wantedCity ? 20 : -20;
+  if (wantedState) {
+    if (!candidate.regions.some(part => part === wantedState || part.startsWith(wantedState + ' '))) return -1;
+    score += 15;
+  }
+  if (wantedPostcode) {
+    if (!candidate.regions.some(part => part.includes(wantedPostcode))) return -1;
+    score += 15;
+  }
+  return score;
+}
+
+export function chooseClosestAddress(texts, address) {
+  const scored = texts
+    .map((text, index) => ({text, index, score:scoreAddressCandidate(text, address)}))
+    .filter(item => item.score >= 60)
+    .sort((a, b) => b.score - a.score);
+  if (!scored.length) return null;
+  if (scored[1] && scored[0].score - scored[1].score < 15) return null;
+  return scored[0];
+}
+
 export async function selectOctopusAddress(page, address) {
   const postcode = String(address.postcode || '').trim();
   const fullQuery = `${address.streetNumber} ${address.streetAddress}, ${address.suburb}, ${address.state}${postcode ? ` ${postcode}` : ''}`;
-  const queries = [fullQuery];
+  // Start with exactly what the customer said. Octopus/Google often expands a
+  // short phrase such as "4247 roll" to the full local address by itself.
+  const partialQuery = `${address.streetNumber} ${address.streetAddress}`.trim();
+  const queries = [partialQuery];
+  if (address.suburb || address.state || postcode) queries.push(fullQuery);
   if (postcode) {
     // Google/Octopus can return the postal locality instead of the city spoken
     // by the customer. A ZIP-assisted query lets Octopus resolve that official
     // locality without Lisa guessing a different street or house number.
     queries.push(`${address.streetNumber} ${address.streetAddress}, ${address.state} ${postcode}`);
   }
+  const uniqueQueries = [...new Set(queries.filter(Boolean))];
   const input = page.locator('input[placeholder="Booking address"]').first();
   await input.waitFor({state:'visible', timeout:15000});
   let chosenText = '';
   let lastSuggestions = [];
   // At most two bounded queries: the customer's complete address first, then
   // an optional ZIP-assisted form that allows Google's official locality.
-  for (const query of queries) {
+  for (const query of uniqueQueries) {
     await input.fill('');
     await input.click();
     // Real keystrokes reliably trigger the Google Places listener used by the
@@ -84,6 +145,13 @@ export async function selectOctopusAddress(page, address) {
           safeFallback.map(item => normalizeAddress(item.text))
         )];
         if (uniqueFallback.length === 1) matching.push(safeFallback[0]);
+      }
+      // Speech transcription can omit leading house-number digits or leave a
+      // partial street word. Select a correction only when one candidate is a
+      // clearly better number-suffix/street-prefix match than every alternative.
+      if (!matching.length) {
+        const closest = chooseClosestAddress(texts, address);
+        if (closest) matching.push({node:options.nth(closest.index), text:closest.text});
       }
       const unique = [...new Set(matching.map(item => normalizeAddress(item.text)))];
       if (unique.length === 1) { chosen = matching[0].node; chosenText = matching[0].text; }
