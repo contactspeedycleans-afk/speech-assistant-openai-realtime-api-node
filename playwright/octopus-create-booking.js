@@ -1653,14 +1653,28 @@ lisaTiming("FINAL_SUBMIT_START");
       }
     });
 
-    // Octopus changes the final action label between screens/releases
-    // (for example: Save changes, Save, Save booking, Create booking).
-    // Match the visible action by accessible button name instead of one brittle
-    // exact text string so a fully prepared live booking can always submit.
+    // Octopus keeps service frequency, schedule, and fieldworker inside a
+    // service-details dialog. Commit that dialog before submitting the booking.
+    const serviceDialog = page.getByRole("dialog").filter({ visible: true }).last();
+    const serviceDialogSave = serviceDialog
+      .getByRole("button", { name: /^Save$/i })
+      .filter({ visible: true })
+      .last();
+
+    if (!(await serviceDialogSave.isVisible().catch(() => false))) {
+      throw new Error("SERVICE_DETAILS_SAVE_NOT_FOUND");
+    }
+
+    console.log("Committing service details before final booking save...");
+    await serviceDialogSave.click({ timeout: 10000 }).catch(async error => {
+      console.log("Service-details Save click failed:", error.message);
+      await serviceDialogSave.click({ force: true, timeout: 10000 });
+    });
+    await serviceDialog.waitFor({ state: "hidden", timeout: 15000 });
+    lisaTiming("SERVICE_DETAILS_COMMITTED");
+
     const saveButton = page
-      .getByRole("button", {
-        name: /^(save(?: changes| booking)?|create(?: booking)?|add booking)$/i
-      })
+      .getByRole("button", { name: /^Save changes$/i })
       .filter({ visible: true })
       .last();
 
