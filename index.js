@@ -936,7 +936,14 @@ fastify.post(
 
                 if (![body.streetNumber, body.street].every(value => String(value || '').trim())) {
                     return reply.send({success:false, outcome:'address_fields_required',
-                        error:'Send either a full/partial address query or at least the street number and street name. City, state and ZIP are optional because Octopus autocomplete supplies them.'});
+                        error:'Send either a full address or at least the street number and street name.'});
+                }
+                if (![body.city, body.zip].some(value => String(value || '').trim())) {
+                    return reply.send({
+                        success:false,
+                        outcome:'address_locality_required',
+                        error:'A city or ZIP is required before selecting an autocomplete result. Never infer locality from street and house number alone.'
+                    });
                 }
                 const { stdout } = await execFileAsync(process.execPath,
                     ['playwright/octopus-create-booking.js'], {
