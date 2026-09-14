@@ -1611,7 +1611,10 @@ lisaTiming("FINAL_SUBMIT_START");
     });
 
     const saveButton = page
-      .getByText("Save changes", { exact: true })
+      .getByRole("button", {
+        name: /^(Save changes|Save|Save booking|Create booking|Add booking)$/i
+      })
+      .filter({ visible: true })
       .last();
 
     await saveButton.waitFor({
