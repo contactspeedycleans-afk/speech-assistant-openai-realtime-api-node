@@ -6554,6 +6554,12 @@ if (req.url === "/lisa/booking-action") {
     return;
   }
 
+  const bookingFrequency = String(
+    body.recurringFrequency || body.frequency || "one_time"
+  ).trim() || "one_time";
+  body.recurringFrequency = bookingFrequency;
+  body.frequency = bookingFrequency;
+
   if (body.customerConfirmed !== true) {
     sendJson(200, {
       success: false,

@@ -23,3 +23,12 @@ test('duplicate visible inputs can commit the same frequency', async () => {
     ['One Time Cleaning', 'Weekly Cleans'], 'One Time Cleaning'
   ), false);
 });
+
+test('one-time service needs no separate frequency control', async () => {
+  const { canInferFrequencyWithoutControl } = await import('./playwright/octopus-frequency.js');
+  assert.equal(canInferFrequencyWithoutControl([], 'One Time Cleaning'), true);
+  assert.equal(canInferFrequencyWithoutControl([], 'Weekly Cleans'), false);
+  assert.equal(canInferFrequencyWithoutControl([
+    { id: 'weekly', label: 'Weekly Cleans' }
+  ], 'One Time Cleaning'), true);
+});

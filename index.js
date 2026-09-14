@@ -190,6 +190,14 @@ fastify.post(
                 .trim()
                 .toLowerCase();
 
+        if (action === 'create') {
+            const frequency = String(
+                body.recurringFrequency || body.frequency || 'one_time'
+            ).trim() || 'one_time';
+            body.recurringFrequency = frequency;
+            body.frequency = frequency;
+        }
+
         console.log(
             'Lisa booking action request:',
             {

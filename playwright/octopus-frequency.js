@@ -18,6 +18,13 @@ export function frequencySelectionIsCommitted(selectedLabels, wanted) {
   return selected.length > 0 && selected.every(label => label === wanted);
 }
 
+export function canInferFrequencyWithoutControl(choices, wanted) {
+  // Octopus' one-time service package has no recurrence attribute. The chosen
+  // service itself commits one-time. Unrelated service attributes may still be
+  // visible, so they do not make a separate one-time checkbox necessary.
+  return wanted === 'One Time Cleaning';
+}
+
 export async function selectSingleFrequency(page, value) {
   const wanted = frequencyLabel(value);
   const rawChoices = await page.locator('label.checkbox-label:visible').evaluateAll(labels => labels
@@ -28,6 +35,7 @@ export async function selectSingleFrequency(page, value) {
   // with no input and allow equivalent checked copies of the requested option.
   const choices = actionableFrequencyChoices(rawChoices);
   const target = choices.filter(x => x.label === wanted);
+  if (canInferFrequencyWithoutControl(choices, wanted)) return wanted;
   if (target.length === 0) throw new Error('FREQUENCY_CONTROL_MISSING');
   // Use real clicks so Vue updates its model, not just the checkbox DOM property.
   for (const choice of choices) {
