@@ -5,13 +5,24 @@ export function normalizeAddress(value) {
     .replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
 
-export function matchesAddress(text, address) {
-  const parts = String(text || '').split(',').map(normalizeAddress);
-  const street = normalizeAddress(`${address.streetNumber} ${address.streetAddress}`);
-  const locality = value => normalizeAddress(value)
+function normalizeLocality(value) {
+  return normalizeAddress(value)
     .replace(/^charter township of (.+)$/, '$1 township')
     .replace(/\bcharter township\b/g, 'township')
     .replace(/\btwp\b/g, 'township');
+}
+
+function localitiesMatch(left, right) {
+  const a = normalizeLocality(left);
+  const b = normalizeLocality(right);
+  if (!a || !b) return false;
+  return a === b || a.replace(/ township$/, '') === b.replace(/ township$/, '');
+}
+
+export function matchesAddress(text, address) {
+  const parts = String(text || '').split(',').map(normalizeAddress);
+  const street = normalizeAddress(`${address.streetNumber} ${address.streetAddress}`);
+  const locality = normalizeLocality;
   const region = value => normalizeAddress(value).replace(/^michigan\b/, 'mi');
   const city = locality(address.suburb);
   const state = region(address.state);
@@ -29,7 +40,11 @@ export function matchesStreetAndState(text, address) {
   const state = normalizeAddress(address.state).replace(/^michigan\b/, 'mi');
   const regions = parts.slice(2).map(value =>
     normalizeAddress(value).replace(/^michigan\b/, 'mi'));
+  const suppliedCity = normalizeLocality(address.suburb);
+  const cityMatches = !suppliedCity || localitiesMatch(parts[1], suppliedCity);
+  const hasPostcode = Boolean(normalizeAddress(address.postcode));
   return parts.length >= 3 && parts[0] === street &&
+    (cityMatches || hasPostcode) &&
     regions.some(part => part === state ||
       (part.startsWith(state + ' ') && /^\d{5}(?: \d{4})?$/.test(part.slice(state.length + 1))));
 }
@@ -68,7 +83,11 @@ export function scoreAddressCandidate(text, address) {
   const wantedCity = normalizeAddress(address.suburb);
   const wantedState = normalizeAddress(address.state).replace(/^michigan\b/, 'mi');
   const wantedPostcode = normalizeAddress(address.postcode);
-  if (wantedCity) score += candidate.city === wantedCity ? 20 : -20;
+  if (wantedCity) {
+    if (localitiesMatch(candidate.city, wantedCity)) score += 20;
+    else if (!wantedPostcode) return -1;
+    else score -= 20;
+  }
   if (wantedState) {
     if (!candidate.regions.some(part => part === wantedState || part.startsWith(wantedState + ' '))) return -1;
     score += 15;
