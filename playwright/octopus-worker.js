@@ -1,5 +1,9 @@
 export async function selectBookingWorker(page, appointment, desiredWorker) {
-  const search = appointment.locator('input[placeholder="Select Fieldworker"]').first();
+  // The current modal exposes the worker picker as its last searchable combobox.
+  const search = page
+    .getByRole("combobox", { name: /Search for option/i })
+    .filter({ visible: true })
+    .last();
   await search.waitFor({ state: "visible", timeout: 10000 });
   await search.click({ force: true });
 
