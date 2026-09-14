@@ -1367,14 +1367,20 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       // This avoids a false booking failure without ever choosing a different
       // worker or saving an unverified value.
       let selectedWorker = false;
-      const workerDeadline = Date.now() + 12000;
+      const workerStartedAt = Date.now();
+      const workerDeadline = workerStartedAt + 12000;
+      let typedWorkerQuery = false;
       const matchesWorkerLabel = text =>
         String(text || "").replace(/\s+\(\d+(?:[.,]\d+)?\s*Mi\)\s*$/i, "")
           .trim().toLowerCase() === String(desiredWorker).trim().toLowerCase();
-      await fieldworkerSearch.fill(desiredWorker);
+      await fieldworkerSearch.click({ force: true });
 
       while (!selectedWorker && Date.now() < workerDeadline) {
         await page.waitForTimeout(300);
+        if (!typedWorkerQuery && Date.now() - workerStartedAt > 1500) {
+          await fieldworkerSearch.fill(desiredWorker).catch(() => {});
+          typedWorkerQuery = true;
+        }
 
         // Click the actual option. Octopus appends mileage to its name,
         // so an exact text lookup can click the field label instead.
