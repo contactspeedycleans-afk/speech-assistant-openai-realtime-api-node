@@ -1416,6 +1416,29 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       // default timeout trying to focus an input that no longer exists.
       await page.keyboard.press("Tab");
       await page.waitForTimeout(500);
+
+      if (shouldRemainUnassigned) {
+        const committedWorkerId = await firstAppointment.evaluate((appointment, workerId) => {
+          const contractor = appointment.querySelector('input[name^="contractor_"]');
+          if (!contractor) return "";
+          if (!contractor.value) {
+            const setter = Object.getOwnPropertyDescriptor(
+              HTMLInputElement.prototype,
+              "value"
+            )?.set;
+            if (setter) setter.call(contractor, workerId);
+            else contractor.value = workerId;
+            contractor.dispatchEvent(new Event("input", { bubbles: true }));
+            contractor.dispatchEvent(new Event("change", { bubbles: true }));
+            contractor.dispatchEvent(new Event("blur", { bubbles: true }));
+          }
+          return contractor.value || "";
+        }, UNASSIGNED_TASKS_MANAGER_ID);
+        if (committedWorkerId !== UNASSIGNED_TASKS_MANAGER_ID) {
+          throw new Error(`FIELDWORKER_ID_NOT_COMMITTED: ${committedWorkerId || "blank"}`);
+        }
+      }
+
       lisaTiming("FIELDWORKER_COMMITTED", desiredWorker);
     }
 
