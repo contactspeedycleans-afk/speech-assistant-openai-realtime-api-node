@@ -1729,7 +1729,7 @@ function isUnassignedDispatchProfile(value) {
   return (
     text.includes("unassigned fieldworker") ||
     text.includes("unassigned fieldworkers") ||
-    text.includes("unassigned tasks manager")
+    /unassign(?:ed)?\s+tasks\s+manager/.test(text)
   );
 }
 
@@ -1980,7 +1980,7 @@ async function inspectAssignedCleanerOnCurrentBookingPage(page) {
       return (
         text.includes("unassigned fieldworker") ||
         text.includes("unassigned fieldworkers") ||
-        text.includes("unassigned tasks manager") ||
+        /unassign(?:ed)?\s+tasks\s+manager/.test(text) ||
         text === "fieldworker" ||
         text === "fieldworkers" ||
         text === "assigned fieldworker" ||
@@ -2018,6 +2018,36 @@ async function inspectAssignedCleanerOnCurrentBookingPage(page) {
       const words = text.split(/\s+/).filter(Boolean);
       return words.length >= 1 && words.length <= 5;
     };
+
+    // Current Octopus booking pages expose assigned workers on service
+    // appointment rows. Customer names and available-worker suggestions use
+    // different fields and must never be treated as an assignment.
+    const appointmentNames = Array.from(
+      document.querySelectorAll(".contractor-name")
+    )
+      .filter(visible)
+      .map((element) => clean(
+        element.innerText || element.textContent
+      ).replace(/\s*\(\s*\d+(?:\.\d+)?\s*(?:mi|km)\s*\)\s*$/i, "").trim())
+      .filter(Boolean);
+
+    if (appointmentNames.length > 0) {
+      const uniqueNames = [...new Set(appointmentNames)];
+      // A booking may have several appointments. Do not collapse conflicting
+      // assignments into a single cleaner or infer a cleaner from nearby text.
+      if (uniqueNames.length === 1 && looksLikePersonName(uniqueNames[0])) {
+        return {
+          cleanerName: uniqueNames[0],
+          evidence: appointmentNames.join(" | ").slice(0, 900),
+          source: "service_appointment_cleaner"
+        };
+      }
+      return {
+        cleanerName: null,
+        evidence: uniqueNames.join(" | ").slice(0, 900),
+        source: "appointment_assignment_not_unique"
+      };
+    }
 
     const all = Array.from(
       document.querySelectorAll("body *")
@@ -3851,454 +3881,91 @@ async function getJobRequestContainer(
   );
 }
 
-async function setJobRequestRadius(
-  page,
-  radiusMiles,
-  jobRequestDialog
-) {
-  console.log(
-    `Loading the closest ${MAX_JOB_REQUEST_RECIPIENTS} Octopus fieldworkers within ${radiusMiles} miles...`
-  );
-
-  const bookingMatch =
-    page.url().match(
-      /\/booking\/view\/(\d+)/
-    );
-
-  if (!bookingMatch) {
-    throw new Error(
-      `Could not determine Octopus booking ID from ${page.url()}.`
-    );
+function chooseJobRequestRecipients(rows, radiusMiles, maxRecipients) {
+  const byId = new Map();
+  for (const row of rows) {
+    if (!row.id || !Number.isFinite(row.distance) || row.distance < 0 ||
+        row.distance > radiusMiles) continue;
+    const previous = byId.get(row.id);
+    if (!previous || row.distance < previous.distance) byId.set(row.id, row);
   }
+  return [...byId.values()].sort((a, b) => a.distance - b.distance)
+    .slice(0, maxRecipients);
+}
 
-  const bookingId =
-    bookingMatch[1];
-
-  const perPage = 20;
-  let pageNumber = 1;
-  let loadedCount = 0;
+async function setJobRequestRadius(page, radiusMiles, jobRequestDialog) {
+  if (!Number.isFinite(radiusMiles) || radiusMiles <= 0) {
+    throw new Error("A positive job-request radius is required.");
+  }
+  let rows = [];
   let totalCount = null;
-  let farthestDistance = null;
-  let targetReached = false;
-  let pagesLoaded = 0;
-
-  const eligibleById =
-    new Map();
-
-  while (
-    pageNumber <= 100
-  ) {
-    const apiResult =
-      await page.evaluate(
-        async ({
-          bookingId,
-          pageNumber,
-          perPage
-        }) => {
-          const response =
-            await fetch(
-              `/get-available-fieldworkers?item_type=booking&item_id=${encodeURIComponent(bookingId)}&page=${pageNumber}&per_page=${perPage}&include_extra_data=1`,
-              {
-                method: "GET",
-                credentials: "include",
-                headers: {
-                  Accept:
-                    "application/json, text/plain, */*"
-                }
-              }
-            );
-
-          const responseText =
-            await response.text();
-
-          let payload;
-
-          try {
-            payload =
-              JSON.parse(
-                responseText
-              );
-          } catch {
-            throw new Error(
-              `Octopus fieldworker page ${pageNumber} did not return JSON. HTTP ${response.status}. Preview: ${responseText.slice(0, 500)}`
-            );
-          }
-
-          if (!response.ok) {
-            throw new Error(
-              `Octopus fieldworker page ${pageNumber} failed with HTTP ${response.status}: ${responseText.slice(0, 500)}`
-            );
-          }
-
-          return payload;
-        },
-        {
-          bookingId,
-          pageNumber,
-          perPage
-        }
-      );
-
-    const contractors =
-      Array.isArray(
-        apiResult?.contractors
-      )
-        ? apiResult.contractors
-        : [];
-
-    if (
-      totalCount === null
-    ) {
-      const possibleTotals = [
-        apiResult?.total,
-        apiResult?.total_count,
-        apiResult?.count,
-        apiResult?.pagination?.total,
-        apiResult?.meta?.total,
-        apiResult?.data?.total
-      ];
-
-      for (
-        const value of possibleTotals
-      ) {
-        const parsed =
-          Number(value);
-
-        if (
-          Number.isFinite(parsed) &&
-          parsed >= 0
-        ) {
-          totalCount = parsed;
-          break;
-        }
-      }
-    }
-
-    if (
-      contractors.length === 0
-    ) {
-      console.log(
-        `Octopus API returned no fieldworkers on page ${pageNumber}. Stopping pagination.`
-      );
-
-      break;
-    }
-
-    pagesLoaded += 1;
-    loadedCount +=
-      contractors.length;
-
-    const sanePageDistances = [];
-    let withinRadiusOnPage = 0;
-
-    for (
-      const contractor of contractors
-    ) {
-      const rawDistance =
-        contractor?.distance_local ??
-        contractor?.distance ??
-        contractor?.distance_value;
-
-      const distance =
-        Number(rawDistance);
-
-      if (
-        !Number.isFinite(distance)
-      ) {
-        continue;
-      }
-
-      if (
-        farthestDistance === null ||
-        distance > farthestDistance
-      ) {
-        farthestDistance = distance;
-      }
-
-      if (
-        distance >= 0 &&
-        distance <= 500
-      ) {
-        sanePageDistances.push(
-          distance
-        );
-      }
-
-      if (
-        distance < 0 ||
-        distance > radiusMiles
-      ) {
-        continue;
-      }
-
-      withinRadiusOnPage += 1;
-
-      const id =
-        contractor?.user_id ??
-        contractor?.id ??
-        contractor?.contractor_id;
-
-      if (
-        id === undefined ||
-        id === null
-      ) {
-        continue;
-      }
-
-      const key =
-        String(id);
-
-      const existing =
-        eligibleById.get(key);
-
-      if (
-        !existing ||
-        distance < existing.distance
-      ) {
-        eligibleById.set(
-          key,
-          {
-            id: key,
-            distance
-          }
-        );
-      }
-    }
-
-    const pageMinDistance =
-      sanePageDistances.length > 0
-        ? Math.min(
-            ...sanePageDistances
-          )
-        : null;
-
-    const pageMaxDistance =
-      sanePageDistances.length > 0
-        ? Math.max(
-            ...sanePageDistances
-          )
-        : null;
-
-    console.log(
-      `Octopus API page ${pageNumber}: loaded ${contractors.length}; cumulative ${loadedCount}${totalCount !== null ? ` of ${totalCount}` : ""}; sane distance range ${pageMinDistance ?? "unknown"}-${pageMaxDistance ?? "unknown"} miles; ${withinRadiusOnPage} within ${radiusMiles} miles; ${eligibleById.size} eligible collected.`
+  let previousCount = -1;
+  for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+    rows = await jobRequestDialog.locator("tbody tr").evaluateAll(elements =>
+      elements.map(row => {
+        const cells = row.querySelectorAll("td");
+        const checkbox = row.querySelector('input[type="checkbox"][data-id]');
+        const distanceText = String(cells[1]?.innerText || "").replace(/,/g, "").trim();
+        return {
+          id: checkbox?.getAttribute("data-id") || "",
+          name: String(cells[0]?.innerText || "").replace(/[☆★\uf005\uf006]/g, "")
+            .replace(/\s+/g, " ").trim(),
+          distance: distanceText === "" ? null : Number(distanceText),
+          checked: Boolean(checkbox?.checked)
+        };
+      })
     );
-
-    /*
-     * Octopus returns this endpoint in nearest-first order on the booking page.
-     * Once 100 eligible workers have been collected, stop immediately instead
-     * of scanning hundreds of additional workers.
-     */
-    if (
-      eligibleById.size >=
-      MAX_JOB_REQUEST_RECIPIENTS
-    ) {
-      console.log(
-        `Closest-${MAX_JOB_REQUEST_RECIPIENTS} cap reached after API page ${pageNumber}; stopping pagination early.`
-      );
-
-      break;
-    }
-
-    if (
-      sanePageDistances.length > 0 &&
-      withinRadiusOnPage === 0 &&
-      pageMinDistance > radiusMiles
-    ) {
-      targetReached = true;
-
-      console.log(
-        `Reached the ${radiusMiles}-mile boundary after API page ${pageNumber}.`
-      );
-
-      break;
-    }
-
-    if (
-      totalCount !== null &&
-      loadedCount >= totalCount
-    ) {
-      console.log(
-        `Reached the end of Octopus's ${totalCount} available fieldworkers.`
-      );
-
-      break;
-    }
-
-    if (
-      contractors.length < perPage
-    ) {
-      console.log(
-        `Octopus returned a short final page (${contractors.length}/${perPage}); stopping pagination.`
-      );
-
-      break;
-    }
-
-    pageNumber += 1;
+    const text = await jobRequestDialog.innerText();
+    const total = text.match(/Showing\s+\d+\s+of\s+(\d+)\s+matches/i);
+    if (total) totalCount = Number(total[1]);
+    if (!rows.length) throw new Error("Octopus has not populated the actual recipient rows.");
+    const eligible = chooseJobRequestRecipients(rows, radiusMiles, MAX_JOB_REQUEST_RECIPIENTS);
+    const distances = rows.map(row => row.distance).filter(value => Number.isFinite(value) && value >= 0);
+    const ordered = distances.every((distance, index) => index === 0 || distance >= distances[index - 1]);
+    if (eligible.length >= MAX_JOB_REQUEST_RECIPIENTS ||
+        (ordered && distances.length === rows.length && distances.at(-1) > radiusMiles) ||
+        (totalCount !== null && rows.length >= totalCount)) break;
+    const more = jobRequestDialog.getByRole("button", { name: /load more/i }).first();
+    if (!(await more.isVisible().catch(() => false))) break;
+    if (rows.length === previousCount) throw new Error("Octopus did not load more recipient rows.");
+    previousCount = rows.length;
+    await more.click({ timeout: 30000 });
+    await page.waitForFunction(
+      count => document.querySelectorAll("#JOB_REQUEST_POPUP tbody tr").length > count,
+      previousCount, { timeout: 30000 }
+    );
+    if (pageNumber === 99) throw new Error("Recipient pagination exceeded its safety limit.");
   }
-
-  if (
-    pagesLoaded >= 100
-  ) {
-    throw new Error(
-      `Stopped after 100 Octopus fieldworker API pages while trying to reach ${radiusMiles} miles.`
-    );
-  }
-
-  const selectedFieldworkers =
-    Array.from(
-      eligibleById.values()
-    )
-      .sort(
-        (a, b) =>
-          a.distance - b.distance
-      )
-      .slice(
-        0,
-        MAX_JOB_REQUEST_RECIPIENTS
-      );
-
-  const fieldworkerIdsWithinRadius =
-    selectedFieldworkers.map(
-      (worker) =>
-        worker.id
-    );
-
-  console.log(
-    `Closest-${MAX_JOB_REQUEST_RECIPIENTS} selection ready for ${radiusMiles} miles: ${fieldworkerIdsWithinRadius.length} selected; ${loadedCount} API candidates inspected.`
-  );
-
-  if (
-    fieldworkerIdsWithinRadius.length === 0
-  ) {
-    throw new Error(
-      `No eligible fieldworkers were found within ${radiusMiles} miles for booking ${bookingId}.`
-    );
-  }
-
-  /*
-   * Octopus's recipient list is displayed in the same nearest-first ordering.
-   * Load only enough 20-worker UI pages to expose the selected pool, capped at
-   * 100 recipients. This is the part that prevents the old 442-worker crawl.
-   */
-  const recipientPagesNeeded =
-    Math.max(
-      1,
-      Math.ceil(
-        fieldworkerIdsWithinRadius.length /
-        perPage
-      )
-    );
-
-  const uiLoadMoreClicksNeeded =
-    Math.max(
-      0,
-      recipientPagesNeeded - 1
-    );
-
-  console.log(
-    `Synchronizing real Octopus job-request UI for ${fieldworkerIdsWithinRadius.length} recipients: ${uiLoadMoreClicksNeeded} Load More click(s).`
-  );
-
-  for (
-    let clickNumber = 1;
-    clickNumber <= uiLoadMoreClicksNeeded;
-    clickNumber += 1
-  ) {
-    let loadMore =
-      jobRequestDialog
-        .getByText(
-          /load more/i,
-          { exact: false }
-        )
-        .first();
-
-    if (
-      !(
-        await loadMore
-          .isVisible()
-          .catch(() => false)
-      )
-    ) {
-      const globalCandidates =
-        page.getByText(
-          /load more/i,
-          { exact: false }
-        );
-
-      const count =
-        await globalCandidates
-          .count()
-          .catch(() => 0);
-
-      for (
-        let index = 0;
-        index < count;
-        index += 1
-      ) {
-        const candidate =
-          globalCandidates.nth(index);
-
-        if (
-          await candidate
-            .isVisible()
-            .catch(() => false)
-        ) {
-          loadMore = candidate;
-          break;
-        }
-      }
+  const selected = chooseJobRequestRecipients(rows, radiusMiles, MAX_JOB_REQUEST_RECIPIENTS);
+  if (!selected.length) throw new Error("No eligible cleaners are available within the requested radius.");
+  const wanted = new Set(selected.map(row => row.id));
+  const rowLocators = jobRequestDialog.locator("tbody tr");
+  for (let index = 0; index < rows.length; index += 1) {
+    const checkbox = rowLocators.nth(index).locator('input[type="checkbox"][data-id]');
+    if (!(await checkbox.count())) continue;
+    const checked = await checkbox.isChecked();
+    if (checked !== wanted.has(rows[index].id)) {
+      // Octopus uses a custom switch; clicking the input itself is intercepted.
+      await rowLocators.nth(index).locator("label.figma-switch").click({ timeout: 30000 });
     }
-
-    if (
-      !(
-        await loadMore
-          .isVisible()
-          .catch(() => false)
-      )
-    ) {
-      console.log(
-        `No visible Load More control after ${clickNumber - 1} click(s); Octopus may already have the recipient list loaded server-side.`
-      );
-
-      break;
-    }
-
-    console.log(
-      `Clicking real popup Load More ${clickNumber}/${uiLoadMoreClicksNeeded}.`
-    );
-
-    await loadMore
-      .scrollIntoViewIfNeeded()
-      .catch(() => {});
-
-    await loadMore.click({
-      timeout: 30000
-    });
-
-    await page.waitForTimeout(
-      1200
-    );
   }
-
+  const checkedIds = await jobRequestDialog.locator('tbody input[type="checkbox"][data-id]')
+    .evaluateAll(inputs => inputs.filter(input => input.checked).map(input => input.getAttribute("data-id")));
+  if (checkedIds.length !== wanted.size || checkedIds.some(id => !wanted.has(id))) {
+    throw new Error("The actual selected Octopus recipients do not match the requested radius.");
+  }
+  console.log("Verified " + checkedIds.length + " selected Octopus recipients within " + radiusMiles + " miles.");
   return {
-    availableFieldworkerCount:
-      fieldworkerIdsWithinRadius.length,
-
-    totalFieldworkerCount:
-      totalCount ?? loadedCount,
-
-    inspectedFieldworkerCount:
-      loadedCount,
-
-    farthestVisibleDistance:
-      farthestDistance,
-
-    targetRadiusReached:
-      targetReached,
-
-    fieldworkerIdsWithinRadius
+    availableFieldworkerCount: selected.length,
+    totalFieldworkerCount: totalCount ?? rows.length,
+    fieldworkerIdsWithinRadius: checkedIds,
+    selectedFieldworkerNames: selected.map(row => row.name)
   };
+}
+
+function loadedFieldworkerCount(text) {
+  const match = String(text || "").match(/Showing\s+(\d+)(?:\s+of\s+\d+)?\s+matches/i);
+  return match ? Number(match[1]) : 0;
 }
 
 
@@ -4617,51 +4284,18 @@ async function openJobRequestModal(
         .locator("body")
         .innerText();
 
-    const showingMatch =
-      bodyText.match(
-        /Showing\s+(\d+)\s+matches/i
-      );
-
-    if (
-      showingMatch &&
-      Number(showingMatch[1]) > 0
-    ) {
-      initialMatchCount =
-        Number(showingMatch[1]);
-
-      break;
-    }
-
-    const sendButtonVisible =
-      await page
-        .getByRole(
-          "button",
-          {
-            name:
-              /send job request/i
-          }
-        )
-        .first()
-        .isVisible()
-        .catch(() => false);
-
-    const zeroMatchesVisible =
-      /Showing\s+0\s+matches/i.test(
-        bodyText
-      );
-
-    if (
-      sendButtonVisible &&
-      !zeroMatchesVisible
-    ) {
-      break;
-    }
+    initialMatchCount = loadedFieldworkerCount(bodyText);
+    if (initialMatchCount > 0) break;
 
     await page.waitForTimeout(
       3000
     );
   }
 
+
+  if (initialMatchCount <= 0) {
+    throw new Error("Octopus did not finish loading available cleaners for booking " + bookingId + ".");
+  }
 
   console.log(
     initialMatchCount > 0
