@@ -495,6 +495,33 @@ function beginFastBookingDraft(body) {
     });
 }
 
+async function rearmFastBookingDraft(draftId, body) {
+    const replacementStart = await beginFastBookingDraft(body);
+    const replacementId = replacementStart.draftId;
+    const replacement = activeFastBookingDrafts.get(replacementId);
+    if (!replacement) {
+        throw new Error('FAST_BOOKING_REARM_FAILED');
+    }
+
+    activeFastBookingDrafts.delete(replacementId);
+    clearTimeout(replacement.expiryTimer);
+    const expiryTimer = setTimeout(() => {
+        const retained = activeFastBookingDrafts.get(draftId);
+        if (!retained) return;
+        activeFastBookingDrafts.delete(draftId);
+        retained.worker.child.kill('SIGTERM');
+        console.log('[FAST_BOOKING_DRAFT] expired:', draftId);
+    }, 10 * 60 * 1000);
+    expiryTimer.unref?.();
+
+    activeFastBookingDrafts.set(draftId, {
+        ...replacement,
+        expiryTimer
+    });
+    console.log('[FAST_BOOKING_DRAFT] retained and restaging after failed finalize:', draftId);
+    return replacement.stagedPromise;
+}
+
 async function stageFastBooking(body) {
     const begun = await beginFastBookingDraft(body);
     const draft = activeFastBookingDrafts.get(begun.draftId);
@@ -518,8 +545,8 @@ async function finalizeFastBooking(body) {
         };
     }
 
-    activeFastBookingDrafts.delete(draftId);
-    clearTimeout(draft.expiryTimer);
+    // Keep the draft addressable until Octopus returns a verified save result.
+    // A failed finalize is rebuilt under the same draftId so Lisa can retry it.
     const startedAt = Date.now();
     await draft.stagedPromise;
     const mergedBody = {
@@ -546,8 +573,21 @@ async function finalizeFastBooking(body) {
     draft.worker.child.stdin.end();
 
     const result = await resultPromise;
+    if (result.success === true) {
+        activeFastBookingDrafts.delete(draftId);
+        clearTimeout(draft.expiryTimer);
+    } else {
+        clearTimeout(draft.expiryTimer);
+        try {
+            await rearmFastBookingDraft(draftId, mergedBody);
+        } catch (rearmError) {
+            console.error('[FAST_BOOKING_DRAFT] could not retain failed draft:', draftId, rearmError.message);
+        }
+    }
     return {
         ...result,
+        draftId,
+        retryDraftRetained: result.success !== true && activeFastBookingDrafts.has(draftId),
         finalizeElapsedMs: Date.now() - startedAt,
         totalElapsedMs: Date.now() - draft.stagedAt,
         stagedBody: mergedBody
