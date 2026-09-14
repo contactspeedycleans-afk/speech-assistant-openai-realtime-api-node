@@ -3522,9 +3522,11 @@ try {
                             customerPhone: callerPhone || customer?.phone || '',
                             customerEmail: customer?.email || '',
                             serviceAddress: customer?.address || '',
-                            city: customer?.city || '',
+                            streetNumber: customer?.street_number || '',
+                            street: customer?.street || customer?.street_address || '',
+                            city: customer?.city || customer?.suburb || '',
                             state: customer?.state || '',
-                            zip: customer?.zip || ''
+                            zip: customer?.zip || customer?.postcode || ''
                         }
                     });
 
