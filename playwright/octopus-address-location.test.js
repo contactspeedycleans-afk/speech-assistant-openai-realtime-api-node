@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {validateSelectedLocation, matchesAddress, chooseClosestAddress} from './octopus-address.js';
+const selected='123 Example Lane, Hartland, MI, USA, United States';
+const base={addressLine1:'123',addressLine2:'Example Lane',suburb:'Hartland',state:'MI',postcode:'48353',latitude:'42.6678647',longitude:'-83.6958013'};
+const result=validateSelectedLocation(base,selected);
+assert.equal(result.success,true);
+assert.equal(result.addressLine1,'123 Example Lane');
+assert.equal(result.nativeAddressLine1,'123');
+assert.equal(validateSelectedLocation({...base,addressLine1:'123 Example Lane',addressLine2:''},selected).success,true);
+assert.equal(validateSelectedLocation({...base,addressLine1:'124'},selected).success,false);
+assert.equal(validateSelectedLocation({...base,latitude:''},selected).success,false);
+assert.equal(validateSelectedLocation({...base,longitude:'invalid'},selected).success,false);
+assert.equal(validateSelectedLocation({...base,latitude:'100'},selected).success,false);
+assert.equal(matchesAddress(selected,{streetNumber:'123',streetAddress:'Example Lane',suburb:'Hartland',state:'MI'}),true);
+assert.equal(chooseClosestAddress([selected],{streetNumber:'123',streetAddress:'Example',suburb:'Hartland',state:'MI'}).text,selected);
+console.log('9 address regression checks passed');
