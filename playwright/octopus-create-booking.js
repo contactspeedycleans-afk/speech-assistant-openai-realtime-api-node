@@ -1232,15 +1232,11 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     // in a dry run but Octopus rejects Save unless the actual components receive
     // keyboard input and blur events.
     async function commitRequiredNote(selector, value, label) {
-      const labelNode = page.getByRole("dialog").filter({ visible: true }).last()
-        .locator("label").filter({ hasText: label }).filter({ visible: true }).last();
-      await labelNode.waitFor({ state: "visible", timeout: 10000 });
-      const container = labelNode.locator(
-        'xpath=ancestor::*[contains(@class,"service-attribute-groups__field")][1]'
-      );
-      const visibleField = container
-        .locator('textarea:visible, input:visible, [contenteditable="true"]:visible')
-        .first();
+      const activeServiceDialog = page.locator("#booking-single-service-editor-modal");
+      await activeServiceDialog.getByRole("tab", { name: /Details/ }).click();
+      const visibleField = activeServiceDialog.getByRole("textbox", {
+        name: new RegExp("^" + label)
+      }).filter({ visible: true }).first();
       await visibleField.waitFor({ state: "visible", timeout: 10000 });
       await visibleField.click({ force: true });
       const tag = await visibleField.evaluate(el => el.tagName.toLowerCase());
@@ -1266,6 +1262,8 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     await commitRequiredNote("#attribute_8087017483", TEST.specialNotes, "Special Notes");
     await commitRequiredNote("#attribute_8087013969", TEST.accessInstructions, "Access Instructions");
     lisaTiming("NOTES_COMMITTED");
+    await page.locator("#booking-single-service-editor-modal")
+      .getByRole("tab", { name: /Schedule/ }).click();
 
     const appointmentCount = await page.locator('[id^="booking_visits_"]').count();
     console.log("Appointment block count:", appointmentCount);
@@ -1580,7 +1578,7 @@ if (livePayload?.phase === "draft") {
 
     // Octopus keeps service frequency, schedule, and fieldworker inside a
     // service-details dialog. Commit that dialog before submitting the booking.
-    const serviceDialog = page.getByRole("dialog").filter({ visible: true }).last();
+    const serviceDialog = page.locator("#booking-single-service-editor-modal");
     const serviceDialogSave = serviceDialog
       .getByRole("button", { name: /^Save$/i })
       .filter({ visible: true })
@@ -1601,7 +1599,7 @@ if (livePayload?.phase === "draft") {
     });
     await serviceDialog.waitFor({ state: "hidden", timeout: 15000 }).catch(async () => {
       const visibleErrors = await serviceDialog.innerText().catch(() => "Dialog text unavailable");
-      throw new Error("SERVICE_DETAILS_SAVE_BLOCKED: " + visibleErrors.replace(/\\s+/g, " ").slice(0, 5000));
+      throw new Error("SERVICE_DETAILS_SAVE_BLOCKED: " + visibleErrors.replace(/\s+/g, " ").slice(0, 5000));
     });
     lisaTiming("SERVICE_DETAILS_COMMITTED");
 
