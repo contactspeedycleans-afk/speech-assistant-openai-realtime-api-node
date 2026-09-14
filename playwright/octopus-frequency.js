@@ -28,6 +28,37 @@ export function canInferFrequencyWithoutControl(choices, wanted) {
 
 export async function selectSingleFrequency(page, value) {
   const wanted = frequencyLabel(value);
+  const serviceDialog = page.locator("#booking-single-service-editor-modal");
+  if (await serviceDialog.isVisible().catch(() => false)) {
+    await serviceDialog.getByRole("tab", { name: /Details/ }).click();
+    const nativeChoices = await serviceDialog.locator("label.checkbox-label:visible").evaluateAll(labels =>
+      labels.map(label => ({
+        id: label.getAttribute("for"),
+        label: (label.querySelector(".styled-checkbox")?.textContent || label.textContent)
+          .replace(/✓/g, "").trim()
+      })).filter(choice => /^(One Time Cleaning|Monthly Cleans|Bi-weekly Cleans|Tri-weekly Cleans|Weekly Cleans|Wants To See How The First Visit Goes)$/.test(choice.label))
+    );
+    if (!nativeChoices.some(choice => choice.id && choice.label === wanted)) {
+      throw new Error("FREQUENCY_CONTROL_MISSING_IN_SERVICE_DIALOG: " + wanted);
+    }
+    for (const choice of nativeChoices) {
+      if (!choice.id) continue;
+      const input = serviceDialog.locator(`input[id="${choice.id}"]`);
+      if (await input.isChecked() !== (choice.label === wanted)) {
+        await serviceDialog.locator(`label[for="${choice.id}"]`).click();
+      }
+    }
+    const selected = [];
+    for (const choice of nativeChoices) {
+      if (choice.id && await serviceDialog.locator(`input[id="${choice.id}"]`).isChecked()) {
+        selected.push(choice.label);
+      }
+    }
+    if (!frequencySelectionIsCommitted(selected, wanted)) {
+      throw new Error("FREQUENCY_NOT_COMMITTED_IN_SERVICE_DIALOG");
+    }
+    return wanted;
+  }
   const rawChoices = await page.locator('label.checkbox-label:visible').evaluateAll(labels => labels
     .filter(x => /^(One Time Cleaning|Monthly Cleans|Bi-weekly Cleans|Tri-weekly Cleans|Weekly Cleans|Wants To See How The First Visit Goes)$/.test(x.textContent.trim()))
     .map(x => ({ id:x.getAttribute('for'), label:x.textContent.trim() })));
