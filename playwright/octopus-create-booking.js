@@ -1609,12 +1609,33 @@ if (livePayload?.phase === "draft") {
 
 }
 
+    // Octopus keeps service frequency, schedule, and fieldworker inside a
+    // service-details dialog. Commit that dialog before submitting the booking.
+    const serviceDialog = page.getByRole("dialog").filter({ visible: true }).last();
+    const serviceDialogSave = serviceDialog
+      .getByRole("button", { name: /^Save$/i })
+      .filter({ visible: true })
+      .last();
+
+    if (!(await serviceDialogSave.isVisible().catch(() => false))) {
+      throw new Error("SERVICE_DETAILS_SAVE_NOT_FOUND");
+    }
+
+    console.log("Committing service details before final booking save...");
+    await serviceDialogSave.click({ timeout: 10000 }).catch(async error => {
+      console.log("Service-details Save click failed:", error.message);
+      await serviceDialogSave.click({ force: true, timeout: 10000 });
+    });
+    await serviceDialog.waitFor({ state: "hidden", timeout: 15000 });
+    lisaTiming("SERVICE_DETAILS_COMMITTED");
+
+
 if (livePayload?.dryRun === true) {
   FINAL_BOOKING_RESULT = {
     success: true,
     dryRun: true,
     customerId: await page.locator('input[name="customer_id"]').first().inputValue().catch(() => ""),
-    message: "Form profiled without saving a booking."
+    message: "Service dialog saved and booking form profiled without submitting a booking."
   };
   lisaTiming("DRY_RUN_COMPLETE");
   console.log("LISA_BOOKING_RESULT=" + JSON.stringify(FINAL_BOOKING_RESULT));
@@ -1651,26 +1672,6 @@ lisaTiming("FINAL_SUBMIT_START");
         });
       }
     });
-
-    // Octopus keeps service frequency, schedule, and fieldworker inside a
-    // service-details dialog. Commit that dialog before submitting the booking.
-    const serviceDialog = page.getByRole("dialog").filter({ visible: true }).last();
-    const serviceDialogSave = serviceDialog
-      .getByRole("button", { name: /^Save$/i })
-      .filter({ visible: true })
-      .last();
-
-    if (!(await serviceDialogSave.isVisible().catch(() => false))) {
-      throw new Error("SERVICE_DETAILS_SAVE_NOT_FOUND");
-    }
-
-    console.log("Committing service details before final booking save...");
-    await serviceDialogSave.click({ timeout: 10000 }).catch(async error => {
-      console.log("Service-details Save click failed:", error.message);
-      await serviceDialogSave.click({ force: true, timeout: 10000 });
-    });
-    await serviceDialog.waitFor({ state: "hidden", timeout: 15000 });
-    lisaTiming("SERVICE_DETAILS_COMMITTED");
 
     const saveButton = page
       .getByRole("button", { name: /^Save changes$/i })
