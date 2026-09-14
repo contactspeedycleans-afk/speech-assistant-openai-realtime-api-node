@@ -1353,9 +1353,12 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
 
     // Select the worker last so no later visit change can clear Vue's model.
     {
-      const fieldworkerSearch = firstAppointment
-        .locator('input[placeholder="Select Fieldworker"]')
-        .first();
+      // In the current Octopus service modal, the live worker selector is the
+      // last accessible "Search for option" combobox—not the legacy placeholder.
+      const fieldworkerSearch = page
+        .getByRole("combobox", { name: /Search for option/i })
+        .filter({ visible: true })
+        .last();
       const desiredWorker = shouldRemainUnassigned
         ? "Unassigned Tasks Manager"
         : TEST.fieldworkerName;
