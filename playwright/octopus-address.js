@@ -161,6 +161,25 @@ export async function selectOctopusAddress(page, address) {
       continue;
     }
     await chosen.click({timeout:10000});
+
+    // Octopus' updated booking form can accept the autocomplete choice without
+    // opening the required map/location dialog. Explicitly open the pin control
+    // beside this address field when the parsed location inputs are still absent.
+    const visibleAddressLine = page
+      .locator('input[placeholder="Address Line 1"]:visible')
+      .first();
+    if (!(await visibleAddressLine.isVisible().catch(() => false))) {
+      const pinLocationLink = input
+        .locator('xpath=..')
+        .getByRole('link')
+        .filter({ visible: true })
+        .first();
+      if (await pinLocationLink.isVisible().catch(() => false)) {
+        console.log('Opening Octopus pin-location confirmation...');
+        await pinLocationLink.click({ force: true, timeout: 10000 });
+      }
+    }
+
     await page.waitForFunction(() => {
       const value = placeholder => [...document.querySelectorAll(`input[placeholder="${placeholder}"]`)]
         .find(el => el.getBoundingClientRect().width > 0)?.value;
@@ -170,9 +189,24 @@ export async function selectOctopusAddress(page, address) {
     // Google can omit locality for township addresses even when the exact
     // selected suggestion and coordinates are correct. Fill only that blank
     // component from the locality already matched above; never change a number.
+    const addressLineInput = page.locator('input[placeholder="Address Line 1"]:visible').first();
+    if (await addressLineInput.count() && !(await addressLineInput.inputValue()).trim()) {
+      await addressLineInput.fill(`${address.streetNumber} ${address.streetAddress}`.trim());
+      await page.keyboard.press('Tab');
+    }
     const suburbInput = page.locator('input[placeholder="Suburb / Locality"]:visible').first();
     if (await suburbInput.count() && !(await suburbInput.inputValue()).trim()) {
       await suburbInput.fill(String(address.suburb));
+      await page.keyboard.press('Tab');
+    }
+    const stateInput = page.locator('input[placeholder="State"]:visible').first();
+    if (await stateInput.count() && !(await stateInput.inputValue()).trim()) {
+      await stateInput.fill(String(address.state));
+      await page.keyboard.press('Tab');
+    }
+    const postcodeInput = page.locator('input[placeholder="Postal / Zip code"]:visible').first();
+    if (await postcodeInput.count() && !(await postcodeInput.inputValue()).trim() && postcode) {
+      await postcodeInput.fill(postcode);
       await page.keyboard.press('Tab');
     }
     const location = await page.evaluate(() => {
