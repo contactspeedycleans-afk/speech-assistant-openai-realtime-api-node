@@ -90,6 +90,26 @@ export function chooseClosestAddress(texts, address) {
   return scored[0];
 }
 
+
+export function validateSelectedLocation(location, selectedText) {
+  const selectedStreet = String(selectedText || '').split(',')[0].trim();
+  const line1 = normalizeAddress(location.addressLine1);
+  const combined = normalizeAddress(`${location.addressLine1 || ''} ${location.addressLine2 || ''}`);
+  const expected = normalizeAddress(selectedStreet);
+  const latitude = Number(location.latitude);
+  const longitude = Number(location.longitude);
+  const valid = expected && (line1 === expected || combined === expected) &&
+    location.suburb && location.state && String(location.latitude || '').trim() &&
+    String(location.longitude || '').trim() && Number.isFinite(latitude) &&
+    Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180;
+  if (!valid) return {success:false, outcome:'address_selection_failed', selectedText, ...location};
+  return {success:true, outcome:'address_selected', selectedText, ...location,
+    // Lisa consumes a complete street line; keep the native split separately.
+    nativeAddressLine1:location.addressLine1,
+    nativeAddressLine2:location.addressLine2,
+    addressLine1:selectedStreet};
+}
+
 export async function selectOctopusAddress(page, address) {
   const postcode = String(address.postcode || '').trim();
   const fullQuery = `${address.streetNumber} ${address.streetAddress}, ${address.suburb}, ${address.state}${postcode ? ` ${postcode}` : ''}`;
@@ -162,65 +182,62 @@ export async function selectOctopusAddress(page, address) {
     }
     await chosen.click({timeout:10000});
 
-    // Octopus' updated booking form can accept the autocomplete choice without
-    // opening the required map/location dialog. Explicitly open the pin control
-    // beside this address field when the parsed location inputs are still absent.
-    const visibleAddressLine = page
-      .locator('input[placeholder="Address Line 1"]:visible')
-      .first();
-    if (!(await visibleAddressLine.isVisible().catch(() => false))) {
-      const pinLocationLink = input
-        .locator('xpath=..')
-        .getByRole('link')
-        .filter({ visible: true })
-        .first();
-      if (await pinLocationLink.isVisible().catch(() => false)) {
-        console.log('Opening Octopus pin-location confirmation...');
-        await pinLocationLink.click({ force: true, timeout: 10000 });
+    // Wait for the active location editor; hidden copies of the map inputs
+    // exist elsewhere on the updated booking page.
+    const lineSelector = 'input[placeholder="Address Line 1"]:visible';
+    let lineInput = page.locator(lineSelector).first();
+    await lineInput.waitFor({state:'visible', timeout:4000}).catch(() => null);
+    if (!(await lineInput.isVisible())) {
+      const pin = page.getByText('Pin Location on Map', {exact:true});
+      if (await pin.isVisible()) await pin.click({timeout:10000});
+      await lineInput.waitFor({state:'visible', timeout:10000});
+    }
+    const field = placeholder => page.locator(`input[placeholder="${placeholder}"]:visible`).first();
+    const read = async placeholder => {
+      const locator = field(placeholder);
+      return await locator.count() ? (await locator.inputValue()).trim() : '';
+    };
+    // Let Google finish populating the native fields before filling omissions.
+    for (let poll = 0; poll < 20; poll++) {
+      if (await read('Address Line 1') && await read('State') &&
+          await read('Latitude') && await read('Longitude')) break;
+      await page.waitForTimeout(200);
+    }
+    const selectedParts = chosenText.split(',').map(value => value.trim());
+    const selectedStreet = selectedParts[0];
+    const selectedCity = selectedParts[1] || String(address.suburb || '');
+    const selectedState = String(address.state || '');
+    // Octopus may split the house number and street between lines 1 and 2.
+    // Preserve its populated fields, and derive missing parts from the actual
+    // selected suggestion, never from a partial speech transcription.
+    const currentLine2 = await read('Address Line 2');
+    const missingLine1 = normalizeAddress(currentLine2) ===
+      normalizeAddress(selectedStreet.replace(/^\d+[a-z-]*\s+/i, ''))
+      ? (selectedStreet.match(/^\d+[a-z-]*/i)?.[0] || selectedStreet)
+      : selectedStreet;
+    for (const [placeholder, fallback] of [
+      ['Address Line 1', missingLine1],
+      ['Suburb / Locality', selectedCity],
+      ['State', selectedState],
+      ['Postal / Zip code', postcode],
+    ]) {
+      if (!(await read(placeholder)) && fallback) {
+        await field(placeholder).fill(fallback);
+        await field(placeholder).press('Tab');
       }
     }
+    const location = {
+      bookingAddress:await read('Booking address'),
+      addressLine1:await read('Address Line 1'),
+      addressLine2:await read('Address Line 2'),
+      suburb:await read('Suburb / Locality'),
+      state:await read('State'),
+      postcode:await read('Postal / Zip code'),
+      latitude:await read('Latitude'),
+      longitude:await read('Longitude'),
+    };
+    return validateSelectedLocation(location, chosenText);
 
-    await page.waitForFunction(() => {
-      const value = placeholder => [...document.querySelectorAll(`input[placeholder="${placeholder}"]`)]
-        .find(el => el.getBoundingClientRect().width > 0)?.value;
-      return value('Address Line 1') && value('State') &&
-        document.querySelector('#lat-test-input')?.value && document.querySelector('#lng-test-input')?.value;
-    }, null, {timeout:8000}).catch(() => null);
-    // Google can omit locality for township addresses even when the exact
-    // selected suggestion and coordinates are correct. Fill only that blank
-    // component from the locality already matched above; never change a number.
-    const addressLineInput = page.locator('input[placeholder="Address Line 1"]:visible').first();
-    if (await addressLineInput.count() && !(await addressLineInput.inputValue()).trim()) {
-      await addressLineInput.fill(`${address.streetNumber} ${address.streetAddress}`.trim());
-      await page.keyboard.press('Tab');
-    }
-    const suburbInput = page.locator('input[placeholder="Suburb / Locality"]:visible').first();
-    if (await suburbInput.count() && !(await suburbInput.inputValue()).trim()) {
-      await suburbInput.fill(String(address.suburb));
-      await page.keyboard.press('Tab');
-    }
-    const stateInput = page.locator('input[placeholder="State"]:visible').first();
-    if (await stateInput.count() && !(await stateInput.inputValue()).trim()) {
-      await stateInput.fill(String(address.state));
-      await page.keyboard.press('Tab');
-    }
-    const postcodeInput = page.locator('input[placeholder="Postal / Zip code"]:visible').first();
-    if (await postcodeInput.count() && !(await postcodeInput.inputValue()).trim() && postcode) {
-      await postcodeInput.fill(postcode);
-      await page.keyboard.press('Tab');
-    }
-    const location = await page.evaluate(() => {
-      const value = placeholder => [...document.querySelectorAll(`input[placeholder="${placeholder}"]`)]
-        .find(el => el.getBoundingClientRect().width > 0)?.value || '';
-      return {bookingAddress:value('Booking address'),addressLine1:value('Address Line 1'),
-        addressLine2:value('Address Line 2'),suburb:value('Suburb / Locality'),state:value('State'),
-        postcode:value('Postal / Zip code'),latitude:document.querySelector('#lat-test-input')?.value || '',
-        longitude:document.querySelector('#lng-test-input')?.value || ''};
-    });
-    if (location.addressLine1 && location.suburb && location.state && location.latitude && location.longitude) {
-      return {success:true, outcome:'address_selected', selectedText:chosenText, ...location};
-    }
-    return {success:false, outcome:'address_selection_failed', selectedText:chosenText, ...location};
   }
   return {success:false, outcome:'address_no_match', query:fullQuery,
     suggestions:[...new Set(lastSuggestions)].slice(0,5), selectedText:chosenText};
