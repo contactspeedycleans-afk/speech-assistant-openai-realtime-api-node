@@ -1588,6 +1588,7 @@ if (livePayload?.phase === "draft") {
       throw new Error("SERVICE_DETAILS_SAVE_NOT_FOUND");
     }
 
+    await selectSingleFrequency(page, frequencyText);
     // Worker and schedule changes can rerender the custom fields. Commit their
     // component values immediately before saving the service dialog.
     await commitRequiredNote("", TEST.specialNotes, "Special Notes");
