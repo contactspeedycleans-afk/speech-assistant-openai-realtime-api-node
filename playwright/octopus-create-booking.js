@@ -1368,6 +1368,9 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       // worker or saving an unverified value.
       let selectedWorker = false;
       const workerDeadline = Date.now() + 12000;
+      const matchesWorkerLabel = text =>
+        String(text || "").replace(/\s+\(\d+(?:[.,]\d+)?\s*Mi\)\s*$/i, "")
+          .trim().toLowerCase() === String(desiredWorker).trim().toLowerCase();
       await fieldworkerSearch.fill(desiredWorker);
 
       while (!selectedWorker && Date.now() < workerDeadline) {
@@ -1397,9 +1400,11 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
           if (
             optionText &&
             optionText.length < 300 &&
-            optionText.toLowerCase().includes(desiredWorker.toLowerCase())
+            matchesWorkerLabel(optionText)
           ) {
-            await candidate.click({ force: true, timeout: 3000 }).catch(() => {});
+            const clicked = await candidate.click({ force: true, timeout: 3000 })
+              .then(() => true).catch(() => false);
+            if (!clicked) continue;
             selectedWorker = true;
             break;
           }
@@ -1420,13 +1425,13 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       // Verify the rendered selection. Some Octopus appointment components do
       // not render a contractor_* input; its absence is not a failed selection.
       // Never manufacture a contractor ID by writing a hidden input.
-      const selectedWorkerVisible = await firstAppointment
-        .getByText(desiredWorker, { exact: true })
-        .first()
-        .isVisible()
-        .catch(() => false);
-      const searchStillVisible = await fieldworkerSearch.isVisible().catch(() => false);
-      if (!selectedWorkerVisible || searchStillVisible) {
+      const visibleWorkerLabels = await firstAppointment
+        .getByText(desiredWorker, { exact: false })
+        .allTextContents()
+        .catch(() => []);
+      const selectedWorkerVisible = visibleWorkerLabels.some(matchesWorkerLabel);
+      // This searchable control can retain its input after selection.
+      if (!selectedWorkerVisible) {
         if (shouldRemainUnassigned && selectedWorker) {
           // Octopus removes both the search input and rendered chip during the
           // service-dialog rerender. The successful option click is committed
