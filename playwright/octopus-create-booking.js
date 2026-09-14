@@ -1642,8 +1642,15 @@ lisaTiming("FINAL_SUBMIT_START");
       }
     });
 
+    // Octopus changes the final action label between screens/releases
+    // (for example: Save changes, Save, Save booking, Create booking).
+    // Match the visible action by accessible button name instead of one brittle
+    // exact text string so a fully prepared live booking can always submit.
     const saveButton = page
-      .getByText("Save changes", { exact: true })
+      .getByRole("button", {
+        name: /^(save(?: changes| booking)?|create(?: booking)?|add booking)$/i
+      })
+      .filter({ visible: true })
       .last();
 
     await saveButton.waitFor({
