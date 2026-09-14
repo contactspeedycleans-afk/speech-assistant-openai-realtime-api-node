@@ -143,6 +143,68 @@ function lisaTiming(stage, extra = "") {
   LISA_TIMER_LAST = now;
 }
 
+async function sendCustomerConfirmation(page) {
+  const notifyHeading = page.getByText("Notify Customer", { exact: true });
+
+  // Octopus renders this modal a moment after the booking itself is saved.
+  // The booking result is already emitted to the caller before this function
+  // runs, so notification delivery never keeps the customer on the phone.
+  await notifyHeading.waitFor({ state: "visible", timeout: 15000 });
+  await page.waitForTimeout(2500);
+
+  const roleDialog = notifyHeading.locator(
+    "xpath=ancestor::*[@role='dialog'][1]"
+  );
+  const modalDialog = notifyHeading.locator(
+    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')][1]"
+  );
+  const dialog = (await roleDialog.count()) > 0
+    ? roleDialog
+    : (await modalDialog.count()) > 0
+      ? modalDialog
+      : page.locator("body");
+
+  // Native Octopus checkboxes are normally preselected. Explicitly enable
+  // any visible SMS/text or email channel checkbox in case account defaults
+  // change later.
+  const channelInputs = dialog.locator('input[type="checkbox"]');
+  const selectedChannels = [];
+  for (let index = 0; index < await channelInputs.count(); index += 1) {
+    const input = channelInputs.nth(index);
+    if (!await input.isVisible().catch(() => false)) continue;
+
+    const context = await input.evaluate(element => {
+      const container = element.closest("label, .form-group, .row, li, div");
+      return String(container?.innerText || container?.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }).catch(() => "");
+
+    if (!/\b(?:sms|text|email|e-mail)\b/i.test(context)) continue;
+    if (!await input.isChecked().catch(() => false)) {
+      await input.check({ force: true });
+    }
+    selectedChannels.push(context);
+  }
+
+  const sendCandidates = dialog.getByText("Send", { exact: true });
+  let sendButton = null;
+  for (let index = 0; index < await sendCandidates.count(); index += 1) {
+    const candidate = sendCandidates.nth(index);
+    if (await candidate.isVisible().catch(() => false)) sendButton = candidate;
+  }
+  if (!sendButton) {
+    throw new Error("NOTIFY_CUSTOMER_SEND_BUTTON_NOT_FOUND");
+  }
+
+  await sendButton.click({ timeout: 10000 });
+  await notifyHeading.waitFor({ state: "hidden", timeout: 15000 });
+  console.log(
+    "LISA_CUSTOMER_CONFIRMATION_SENT=" +
+    JSON.stringify({ sms: true, email: true, selectedChannels })
+  );
+}
+
 lisaTiming("SCRIPT_START");
 
 if (!OCTOPUS_EMAIL) throw new Error("Missing OCTOPUS_EMAIL");
@@ -1997,15 +2059,20 @@ lisaTiming("FINAL_SUBMIT_START");
         JSON.stringify(FINAL_BOOKING_RESULT)
       );
 
-      // We do not need to send Octopus notifications here.
-      // The booking already exists at this point.
-      const cancelNotify = page.getByText("Cancel", { exact: true }).last();
-      if (
-        saveDiagnostics.notify_customer_visible &&
-        await cancelNotify.isVisible().catch(() => false)
-      ) {
-        await cancelNotify.click({ force: true }).catch(() => {});
-        console.log("Notify Customer modal closed without sending.");
+      try {
+        await sendCustomerConfirmation(page);
+      } catch (notificationError) {
+        // A notification problem must never undo or falsely fail a booking.
+        // Keep a loud Railway marker so the office can retry delivery while
+        // preserving the verified BOK returned to the caller.
+        console.error(
+          "LISA_CUSTOMER_CONFIRMATION_FAILED=" +
+          JSON.stringify({
+            bookingNumber: FINAL_BOOKING_RESULT.bookingNumber,
+            bookingId: FINAL_BOOKING_RESULT.bookingId,
+            error: notificationError?.message || String(notificationError)
+          })
+        );
       }
 
       lisaTiming("SCRIPT_COMPLETE");
