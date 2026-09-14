@@ -1417,24 +1417,25 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       await page.keyboard.press("Tab");
       await page.waitForTimeout(500);
 
+      // Verify the rendered selection. Some Octopus appointment components do
+      // not render a contractor_* input; its absence is not a failed selection.
+      // Never manufacture a contractor ID by writing a hidden input.
+      const selectedWorkerVisible = await firstAppointment
+        .getByText(desiredWorker, { exact: true })
+        .first()
+        .isVisible()
+        .catch(() => false);
+      const searchStillVisible = await fieldworkerSearch.isVisible().catch(() => false);
+      if (!selectedWorkerVisible || searchStillVisible) {
+        throw new Error(`FIELDWORKER_SELECTION_NOT_COMMITTED: ${desiredWorker}`);
+      }
+
       if (shouldRemainUnassigned) {
-        const committedWorkerId = await firstAppointment.evaluate((appointment, workerId) => {
+        const committedWorkerId = await firstAppointment.evaluate(appointment => {
           const contractor = appointment.querySelector('input[name^="contractor_"]');
-          if (!contractor) return "";
-          if (!contractor.value) {
-            const setter = Object.getOwnPropertyDescriptor(
-              HTMLInputElement.prototype,
-              "value"
-            )?.set;
-            if (setter) setter.call(contractor, workerId);
-            else contractor.value = workerId;
-            contractor.dispatchEvent(new Event("input", { bubbles: true }));
-            contractor.dispatchEvent(new Event("change", { bubbles: true }));
-            contractor.dispatchEvent(new Event("blur", { bubbles: true }));
-          }
-          return contractor.value || "";
-        }, UNASSIGNED_TASKS_MANAGER_ID);
-        if (committedWorkerId !== UNASSIGNED_TASKS_MANAGER_ID) {
+          return contractor ? contractor.value : null;
+        });
+        if (committedWorkerId !== null && committedWorkerId !== UNASSIGNED_TASKS_MANAGER_ID) {
           throw new Error(`FIELDWORKER_ID_NOT_COMMITTED: ${committedWorkerId || "blank"}`);
         }
       }
