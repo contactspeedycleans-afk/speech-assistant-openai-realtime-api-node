@@ -22,7 +22,8 @@ export function canInferFrequencyWithoutControl(choices, wanted) {
   // Octopus' one-time service package has no recurrence attribute. The chosen
   // service itself commits one-time. Unrelated service attributes may still be
   // visible, so they do not make a separate one-time checkbox necessary.
-  return wanted === 'One Time Cleaning';
+  return wanted === 'One Time Cleaning' &&
+    !(choices || []).some(choice => choice.label === wanted);
 }
 
 export async function selectSingleFrequency(page, value) {
