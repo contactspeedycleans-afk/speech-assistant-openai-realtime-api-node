@@ -1376,20 +1376,17 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       while (!selectedWorker && Date.now() < workerDeadline) {
         await page.waitForTimeout(300);
 
+        // Click the actual option. Octopus appends mileage to its name,
+        // so an exact text lookup can click the field label instead.
+        const escapedWorker = [...desiredWorker]
+          .map(char => "\\^$.*+?()[]{}|".includes(char) ? `\\\\${char}` : char)
+          .join("");
+        const optionName = new RegExp(`^${escapedWorker}(?:\\s|\\(|$)`, "i");
         const candidates = [
-          page
-            .locator(
-              '[role="option"]:visible, .vs__dropdown-option:visible, ' +
-              '[data-id="47464"]:visible, [data-value="47464"]:visible, ' +
-              '[value="47464"]:visible'
-            )
-            .filter({ hasText: desiredWorker })
-            .last(),
-          page
-            .locator('li:visible')
-            .filter({ hasText: desiredWorker })
-            .last(),
-          page.getByText(desiredWorker, { exact: true }).last()
+          page.getByRole("option", { name: optionName }).filter({ visible: true }).first(),
+          page.locator(".vs__dropdown-option:visible, li:visible")
+            .filter({ hasText: optionName })
+            .first()
         ];
 
         for (const candidate of candidates) {
