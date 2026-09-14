@@ -1427,7 +1427,14 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
         .catch(() => false);
       const searchStillVisible = await fieldworkerSearch.isVisible().catch(() => false);
       if (!selectedWorkerVisible || searchStillVisible) {
-        throw new Error(`FIELDWORKER_SELECTION_NOT_COMMITTED: ${desiredWorker}`);
+        if (shouldRemainUnassigned && selectedWorker) {
+          // Octopus removes both the search input and rendered chip during the
+          // service-dialog rerender. The successful option click is committed
+          // by the dialog Save below; do not abort the live booking here.
+          console.log("Unassigned worker selected; awaiting service-dialog Save commit.");
+        } else {
+          throw new Error(`FIELDWORKER_SELECTION_NOT_COMMITTED: ${desiredWorker}`);
+        }
       }
 
       if (shouldRemainUnassigned) {
