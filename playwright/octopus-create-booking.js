@@ -1228,44 +1228,12 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
     const frequencyLabel = await selectSingleFrequency(page, frequencyText);
     lisaTiming("FREQUENCY_COMMITTED", `frequency=${frequencyLabel}`);
 
-    // Fast path: write notes directly and avoid retyping four reactive date fields.
-    // The final DOM commit below reapplies dates and the verified unassigned worker ID.
-    const requiredNotesState = await page.evaluate(
-      ({ specialNotes, accessInstructions }) => {
-        const setNativeValue = (el, value) => {
-          if (!el) return false;
-          const descriptor =
-            Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value") ||
-            Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-          if (descriptor?.set) descriptor.set.call(el, value);
-          else el.value = value;
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          el.dispatchEvent(new Event("blur", { bubbles: true }));
-          return true;
-        };
-        const special = document.querySelector("#attribute_8087017483");
-        const access = document.querySelector("#attribute_8087013969");
-        return {
-          specialApplied: setNativeValue(special, specialNotes),
-          accessApplied: setNativeValue(access, accessInstructions),
-          specialNotes: special?.value || "",
-          accessInstructions: access?.value || ""
-        };
-      },
-      {
-        specialNotes: TEST.specialNotes,
-        accessInstructions: TEST.accessInstructions
-      }
-    );
-
-    console.log("Required notes exact values:", JSON.stringify(requiredNotesState));
-
     // These service attributes are Vue-managed. Direct DOM values look correct
     // in a dry run but Octopus rejects Save unless the actual components receive
     // keyboard input and blur events.
     async function commitRequiredNote(selector, value, label) {
-      const labelNode = page.locator("label").filter({ hasText: label }).last();
+      const labelNode = page.getByRole("dialog").filter({ visible: true }).last()
+        .locator("label").filter({ hasText: label }).filter({ visible: true }).last();
       await labelNode.waitFor({ state: "visible", timeout: 10000 });
       const container = labelNode.locator(
         'xpath=ancestor::*[contains(@class,"service-attribute-groups__field")][1]'
@@ -1277,6 +1245,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       await visibleField.click({ force: true });
       const tag = await visibleField.evaluate(el => el.tagName.toLowerCase());
       if (tag === "input" || tag === "textarea") {
+        await visibleField.fill("");
         await visibleField.fill(String(value || ""));
       } else {
         await visibleField.press("Control+A").catch(() => {});
@@ -1621,12 +1590,19 @@ if (livePayload?.phase === "draft") {
       throw new Error("SERVICE_DETAILS_SAVE_NOT_FOUND");
     }
 
+    // Worker and schedule changes can rerender the custom fields. Commit their
+    // component values immediately before saving the service dialog.
+    await commitRequiredNote("", TEST.specialNotes, "Special Notes");
+    await commitRequiredNote("", TEST.accessInstructions, "Access Instructions");
     console.log("Committing service details before final booking save...");
     await serviceDialogSave.click({ timeout: 10000 }).catch(async error => {
       console.log("Service-details Save click failed:", error.message);
       await serviceDialogSave.click({ force: true, timeout: 10000 });
     });
-    await serviceDialog.waitFor({ state: "hidden", timeout: 15000 });
+    await serviceDialog.waitFor({ state: "hidden", timeout: 15000 }).catch(async () => {
+      const visibleErrors = await serviceDialog.innerText().catch(() => "Dialog text unavailable");
+      throw new Error("SERVICE_DETAILS_SAVE_BLOCKED: " + visibleErrors.replace(/\\s+/g, " ").slice(0, 5000));
+    });
     lisaTiming("SERVICE_DETAILS_COMMITTED");
 
 
