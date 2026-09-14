@@ -23,15 +23,40 @@ export function matchesAddress(text, address) {
       (part.startsWith(state + ' ') && /^\d{5}(?: \d{4})?$/.test(part.slice(state.length + 1))));
 }
 
+export function matchesStreetAndState(text, address) {
+  const parts = String(text || '').split(',').map(normalizeAddress);
+  const street = normalizeAddress(`${address.streetNumber} ${address.streetAddress}`);
+  const state = normalizeAddress(address.state).replace(/^michigan\b/, 'mi');
+  const regions = parts.slice(2).map(value =>
+    normalizeAddress(value).replace(/^michigan\b/, 'mi'));
+  return parts.length >= 3 && parts[0] === street &&
+    regions.some(part => part === state ||
+      (part.startsWith(state + ' ') && /^\d{5}(?: \d{4})?$/.test(part.slice(state.length + 1))));
+}
+
 export async function selectOctopusAddress(page, address) {
-  const query = `${address.streetNumber} ${address.streetAddress}, ${address.suburb}, ${address.state}`;
+  const postcode = String(address.postcode || '').trim();
+  const fullQuery = `${address.streetNumber} ${address.streetAddress}, ${address.suburb}, ${address.state}${postcode ? ` ${postcode}` : ''}`;
+  const queries = [fullQuery];
+  if (postcode) {
+    // Google/Octopus can return the postal locality instead of the city spoken
+    // by the customer. A ZIP-assisted query lets Octopus resolve that official
+    // locality without Lisa guessing a different street or house number.
+    queries.push(`${address.streetNumber} ${address.streetAddress}, ${address.state} ${postcode}`);
+  }
   const input = page.locator('input[placeholder="Booking address"]').first();
   await input.waitFor({state:'visible', timeout:15000});
   let chosenText = '';
-  // One bounded query. A rejected spelling must not trigger another identical search.
-  for (let attempt = 0; attempt < 1; attempt++) {
+  let lastSuggestions = [];
+  // At most two bounded queries: the customer's complete address first, then
+  // an optional ZIP-assisted form that allows Google's official locality.
+  for (const query of queries) {
     await input.fill('');
-    await input.fill(query);
+    await input.click();
+    // Real keystrokes reliably trigger the Google Places listener used by the
+    // native Octopus booking form. fill() alone intermittently leaves an empty
+    // suggestion list even though the same address autocompletes for a person.
+    await input.type(query, {delay: 12});
     const options = page.locator('[role="option"]:visible, .pac-item:visible, .vs__dropdown-option:visible, li:visible');
     let chosen = null;
     let suggestions = [];
@@ -47,11 +72,25 @@ export async function selectOctopusAddress(page, address) {
         if (/^\d/.test(text) && text.includes(',')) suggestions.push(text);
         if (matchesAddress(text, address)) matching.push({node:options.nth(i),text});
       }
+      // If Octopus supplies a different official postal locality, accept it
+      // only when there is exactly one suggestion with the exact house number,
+      // exact street, and exact state. This keeps wrong-city/state suggestions
+      // out while handling legitimate township and mailing-city differences.
+      if (!matching.length) {
+        const safeFallback = texts
+          .map((text, index) => ({node:options.nth(index), text}))
+          .filter(item => matchesStreetAndState(item.text, address));
+        const uniqueFallback = [...new Set(
+          safeFallback.map(item => normalizeAddress(item.text))
+        )];
+        if (uniqueFallback.length === 1) matching.push(safeFallback[0]);
+      }
       const unique = [...new Set(matching.map(item => normalizeAddress(item.text)))];
       if (unique.length === 1) { chosen = matching[0].node; chosenText = matching[0].text; }
     }
+    lastSuggestions = suggestions;
     if (!chosen) {
-      return {success:false, outcome:'address_no_match', query, suggestions:[...new Set(suggestions)].slice(0,5)};
+      continue;
     }
     await chosen.click({timeout:10000});
     await page.waitForFunction(() => {
@@ -81,5 +120,6 @@ export async function selectOctopusAddress(page, address) {
     }
     return {success:false, outcome:'address_selection_failed', selectedText:chosenText, ...location};
   }
-  return {success:false, outcome:'address_selection_failed', query, selectedText:chosenText};
+  return {success:false, outcome:'address_no_match', query:fullQuery,
+    suggestions:[...new Set(lastSuggestions)].slice(0,5), selectedText:chosenText};
 }
