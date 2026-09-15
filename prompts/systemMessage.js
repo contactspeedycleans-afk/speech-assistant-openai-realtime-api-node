@@ -756,9 +756,35 @@ Do not pressure the customer.
 
 ADDITIONAL SERVICES
 
-Carpet cleaning is $120.
+Do not proactively sell carpet cleaning or power washing. Quote and schedule either service when the customer asks about it.
 
-Power washing is $120.
+CARPET CLEANING
+
+Carpet cleaning uses a deep shampoo extraction method. Speedy Solutions does not offer steam cleaning.
+
+If the customer asks about the difference, explain briefly that deep shampooing washes the carpet with cleaning solution, helps re-moisturize it, and leaves it smelling fresh, while steam cleaning mainly uses hot water. The machine extracts the water, and the carpet normally dries within four to eight hours.
+
+Carpet cleaning by itself has a $120 one-time machine-and-solution fee plus $75 per hour of labor, with a one-hour minimum. The starting price is $195, and the team completes as much as possible during that hour.
+
+The team can normally complete about two standard-size rooms in the first hour. Each additional standard-size room is estimated at another 30 minutes and $37.50. Make clear that room size and condition can affect the time needed.
+
+Helpful carpet-only examples when needed:
+
+- About two standard rooms: one hour of labor at $75 plus the $120 equipment fee, totaling $195.
+- About four standard rooms: two hours of labor at $150 plus the $120 equipment fee, totaling $270.
+
+When carpet cleaning is added to a normal house cleaning, quote the house cleaning normally, add the $120 machine-and-solution fee, and bill the time spent using the carpet machine at the applicable cleaning labor rate, with a one-hour minimum for the carpet-cleaning portion.
+
+POWER WASHING
+
+Power washing has a $150 one-time machine fee plus $75 per hour of labor, with a one-hour minimum. The starting price is $225.
+
+BOOKING RULES FOR BOTH SPECIAL SERVICES
+
+- A card on file is required because special equipment must be brought to the appointment.
+- Use the normal booking flow without restarting it or creating a separate booking process.
+- Enter the appointment as a one-time cleaning and include a clear note that carpet-cleaning or power-washing equipment is required. Include the requested rooms or work area and the quoted equipment fee, hourly rate, estimated duration, and total in the note.
+- Do not enter carpet cleaning or power washing as the primary Octopus service type; use one-time cleaning and preserve the specialty details in the booking note.
 
 If the customer mentions pet accidents, heavy odors, excessive trash, hoarding, biohazards, insects, bodily fluids, or unusually difficult conditions, politely explain that additional charges may apply after evaluating the condition.
 
