@@ -83,9 +83,10 @@ function criteria(payload) {
     phone: normalizePhone(payload.phone || payload.customerPhone),
     email: clean(payload.email || payload.customerEmail).toLowerCase(),
     customerName: clean(payload.customerName).toLowerCase(),
+    address: clean(payload.address || payload.customerAddress || payload.serviceAddress).toLowerCase(),
     requestedDate: clean(payload.requestedDate || payload.date),
     scope: clean(payload.scope || 'all').toLowerCase(),
-    limit: Math.max(1, Math.min(Number(payload.limit || 10), 10))
+    limit: Math.max(1, Math.min(Number(payload.limit || 25), 25))
   };
 }
 
@@ -96,8 +97,64 @@ function scoreText(text, c) {
   if (c.phone && d.includes(c.phone)) score += 100;
   if (c.email && lower.includes(c.email)) score += 80;
   if (c.customerName && lower.includes(c.customerName)) score += 60;
+  if (c.address && lower.includes(c.address)) score += 60;
   if (c.requestedDate && lower.includes(c.requestedDate.toLowerCase())) score += 40;
   return score;
+}
+
+async function globalSearch(page, c, terms) {
+  for (const term of terms) {
+    const url = `${BASE}/search?keywords=${encodeURIComponent(term)}`;
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    if (page.url().toLowerCase().includes('/login')) {
+      await login(page);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    }
+    await page.waitForTimeout(600);
+
+    const bookingLinks = page.locator('a[href*="/booking/view/"]');
+    const bookingCount = Math.min(await bookingLinks.count().catch(() => 0), c.limit);
+    const matches = [];
+    for (let i = 0; i < bookingCount; i++) {
+      const link = bookingLinks.nth(i);
+      const href = await link.getAttribute('href').catch(() => '');
+      if (!href) continue;
+      const text = clean(await link.innerText().catch(() => ''));
+      const id = href.match(/\/booking\/view\/(\d+)/i)?.[1] || null;
+      const bok = text.match(/BOK-\d+/i)?.[0]?.toUpperCase() || null;
+      matches.push({
+        bookingId: id ? Number(id) : null,
+        bookingNumber: bok,
+        bookingUrl: href.startsWith('http') ? href : `${BASE}${href}`,
+        date: null,
+        rawText: text,
+        // Universal Search already scoped these records by the supplied term.
+        // Compact result rows do not repeat the searched phone/email/address.
+        score: Math.max(500, scoreText(text, c)),
+      });
+    }
+
+    const customerLinks = page.locator('a[href*="/customer/view/"]');
+    const customerCount = Math.min(await customerLinks.count().catch(() => 0), 50);
+    const customers = [];
+    for (let i = 0; i < customerCount; i++) {
+      const link = customerLinks.nth(i);
+      const href = await link.getAttribute('href').catch(() => '');
+      if (!href) continue;
+      const name = clean(await link.innerText().catch(() => ''));
+      const id = href.match(/\/customer\/view\/(\d+)/i)?.[1] || null;
+      customers.push({
+        customerId: id ? Number(id) : null,
+        customerName: name || null,
+        customerUrl: href.startsWith('http') ? href : `${BASE}${href}`,
+      });
+    }
+
+    if (matches.length || customers.length) {
+      return { matches, customers, searchTerm: term };
+    }
+  }
+  return { matches: [], customers: [], searchTerm: null };
 }
 
 async function bookingLinksOnPage(page, c) {
@@ -170,13 +227,15 @@ async function enrich(page, m) {
 
 async function main() {
   const payload=parsePayload(), c=criteria(payload);
-  console.log('LISA_LOOKUP_DEBUG=' + JSON.stringify({bookingNumber:c.bookingNumber||null,bookingId:c.bookingId||null,phone:c.phone||null,customerName:c.customerName||null,requestedDate:c.requestedDate||null,scope:c.scope}));
+  console.log('LISA_LOOKUP_DEBUG=' + JSON.stringify({bookingNumber:c.bookingNumber||null,bookingId:c.bookingId||null,phone:c.phone||null,email:c.email||null,customerName:c.customerName||null,address:c.address||null,requestedDate:c.requestedDate||null,scope:c.scope}));
   const browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage']});
   try {
     const context=await browser.newContext({viewport:{width:1440,height:1000}}); const page=await context.newPage(); await login(page);
-    const terms=[c.bookingNumber, digits(c.bookingNumber), c.phone, c.email, c.customerName].filter(Boolean);
+    const terms=[c.bookingNumber, digits(c.bookingNumber), c.phone, c.email, c.customerName, c.address].filter(Boolean);
     const urls=[`${BASE}/booking`,`${BASE}/bookings`,`${BASE}/booking/index`,NOTIFICATIONS_URL];
     let matches=[];
+    let customers=[];
+    let globalSearchTerm=null;
 
     // FAST EXACT PATH: when watcher/Postgres supplies the numeric Octopus booking
     // ID, open the booking directly. This avoids slow list-page crawling and makes
@@ -204,6 +263,15 @@ async function main() {
     }
 
     if (!matches.length) {
+      // Use the same Universal Search that office staff use. It searches every
+      // core record by phone, email, name, street/address, BOK, or invoice.
+      const globalResult = await globalSearch(page, c, terms).catch(() => ({ matches: [], customers: [], searchTerm: null }));
+      matches = globalResult.matches;
+      customers = globalResult.customers;
+      globalSearchTerm = globalResult.searchTerm;
+    }
+
+    if (!matches.length) {
       for (const url of urls) {
         matches=await searchUrl(page,url,c,terms).catch(()=>[]);
         if(matches.length) break;
@@ -218,9 +286,9 @@ async function main() {
       return b.score-a.score;
     });
     if(!enriched.length) {
-      console.log('LISA_LOOKUP_RESULT='+JSON.stringify({success:true,found:false,source:'octopus_live',booking:null,bookings:[],count:0,criteria:{bookingNumber:c.bookingNumber||null,scope:c.scope},reason:c.bookingNumber?'Exact booking number was not found in live Octopus search.':'No live Octopus booking matched the supplied criteria.'})); return;
+      console.log('LISA_LOOKUP_RESULT='+JSON.stringify({success:true,found:customers.length>0,source:'octopus_live_universal_search',booking:null,bookings:[],count:0,customers,customerCount:customers.length,criteria:{bookingNumber:c.bookingNumber||null,phone:c.phone||null,email:c.email||null,customerName:c.customerName||null,address:c.address||null,scope:c.scope,searchTerm:globalSearchTerm},reason:customers.length?'Customer profile found, but no booking matched the requested scope.':(c.bookingNumber?'Exact booking number was not found in live Octopus search.':'No live Octopus account or booking matched the supplied criteria.')})); return;
     }
-    console.log('LISA_LOOKUP_RESULT='+JSON.stringify({success:true,found:true,source:'octopus_live',booking:enriched.length===1?enriched[0]:enriched[0],bookings:enriched,count:enriched.length,criteria:{bookingNumber:c.bookingNumber||null,scope:c.scope}}));
+    console.log('LISA_LOOKUP_RESULT='+JSON.stringify({success:true,found:true,source:globalSearchTerm?'octopus_live_universal_search':'octopus_live',booking:enriched[0],bookings:enriched,count:enriched.length,customers,customerCount:customers.length,criteria:{bookingNumber:c.bookingNumber||null,phone:c.phone||null,email:c.email||null,customerName:c.customerName||null,address:c.address||null,scope:c.scope,searchTerm:globalSearchTerm}}));
   } catch(error) {
     console.log('LISA_LOOKUP_RESULT='+JSON.stringify({success:false,found:false,source:'octopus_live',booking:null,bookings:[],error:error?.message||String(error)}));
   } finally { await browser.close().catch(()=>{}); }
