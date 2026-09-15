@@ -2057,6 +2057,9 @@ async function inspectAssignedCleanerOnCurrentBookingPage(page) {
           !/available\s+fieldworkers|send\s+job\s+request/i.test(context)
         ) {
           // Prefer explicit profile/user links near the assignment label.
+          // Octopus often renders the same assigned worker link more than once
+          // (desktop/mobile or avatar/name copies). Deduplicate before deciding
+          // whether the assignment is ambiguous.
           const linkedCandidates = Array.from(
             container.querySelectorAll("a")
           )
@@ -2064,13 +2067,52 @@ async function inspectAssignedCleanerOnCurrentBookingPage(page) {
             .map((element) => clean(
               element.innerText || element.textContent
             ))
-            .filter(looksLikePersonName);
+            .filter(looksLikePersonName)
+            .filter((value, index, array) =>
+              array.indexOf(value) === index
+            );
 
           if (linkedCandidates.length === 1) {
             return {
               cleanerName: linkedCandidates[0],
               evidence: context.slice(0, 900),
               source: "assignment_profile_link"
+            };
+          }
+
+          // Current Octopus screens sometimes expose the accepted worker only
+          // as the selected value of a combobox/input instead of a profile link.
+          const selectedControlCandidates = Array.from(
+            container.querySelectorAll("input, select, [role='combobox']")
+          )
+            .filter(visible)
+            .map((element) => {
+              if (element instanceof HTMLInputElement) {
+                return clean(element.value);
+              }
+
+              if (element instanceof HTMLSelectElement) {
+                return clean(
+                  element.selectedOptions?.[0]?.textContent
+                );
+              }
+
+              return clean(
+                element.getAttribute("aria-label") ||
+                element.innerText ||
+                element.textContent
+              );
+            })
+            .filter(looksLikePersonName)
+            .filter((value, index, array) =>
+              array.indexOf(value) === index
+            );
+
+          if (selectedControlCandidates.length === 1) {
+            return {
+              cleanerName: selectedControlCandidates[0],
+              evidence: context.slice(0, 900),
+              source: "selected_worker_control"
             };
           }
 
@@ -2829,27 +2871,24 @@ async function sweepOctopusUnassignedBookings(
       }
 
 
-      // ADDITIVE PATCH: if the existing unassigned detector did not verify an
-      // unassigned profile, check the same Octopus booking page for a real,
-      // currently assigned cleaner. This fills recurring assignments that may
-      // have been accepted months ago and therefore produce no fresh notification.
-      if (!assignmentCheck.isUnassigned) {
-        const assignedCheck =
-          await inspectAssignedCleanerOnCurrentBookingPage(
-            page
-          );
+      // A real accepted fieldworker always wins over an unassigned placeholder.
+      // Octopus can render "Unassigned Tasks Manager" elsewhere on the same page
+      // even when the booking itself has an accepted worker.
+      const assignedCheck =
+        await inspectAssignedCleanerOnCurrentBookingPage(
+          page
+        );
 
-        if (assignedCheck.cleanerName) {
-          await markBookingAssignedFromOctopus({
-            bookingNumber,
-            octopusBookingId,
-            octopusBookingUrl: bookingUrl,
-            cleanerName:
-              assignedCheck.cleanerName
-          });
+      if (assignedCheck.cleanerName) {
+        await markBookingAssignedFromOctopus({
+          bookingNumber,
+          octopusBookingId,
+          octopusBookingUrl: bookingUrl,
+          cleanerName:
+            assignedCheck.cleanerName
+        });
 
-          continue;
-        }
+        continue;
       }
 
       if (
