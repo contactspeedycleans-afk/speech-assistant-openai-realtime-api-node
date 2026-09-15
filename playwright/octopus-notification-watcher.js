@@ -2372,6 +2372,8 @@ async function discoverUpcomingBookingsDirectlyFromOctopus(page) {
         const regex = new RegExp(patternSource, "i");
         const links = Array.from(document.querySelectorAll("a[href]"));
 
+        const matches = [];
+
         for (const link of links) {
           const text = String(
             link.innerText ||
@@ -2386,14 +2388,32 @@ async function discoverUpcomingBookingsDirectlyFromOctopus(page) {
 
           if (href && regex.test(text)) {
             try {
-              return new URL(href, window.location.origin).toString();
+              matches.push(
+                new URL(href, window.location.origin).toString()
+              );
             } catch {
-              return null;
+              // Ignore malformed navigation placeholders.
             }
           }
         }
 
-        return null;
+        // Current Octopus uses category=upcoming for the populated card list.
+        // A hidden legacy menu item can still point to category=calendar and
+        // appears earlier in the DOM, so explicitly prefer the live route.
+        return (
+          matches.find((url) => {
+            try {
+              return (
+                new URL(url).searchParams.get("category") ===
+                "upcoming"
+              );
+            } catch {
+              return false;
+            }
+          }) ||
+          matches[0] ||
+          null
+        );
       }, pattern.source).catch(() => null);
     };
 
@@ -2476,7 +2496,10 @@ async function discoverUpcomingBookingsDirectlyFromOctopus(page) {
     const verifiedUpcomingPage =
       /upcoming/i.test(upcomingPageText) ||
       (discoveryUrl.pathname === "/booking" &&
-        discoveryUrl.searchParams.get("category") === "calendar");
+        (
+          discoveryUrl.searchParams.get("category") === "upcoming" ||
+          discoveryUrl.searchParams.get("category") === "calendar"
+        ));
 
     if (!verifiedUpcomingPage) {
       console.log(
