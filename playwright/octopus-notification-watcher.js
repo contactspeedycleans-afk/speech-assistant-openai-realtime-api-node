@@ -2537,13 +2537,58 @@ async function discoverUpcomingBookingsDirectlyFromOctopus(page) {
             continue;
           }
 
+          // The Upcoming Bookings card is Octopus's authoritative visible
+          // assignment surface. Its last named button is the fieldworker
+          // (the first is the customer); the detail page often omits this value.
+          const visitRow =
+            link.closest(".visit-row");
+
+          const visitText = compact(
+            visitRow?.innerText ||
+            visitRow?.textContent ||
+            ""
+          );
+
+          const namedButtons = Array.from(
+            visitRow?.querySelectorAll("button") || []
+          )
+            .map((button) => compact(
+              button.innerText ||
+              button.textContent ||
+              button.getAttribute("aria-label") ||
+              ""
+            ))
+            .filter(Boolean);
+
+          const workerButtonText =
+            namedButtons.length >= 2
+              ? namedButtons[namedButtons.length - 1]
+              : "";
+
+          const workerIsPlaceholder =
+            /unassigned\s+(?:fieldworkers?|tasks\s+manager)/i.test(
+              workerButtonText
+            );
+
+          const cleanerName =
+            workerButtonText &&
+            !workerIsPlaceholder &&
+            !/\bCANCELLED\b/i.test(visitText)
+              ? workerButtonText
+              : null;
+
           results.push({
             booking_number: bookingMatch[0].toUpperCase(),
             octopus_booking_id: Number(idMatch[1]),
             octopus_booking_url: new URL(
               href,
               window.location.origin
-            ).toString()
+            ).toString(),
+            current_cleaner: cleanerName,
+            assignment_status:
+              cleanerName
+                ? "ASSIGNED"
+                : (workerIsPlaceholder ? "NEEDS CLEANER" : null)
           });
         }
 
@@ -2567,8 +2612,10 @@ async function discoverUpcomingBookingsDirectlyFromOctopus(page) {
             booking_number: bookingNumber,
             octopus_booking_id: octopusBookingId,
             booking_date: null,
-            assignment_status: null,
-            current_cleaner: null,
+            assignment_status:
+              row.assignment_status || null,
+            current_cleaner:
+              clean(row.current_cleaner) || null,
             dispatch_updated_at: null,
             discovery_source: "OCTOPUS_UPCOMING_PAGE"
           });
@@ -2763,12 +2810,13 @@ async function sweepOctopusUnassignedBookings(
     await discoverUpcomingBookingsDirectlyFromOctopus(page);
 
   if (liveOctopusCandidates.length) {
-    const knownBookingNumbers = new Set(
-      candidates.map((candidate) =>
+    const candidatesByBookingNumber = new Map(
+      candidates.map((candidate) => [
         String(candidate.booking_number || "")
           .trim()
-          .toUpperCase()
-      )
+          .toUpperCase(),
+        candidate
+      ])
     );
 
     for (const liveCandidate of liveOctopusCandidates) {
@@ -2777,13 +2825,32 @@ async function sweepOctopusUnassignedBookings(
           .trim()
           .toUpperCase();
 
-      if (
-        liveBookingNumber &&
-        !knownBookingNumbers.has(liveBookingNumber)
-      ) {
-        candidates.push(liveCandidate);
-        knownBookingNumbers.add(liveBookingNumber);
+      if (!liveBookingNumber) {
+        continue;
       }
+
+      const existingCandidate =
+        candidatesByBookingNumber.get(
+          liveBookingNumber
+        );
+
+      if (existingCandidate) {
+        // Enrich database candidates with the live card assignment instead of
+        // discarding it just because the booking number was already known.
+        existingCandidate.current_cleaner =
+          liveCandidate.current_cleaner || null;
+        existingCandidate.assignment_status =
+          liveCandidate.assignment_status || null;
+        existingCandidate.discovery_source =
+          "OCTOPUS_UPCOMING_PAGE";
+        continue;
+      }
+
+      candidates.push(liveCandidate);
+      candidatesByBookingNumber.set(
+        liveBookingNumber,
+        liveCandidate
+      );
     }
 
     console.log(
@@ -2853,6 +2920,29 @@ async function sweepOctopusUnassignedBookings(
       `https://admin.octopuspro.com/booking/view/${octopusBookingId}`;
 
     try {
+      // Prefer the explicit worker shown on the live Upcoming Bookings card.
+      // This catches accepted/confirmed workers even when the detail page
+      // exposes no readable assignment label.
+      const liveCleanerName =
+        String(booking.current_cleaner || "")
+          .replace(/\s+/g, " ")
+          .trim();
+
+      if (
+        booking.discovery_source === "OCTOPUS_UPCOMING_PAGE" &&
+        liveCleanerName &&
+        !isUnassignedDispatchProfile(liveCleanerName)
+      ) {
+        await markBookingAssignedFromOctopus({
+          bookingNumber,
+          octopusBookingId,
+          octopusBookingUrl: bookingUrl,
+          cleanerName: liveCleanerName
+        });
+
+        continue;
+      }
+
       const assignmentCheck =
         await inspectBookingAssignment(
           page,
