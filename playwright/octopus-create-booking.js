@@ -1807,8 +1807,11 @@ lisaTiming("FINAL_SUBMIT_START");
       }
     });
 
+    // Octopus also keeps a hidden modal/template copy of this button.
+    // Target the visible button so the live form can actually be submitted.
     const saveButton = page
-      .getByText("Save changes", { exact: true })
+      .locator("button:visible")
+      .filter({ hasText: /^Save changes$/ })
       .last();
 
     await saveButton.waitFor({
