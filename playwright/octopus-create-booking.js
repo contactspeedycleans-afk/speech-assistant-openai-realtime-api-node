@@ -566,8 +566,11 @@ async function main() {
 
     console.log("Filling customer through the visible Octopus selector...");
 
+    // Octopus currently renders more than one Vue customer-search input.
+    // The first DOM match can be the hidden template copy, so select the
+    // actually visible control instead of waiting forever on .first().
     const customerSearch = page.locator(
-      'input[placeholder="Find customer"]'
+      'input[placeholder="Find customer"]:visible'
     ).first();
 
     await customerSearch.waitFor({
