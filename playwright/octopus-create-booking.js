@@ -561,7 +561,7 @@ async function main() {
       timeout: 60000
     });
 
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(2000);
     lisaTiming("BOOKING_PAGE_LOADED");
 
     console.log("Filling customer through the visible Octopus selector...");
@@ -598,11 +598,11 @@ async function main() {
 
       console.log(`Customer lookup using: ${lookupTerm}`);
 
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
         await customerSearch.click({ force: true }).catch(() => {});
         await customerSearch.fill("").catch(() => {});
         await customerSearch.type(lookupTerm, { delay: 35 }).catch(() => {});
-        await page.waitForTimeout(1400 + attempt * 500);
+        await page.waitForTimeout(700 + attempt * 300);
 
         const candidates = page.locator(
           '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
