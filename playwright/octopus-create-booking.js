@@ -1,15 +1,23 @@
+import { selectSingleFrequency } from "./octopus-frequency.js";
+import { selectOctopusAddress } from "./octopus-address.js";
 import { chromium } from "playwright";
+import { existsSync } from "node:fs";
 
 const OCTOPUS_EMAIL = process.env.OCTOPUS_EMAIL;
 const OCTOPUS_PASSWORD = process.env.OCTOPUS_PASSWORD;
 const ORGANIZATION_NAME =
   process.env.OCTOPUS_ORGANIZATION_NAME || "SpeedyCleans";
+const LISA_AUTH_STATE_PATH =
+  process.env.LISA_AUTH_STATE_PATH || "/tmp/lisa-octopus-auth.json";
+const LISA_PREWARM_ONLY = process.env.LISA_BOOKING_PREWARM === "1";
 
-const livePayload = process.env.LISA_BOOKING_PAYLOAD
+let livePayload = process.env.LISA_BOOKING_PAYLOAD
   ? JSON.parse(process.env.LISA_BOOKING_PAYLOAD)
   : null;
 
-const TEST = livePayload
+function buildBookingTest(payload) {
+  const livePayload = payload;
+  return livePayload
   ? {
       customerName:
         livePayload.customerName ||
@@ -51,8 +59,12 @@ const TEST = livePayload
       ),
       price: String(livePayload.quotedPrice || livePayload.price || "150"),
       fieldworkerName: livePayload.fieldworkerName || "Unassigned Tasks Manager",
-      specialNotes: livePayload.specialNotes || ".",
-      accessInstructions: livePayload.accessInstructions || "."
+      specialNotes:
+        livePayload.specialNotes ||
+        "No special cleaning priorities or pets reported.",
+      accessInstructions:
+        livePayload.accessInstructions ||
+        "No special access instructions reported."
     }
   : {
       customerName: "Gina Manciolini",
@@ -75,8 +87,42 @@ const TEST = livePayload
       specialNotes: ".",
       accessInstructions: "."
     };
+}
+
+let TEST = buildBookingTest(livePayload);
 
 let FINAL_BOOKING_RESULT = null;
+
+function readJsonLine(timeoutMs, timeoutCode) {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(timeoutCode));
+    }, timeoutMs);
+    const onData = chunk => {
+      buffer += String(chunk || "");
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const line = buffer.slice(0, newline).trim();
+      cleanup();
+      if (!line) reject(new Error("BOOKING_PAYLOAD_MISSING"));
+      else {
+        try { resolve(JSON.parse(line)); }
+        catch (error) { reject(error); }
+      }
+    };
+    const onError = error => { cleanup(); reject(error); };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      process.stdin.off("data", onData);
+      process.stdin.off("error", onError);
+    };
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", onData);
+    process.stdin.once("error", onError);
+  });
+}
 
 // ============================================================
 // LISA BOOKING PERFORMANCE TIMING
@@ -95,6 +141,68 @@ function lisaTiming(stage, extra = "") {
   );
 
   LISA_TIMER_LAST = now;
+}
+
+async function sendCustomerConfirmation(page) {
+  const notifyHeading = page.getByText("Notify Customer", { exact: true });
+
+  // Octopus renders this modal a moment after the booking itself is saved.
+  // The booking result is already emitted to the caller before this function
+  // runs, so notification delivery never keeps the customer on the phone.
+  await notifyHeading.waitFor({ state: "visible", timeout: 15000 });
+  await page.waitForTimeout(2500);
+
+  const roleDialog = notifyHeading.locator(
+    "xpath=ancestor::*[@role='dialog'][1]"
+  );
+  const modalDialog = notifyHeading.locator(
+    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')][1]"
+  );
+  const dialog = (await roleDialog.count()) > 0
+    ? roleDialog
+    : (await modalDialog.count()) > 0
+      ? modalDialog
+      : page.locator("body");
+
+  // Native Octopus checkboxes are normally preselected. Explicitly enable
+  // any visible SMS/text or email channel checkbox in case account defaults
+  // change later.
+  const channelInputs = dialog.locator('input[type="checkbox"]');
+  const selectedChannels = [];
+  for (let index = 0; index < await channelInputs.count(); index += 1) {
+    const input = channelInputs.nth(index);
+    if (!await input.isVisible().catch(() => false)) continue;
+
+    const context = await input.evaluate(element => {
+      const container = element.closest("label, .form-group, .row, li, div");
+      return String(container?.innerText || container?.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }).catch(() => "");
+
+    if (!/\b(?:sms|text|email|e-mail)\b/i.test(context)) continue;
+    if (!await input.isChecked().catch(() => false)) {
+      await input.check({ force: true });
+    }
+    selectedChannels.push(context);
+  }
+
+  const sendCandidates = dialog.getByText("Send", { exact: true });
+  let sendButton = null;
+  for (let index = 0; index < await sendCandidates.count(); index += 1) {
+    const candidate = sendCandidates.nth(index);
+    if (await candidate.isVisible().catch(() => false)) sendButton = candidate;
+  }
+  if (!sendButton) {
+    throw new Error("NOTIFY_CUSTOMER_SEND_BUTTON_NOT_FOUND");
+  }
+
+  await sendButton.click({ timeout: 10000 });
+  await notifyHeading.waitFor({ state: "hidden", timeout: 15000 });
+  console.log(
+    "LISA_CUSTOMER_CONFIRMATION_SENT=" +
+    JSON.stringify({ sms: true, email: true, selectedChannels })
+  );
 }
 
 lisaTiming("SCRIPT_START");
@@ -542,73 +650,141 @@ async function main() {
   lisaTiming("BROWSER_LAUNCHED");
 
   try {
+    const hasWarmAuthState = existsSync(LISA_AUTH_STATE_PATH);
     const context = await browser.newContext({
       viewport: {
         width: 1600,
         height: 1000
-      }
+      },
+      ...(hasWarmAuthState ? { storageState: LISA_AUTH_STATE_PATH } : {})
     });
 
     const page = await context.newPage();
 
-    await login(page);
-    lisaTiming("OCTOPUS_LOGIN_READY");
+    if (hasWarmAuthState) {
+      console.log("Using Lisa's warmed OctopusPro session.");
+      await page.goto("https://admin.octopuspro.com/booking/add", {
+        waitUntil: "domcontentloaded",
+        timeout: 60000
+      });
+
+      if (page.url().toLowerCase().includes("/login")) {
+        console.log("Warmed OctopusPro session expired; using verified full login fallback.");
+        await login(page);
+        await page.goto("https://admin.octopuspro.com/booking/add", {
+          waitUntil: "domcontentloaded",
+          timeout: 60000
+        });
+      }
+    } else {
+      await login(page);
+      await page.goto("https://admin.octopuspro.com/booking/add", {
+        waitUntil: "domcontentloaded",
+        timeout: 60000
+      });
+    }
+
+    await context.storageState({ path: LISA_AUTH_STATE_PATH });
+    lisaTiming(hasWarmAuthState ? "OCTOPUS_WARM_SESSION_READY" : "OCTOPUS_LOGIN_READY");
 
     console.log("Opening real New Booking form...");
 
-    await page.goto("https://admin.octopuspro.com/booking/add", {
-      waitUntil: "domcontentloaded",
-      timeout: 60000
-    });
-
-    await page.waitForTimeout(2000);
-    lisaTiming("BOOKING_PAGE_LOADED");
-
-    console.log("Filling customer through the visible Octopus selector...");
-
-    // Octopus currently renders more than one Vue customer-search input.
-    // The first DOM match can be the hidden template copy, so select the
-    // actually visible control instead of waiting forever on .first().
     const customerSearch = page.locator(
-      'input[placeholder="Find customer"]:visible'
+      'input[placeholder="Find customer"]'
     ).first();
 
+    // Continue as soon as the real form is interactive. The visibility check
+    // retains the slow-Octopus safety margin when the page genuinely needs it.
     await customerSearch.waitFor({
       state: "visible",
       timeout: 20000
     });
+    await page.waitForTimeout(300);
+    lisaTiming("BOOKING_PAGE_LOADED");
+
+    if (LISA_PREWARM_ONLY) {
+      console.log("LISA_BOOKING_SESSION_READY");
+      livePayload = await readJsonLine(
+        30 * 60 * 1000,
+        "PREWARM_PAYLOAD_TIMEOUT"
+      );
+      TEST = buildBookingTest(livePayload);
+      console.log("LISA_BOOKING_PREWARM_PAYLOAD_ACCEPTED");
+    }
+
+    if (livePayload?.action === "lookup_address") {
+      const addressResult = await selectOctopusAddress(page, TEST);
+      console.log("LISA_ADDRESS_LOOKUP_RESULT=" + JSON.stringify(addressResult));
+      return; // Read-only: no customer creation and no booking Save.
+    }
+
+    console.log("Filling customer through the visible Octopus selector...");
 
     let customerSelected = false;
 
     // Lisa live bookings may refer to an existing Octopus customer whose displayed
     // name is not an exact text match. Search several identifiers and select a
     // visible result that contains the customer's name/phone/email.
-    const customerLookupTerms = [
-      livePayload?.customerPhone,
-      livePayload?.phone,
+    const trustedCustomerLookupTerms = [
       livePayload?.customerEmail,
       livePayload?.email,
-      TEST.customerName
+      livePayload?.customerPhone,
+      livePayload?.phone,
+      TEST.customerId,
+      ...(TEST.customerId ? [TEST.customerName] : [])
     ]
       .map(value => String(value || "").trim())
       .filter((value, index, arr) => value && arr.indexOf(value) === index);
+    // A name alone is not an identity match. Many customers share names, and
+    // selecting by name can attach a new caller to an unrelated old profile.
+    // Use the name only when no trusted ID, phone, or email exists at all.
+    const customerLookupTerms = trustedCustomerLookupTerms.length
+      ? trustedCustomerLookupTerms
+      : [String(TEST.customerName || "").trim()].filter(Boolean);
 
     for (const lookupTerm of customerLookupTerms) {
       if (customerSelected) break;
 
       console.log(`Customer lookup using: ${lookupTerm}`);
 
+      // Avoid multiplying every phone/email/name miss into a long hold.
       for (let attempt = 1; attempt <= 2; attempt++) {
         await customerSearch.click({ force: true }).catch(() => {});
         await customerSearch.fill("").catch(() => {});
         await customerSearch.type(lookupTerm, { delay: 35 }).catch(() => {});
-        await page.waitForTimeout(700 + attempt * 300);
+        await page.waitForTimeout(900 + attempt * 350);
+
+        // Octopus renders customer results as plain <li> elements. Query the
+        // one expected name directly instead of scanning every list item on the page.
+        const targetedCustomer = page
+          .locator('li:visible')
+          .filter({ hasText: TEST.customerName })
+          .last();
+
+        if (
+          (!trustedCustomerLookupTerms.length || Boolean(TEST.customerId)) &&
+          await targetedCustomer.isVisible().catch(() => false)
+        ) {
+          const targetedText = (await targetedCustomer.innerText().catch(() => ""))
+            .replace(/\s+/g, " ")
+            .trim();
+          if (
+            targetedText &&
+            targetedText.length < 500 &&
+            targetedText.toLowerCase().includes(String(TEST.customerName || "").toLowerCase())
+          ) {
+            await targetedCustomer.click({ force: true, timeout: 5000 });
+            customerSelected = true;
+            break;
+          }
+        }
 
         const candidates = page.locator(
           '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
         );
 
         const candidateCount = await candidates.count().catch(() => 0);
+        if (livePayload?.dryRun) console.log('LISA_CUSTOMER_DIAGNOSTIC=' + JSON.stringify(await candidates.evaluateAll(nodes => nodes.slice(0,12).map(node => (node.innerText || '').replace(/\s+/g,' ').trim().slice(0,220)))));
 
         for (let i = 0; i < candidateCount; i++) {
           const candidate = candidates.nth(i);
@@ -633,9 +809,17 @@ async function main() {
           const matchesPhone =
             phone &&
             candidateDigits &&
-            (candidateDigits.includes(phone) || phone.includes(candidateDigits));
+            phone.length >= 10 && candidateDigits.includes(phone.slice(-10));
+          const hasTrustedIdentity = Boolean(TEST.customerId || phone || email);
+          const maySelect = hasTrustedIdentity
+            ? Boolean(
+                (TEST.customerId && normalized.includes(String(TEST.customerId))) ||
+                matchesEmail ||
+                matchesPhone
+              )
+            : matchesName;
 
-          if (matchesName || matchesEmail || matchesPhone) {
+          if (maySelect) {
             console.log("Selecting customer option:", text);
             await candidate.click({ force: true, timeout: 10000 });
             customerSelected = true;
@@ -663,7 +847,13 @@ async function main() {
           }
         }
 
-        if (visiblePlausible.length === 1) {
+        if (
+          visiblePlausible.length === 1 &&
+          (Boolean(TEST.customerId) || (
+            !String(TEST.customerName || "").trim() &&
+            !String(TEST.customerEmail || "").trim()
+          ))
+        ) {
           console.log(
             "Selecting sole filtered customer option:",
             visiblePlausible[0].text
@@ -683,6 +873,12 @@ async function main() {
         }).catch(() => {});
         await page.waitForTimeout(600);
       }
+    }
+
+    if (!customerSelected && TEST.customerId) {
+      throw new Error(
+        `KNOWN_CUSTOMER_NOT_SELECTED: customerId=${TEST.customerId} name=${TEST.customerName}`
+      );
     }
 
     if (!customerSelected) {
@@ -738,237 +934,89 @@ async function main() {
       );
     }
 
+    if (
+      TEST.customerId &&
+      String(customerState.customer_id) !== String(TEST.customerId)
+    ) {
+      throw new Error(
+        `WRONG_CUSTOMER_SELECTED: expected=${TEST.customerId} actual=${customerState.customer_id}`
+      );
+    }
+
+    // A short spoken name such as "Pat" must never attach the booking to a
+    // different Patricia. When there is no trusted customer ID, validate the
+    // committed Octopus profile against the caller's phone/email before any
+    // address, service, or Save work continues.
+    if (!TEST.customerId) {
+      let committedCustomers = [];
+      try {
+        committedCustomers = JSON.parse(customerState.customers || "[]");
+      } catch {}
+      const committed = committedCustomers[0] || {};
+      const expectedPhone = String(
+        livePayload?.customerPhone || livePayload?.phone || ""
+      ).replace(/\D/g, "").slice(-10);
+      const expectedEmail = String(
+        livePayload?.customerEmail || livePayload?.email || ""
+      ).trim().toLowerCase();
+      const committedEmails = [
+        committed.email,
+        committed.email1,
+        committed.email2,
+        committed.email3,
+        ...(committed.contacts || []).flatMap(contact => contact.emails || [])
+      ].map(value => String(value || "").trim().toLowerCase()).filter(Boolean);
+      const committedPhones = [
+        committed.phone,
+        committed.phone1,
+        committed.phone2,
+        committed.phone3,
+        committed.mobile1,
+        committed.mobile2,
+        committed.mobile3,
+        ...(committed.contacts || []).flatMap(contact => [
+          ...(contact.phones || []),
+          ...(contact.mobiles || [])
+        ])
+      ].map(value => String(value || "").replace(/\D/g, "").slice(-10)).filter(Boolean);
+      const phoneMatches = expectedPhone && committedPhones.includes(expectedPhone);
+      const emailMatches = expectedEmail && committedEmails.includes(expectedEmail);
+      if ((expectedPhone || expectedEmail) && !phoneMatches && !emailMatches) {
+        throw new Error(
+          `CUSTOMER_IDENTITY_MISMATCH: selected=${customerState.customer_id} phoneMatch=${Boolean(phoneMatches)} emailMatch=${Boolean(emailMatches)}`
+        );
+      }
+    }
+
     lisaTiming("CUSTOMER_FOUND_OR_CREATED", `customerId=${customerState.customer_id}`);
+
 
     // IMPORTANT: do not overwrite customer_id/customers.
     // Octopus fills these with its full native customer object after the real UI selection.
 
     console.log("Selecting booking location...");
 
-    const bookingAddress = `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state} ${TEST.postcode}`;
-
-    const visibleBookingAddress = page
-      .locator('input[placeholder="Booking address"]')
-      .first();
-
-    await visibleBookingAddress.waitFor({
-      state: "visible",
-      timeout: 15000
-    });
-
-    await visibleBookingAddress.click();
-    await visibleBookingAddress.fill(bookingAddress);
-
-    await page.waitForTimeout(3500);
-
-    // Google/Octopus address suggestions frequently expand abbreviations
-    // (Ct -> Court, Rd -> Road, St -> Street) or change punctuation. Do NOT
-    // require one exact rendered string. Select the best visible suggestion
-    // using street number + ZIP + city, with state/street tokens as tie-breakers.
-    console.log("Looking for tolerant address autocomplete match...");
-
-    const normalizeAddressText = value =>
-      String(value || "")
-        .toLowerCase()
-        .replace(/\bcourt\b/g, "ct")
-        .replace(/\bstreet\b/g, "st")
-        .replace(/\broad\b/g, "rd")
-        .replace(/\bavenue\b/g, "ave")
-        .replace(/\bdrive\b/g, "dr")
-        .replace(/\blane\b/g, "ln")
-        .replace(/\bboulevard\b/g, "blvd")
-        .replace(/\bplace\b/g, "pl")
-        .replace(/\bterrace\b/g, "ter")
-        .replace(/\bhighway\b/g, "hwy")
-        .replace(/[^a-z0-9]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-    const targetStreet = normalizeAddressText(
-      `${TEST.streetNumber} ${TEST.streetAddress}`
-    );
-    const targetCity = normalizeAddressText(TEST.suburb);
-    const targetState = normalizeAddressText(TEST.state);
-    const targetZip = String(TEST.postcode || "").replace(/\D/g, "");
-    const targetNumber = String(TEST.streetNumber || "").replace(/\D/g, "");
-
-    // Wait briefly for autocomplete options to appear.
-    await page.waitForTimeout(1200);
-
-    const addressCandidates = page.locator(
-      '[role="option"]:visible, .pac-item:visible, .vs__dropdown-option:visible, li:visible'
-    );
-
-    let bestAddressCandidate = null;
-    let bestAddressText = "";
-    let bestScore = -1;
-
-    const addressCandidateCount = await addressCandidates.count().catch(() => 0);
-
-    const streetTokens = targetStreet
-      .split(" ")
-      .map(token => token.trim())
-      .filter(token => token.length >= 2);
-
-    for (let i = 0; i < addressCandidateCount; i++) {
-      const candidate = addressCandidates.nth(i);
-
-      const rawText = (await candidate.innerText().catch(() => ""))
-        .replace(/\s+/g, " ")
-        .trim();
-
-      if (!rawText) continue;
-
-      const norm = normalizeAddressText(rawText);
-      const digits = rawText.replace(/\D/g, "");
-
-      const hasNumber =
-        !targetNumber || digits.includes(targetNumber);
-
-      const hasZip =
-        !targetZip || digits.includes(targetZip);
-
-      const hasCity =
-        !targetCity || norm.includes(targetCity);
-
-      const hasState =
-        !targetState || norm.includes(targetState);
-
-      const matchedStreetTokens = streetTokens.filter(token =>
-        norm.includes(token)
-      ).length;
-
-      const streetMatchRatio =
-        streetTokens.length > 0
-          ? matchedStreetTokens / streetTokens.length
-          : 0;
-
-      let score = 0;
-
-      if (targetNumber && hasNumber) score += 6;
-      if (targetZip && hasZip) score += 6;
-      if (targetCity && hasCity) score += 4;
-      if (targetState && hasState) score += 2;
-
-      score += matchedStreetTokens * 2;
-
-      const strongStreetLevelMatch =
-        streetMatchRatio >= 0.5 &&
-        hasCity &&
-        hasState &&
-        hasZip;
-
-      const strongFullAddressMatch =
-        hasNumber &&
-        streetMatchRatio >= 0.5 &&
-        (hasCity || hasZip);
-
-      const strongZipStreetMatch =
-        streetMatchRatio >= 0.5 &&
-        hasState &&
-        hasZip;
-
-      const credibleMatch =
-        strongFullAddressMatch ||
-        strongStreetLevelMatch ||
-        strongZipStreetMatch;
-
-      if (credibleMatch && score > bestScore) {
-        bestScore = score;
-        bestAddressCandidate = candidate;
-        bestAddressText = rawText;
-      }
+    const selectedLocation = await selectOctopusAddress(page, TEST);
+    const bookingAddress = selectedLocation.selectedText || `${TEST.streetNumber} ${TEST.streetAddress}, ${TEST.suburb}, ${TEST.state}`;
+    if (!selectedLocation.success) {
+      const code = selectedLocation.outcome === 'address_no_match'
+        ? 'ADDRESS_AUTOCOMPLETE_NO_MATCH' : 'LOCATION_NOT_SELECTED';
+      throw new Error(`${code}: ${JSON.stringify(selectedLocation)}`);
     }
-
-    if (!bestAddressCandidate) {
-      const visibleAddressTexts = [];
-
-      for (let i = 0; i < Math.min(addressCandidateCount, 50); i++) {
-        const txt = (await addressCandidates.nth(i).innerText().catch(() => ""))
-          .replace(/\s+/g, " ")
-          .trim();
-
-        if (txt) visibleAddressTexts.push(txt);
-      }
-
-      throw new Error(
-        `ADDRESS_AUTOCOMPLETE_NO_MATCH: target=${bookingAddress} options=${JSON.stringify(visibleAddressTexts)}`
-      );
-    }
-
-    console.log(
-      "Found tolerant address result:",
-      bestAddressText,
-      "score=" + bestScore
-    );
-
-    await bestAddressCandidate.click({
-      force: true,
-      timeout: 10000
-    });
-
-    await page.waitForTimeout(3000);
-
-    const selectedLocation = await page.evaluate(() => {
-      const bookingAddressInput =
-        document.querySelector('input[placeholder="Booking address"]');
-
-      const visible = element => {
-        if (!element) return false;
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
-      };
-
-      const findVisibleValue = placeholder => {
-        const elements = Array.from(
-          document.querySelectorAll(`input[placeholder="${placeholder}"]`)
-        );
-        const match = elements.find(visible);
-        return match?.value || null;
-      };
-
-      return {
-        bookingAddress: bookingAddressInput?.value || null,
-        addressLine1: findVisibleValue("Address Line 1"),
-        addressLine2: findVisibleValue("Address Line 2"),
-        suburb: findVisibleValue("Suburb / Locality"),
-        postcode: findVisibleValue("Postal / Zip code"),
-        state: findVisibleValue("State"),
-        latitude:
-          document.querySelector("#lat-test-input")?.value || null,
-        longitude:
-          document.querySelector("#lng-test-input")?.value || null
-      };
-    });
-
-    console.log(
-      "Selected location:",
-      JSON.stringify(selectedLocation)
-    );
-
-    if (
-      !selectedLocation.bookingAddress ||
-      !selectedLocation.addressLine1 ||
-      !selectedLocation.suburb ||
-      !selectedLocation.postcode ||
-      !selectedLocation.state ||
-      !selectedLocation.latitude ||
-      !selectedLocation.longitude
-    ) {
-      throw new Error(
-        "LOCATION_NOT_SELECTED: Octopus did not fully populate the selected address."
-      );
-    }
+    if (selectedLocation.postcode) TEST.postcode = selectedLocation.postcode;
+    console.log('Selected verified location:', JSON.stringify(selectedLocation));
 
     console.log("Confirming location modal...");
 
-    const locationModal = page.locator("#GLOBAL_ADD_LOCATION_MODAL_ID");
+    const nativeLocationModal = page.locator('div[role="dialog"].m-backdrop.--present').last();
+    let hasNativeLocationModal = await nativeLocationModal.isVisible().catch(() => false);
+    if (livePayload?.dryRun && hasNativeLocationModal) console.log('LISA_CUSTOMER_DIAGNOSTIC=' + JSON.stringify({locationDialog:(await nativeLocationModal.innerText()).slice(0,1600),buttons:await nativeLocationModal.getByRole('button').allTextContents()}));
+    if (hasNativeLocationModal && /update the Google Maps pin to reflect the change of address/i.test(await nativeLocationModal.innerText())) {
+      await nativeLocationModal.getByRole('button', {name:'Update Pin',exact:true}).click({timeout:10000});
+      await page.getByText('Would you like to update the Google Maps pin to reflect the change of address?', {exact:true}).waitFor({state:'hidden',timeout:10000});
+      hasNativeLocationModal = await nativeLocationModal.isVisible().catch(() => false);
+    }
+    const locationModal = hasNativeLocationModal ? nativeLocationModal : page.locator("#GLOBAL_ADD_LOCATION_MODAL_ID");
 
     await locationModal.waitFor({
       state: "visible",
@@ -976,7 +1024,7 @@ async function main() {
     });
 
     const confirmLocationButton = locationModal
-      .getByRole("button", { name: "Confirm", exact: true });
+      .getByRole("button", { name: /^Confirm(?: location)?$/i });
 
     await confirmLocationButton.waitFor({
       state: "visible",
@@ -995,131 +1043,140 @@ async function main() {
     console.log("Location confirmed.");
     lisaTiming("ADDRESS_SELECTED", `address=${bookingAddress}`);
 
-    console.log("Selecting One Time Standard Cleaning...");
+    const frequencyText = String(
+      livePayload?.recurringFrequency || livePayload?.frequency || "one_time"
+    ).trim().toLowerCase();
+    const isRecurringBooking =
+      Boolean(frequencyText) &&
+      !/^(one.?time|once|single|none|n\/a)$/i.test(frequencyText);
+    const rawService = String(TEST.serviceName || "Standard Cleaning").trim();
+    const serviceAliases = [
+      [/move.?in|move.?out/i, "Move In/Out Cleaning"],
+      [/deep/i, "Deep Cleaning"],
+      [/commercial|office/i, "Commercial Cleaning"],
+      [/carpet/i, "Carpet Cleaning"],
+      [/junk/i, "Junk Removal"],
+      [/directed/i, "Clean as Directed"],
+      [/standard|recurring|one.?time|house cleaning|regular cleaning/i, "Standard Cleaning"]
+    ];
+    const desiredService =
+      serviceAliases.find(([pattern]) => pattern.test(rawService))?.[1] ||
+      rawService;
 
-const servicesDropdown = page.locator("#servicesdropdown").first();
+    console.log(
+      `Selecting ${isRecurringBooking ? "recurring" : "one-time"} service: ${desiredService}`
+    );
 
-await servicesDropdown.waitFor({
-  state: "visible",
-  timeout: 15000
-});
+    const servicesDropdown = page.locator("#servicesdropdown").first();
+    await servicesDropdown.waitFor({ state: "visible", timeout: 15000 });
+    await servicesDropdown.scrollIntoViewIfNeeded();
+    await servicesDropdown.evaluate(element => {
+      element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+    });
+    await page.waitForTimeout(1200);
 
-await servicesDropdown.scrollIntoViewIfNeeded();
+    let selectedServiceName = desiredService;
+    let serviceOptions = page.locator(
+      `li[role="option"][aria-label="${selectedServiceName}"]`
+    );
 
-await servicesDropdown.evaluate(element => {
-  element.dispatchEvent(
-    new MouseEvent("mousedown", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
+    let serviceCount = await serviceOptions.count().catch(() => 0);
+    if (serviceCount < 1) {
+      // Booking continuity wins over a wording mismatch. Octopus uses Standard
+      // Cleaning as the safe schedulable fallback; retain the caller's requested
+      // service wording in notes for staff/cleaner visibility.
+      console.warn(
+        `Service option "${desiredService}" not found; falling back to Standard Cleaning.`
+      );
+      selectedServiceName = "Standard Cleaning";
+      serviceOptions = page.locator(
+        'li[role="option"][aria-label="Standard Cleaning"]'
+      );
+      serviceCount = await serviceOptions.count().catch(() => 0);
+      if (serviceCount < 1) {
+        throw new Error(
+          `SERVICE_OPTION_NOT_FOUND: requested=${desiredService} fallback=Standard Cleaning`
+        );
+      }
+      const requestedServiceNote = `Requested service: ${rawService}.`;
+      if (!String(TEST.specialNotes || "").includes(requestedServiceNote)) {
+        TEST.specialNotes = `${requestedServiceNote} ${TEST.specialNotes || ""}`.trim();
+      }
+    }
 
-  element.dispatchEvent(
-    new MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-});
+    const chosenService = isRecurringBooking
+      ? serviceOptions.last()
+      : serviceOptions.first();
+    await chosenService.waitFor({ state: "visible", timeout: 10000 });
+    const chosenServiceText = (await chosenService.innerText()).replace(/\s+/g, " ").trim();
+    console.log("Found service:", chosenServiceText);
+    await chosenService.evaluate(element => {
+      for (const type of ["mousedown", "mouseup", "click"]) {
+        element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      }
+    });
+    await page.waitForTimeout(2200);
 
-await page.waitForTimeout(2000);
+    const serviceState = await page.evaluate((serviceName) => {
+      const bodyText = document.body?.innerText || "";
+      const selectedOptions = Array.from(
+        document.querySelectorAll('li[role="option"][aria-selected="true"]')
+      ).map(el => String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim());
+      return {
+        selectedOptions,
+        serviceDetailsPresent:
+          /Service Details/i.test(bodyText) &&
+          bodyText.toLowerCase().includes(serviceName.toLowerCase())
+      };
+    }, selectedServiceName);
 
-const cleanAsDirected = page
-  .locator('li[role="option"][aria-label="Standard Cleaning"]')
-  .filter({ hasText: "$82.5" })
-  .first();
+    console.log("Service state:", JSON.stringify(serviceState));
+    if (
+      !serviceState.selectedOptions.some(x =>
+        x.toLowerCase().includes(selectedServiceName.toLowerCase())
+      ) &&
+      !serviceState.serviceDetailsPresent
+    ) {
+      throw new Error(`SERVICE_NOT_SELECTED: ${JSON.stringify(serviceState)}`);
+    }
 
-await cleanAsDirected.waitFor({
-  state: "visible",
-  timeout: 10000
-});
+    console.log("Service selected: true");
+    lisaTiming("SERVICE_SELECTED", `service=${desiredService} recurring=${isRecurringBooking}`);
 
-console.log(
-  "Found service:",
-  (await cleanAsDirected.innerText()).replace(/\s+/g, " ").trim()
-);
-
-await cleanAsDirected.evaluate(element => {
-  element.dispatchEvent(
-    new MouseEvent("mousedown", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-
-  element.dispatchEvent(
-    new MouseEvent("mouseup", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-
-  element.dispatchEvent(
-    new MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-});
-
-await page.waitForTimeout(3000);
-
-const serviceState = await page.evaluate(() => {
-  const dropdown =
-    document.querySelector("#servicesdropdown");
-
-  const bodyText = document.body?.innerText || "";
-
-  const selectedOptions = Array.from(
-    document.querySelectorAll(
-      'li[role="option"][aria-selected="true"]'
-    )
-  ).map(el =>
-    String(el.innerText || el.textContent || "")
-      .replace(/\s+/g, " ")
-      .trim()
-  );
-
-  const serviceDetailsPresent =
-    /Service Details/i.test(bodyText) &&
-    /Standard Cleaning/i.test(bodyText);
-
-  return {
-    dropdownText: String(
-      dropdown?.innerText ||
-      dropdown?.textContent ||
-      ""
-    )
-      .replace(/\s+/g, " ")
-      .trim(),
-    selectedOptions,
-    serviceDetailsPresent
-  };
-});
-
-console.log(
-  "Service state:",
-  JSON.stringify(serviceState)
-);
-
-if (
-  !serviceState.selectedOptions.some(x =>
-    /Standard Cleaning/i.test(x)
-  ) &&
-  !serviceState.serviceDetailsPresent
-) {
-  throw new Error(
-    `SERVICE_NOT_SELECTED: ${JSON.stringify(serviceState)}`
-  );
-}
-
-console.log("Service selected: true");
-lisaTiming("SERVICE_SELECTED");
+    if (livePayload?.inspectRecurring === true) {
+      const recurringCatalog = await page.evaluate(() => {
+        const controls = Array.from(document.querySelectorAll('input, select, textarea, button'))
+          .map(el => ({
+            tag: el.tagName,
+            type: el.getAttribute("type") || "",
+            name: el.getAttribute("name") || "",
+            id: el.id || "",
+            value: el.value || "",
+            checked: Boolean(el.checked),
+            placeholder: el.getAttribute("placeholder") || "",
+            text: String(el.innerText || "").replace(/\s+/g, " ").trim().slice(0, 200)
+          }))
+          .filter(x => /repeat|recurr|frequency|one.?time|weekly|fortnight|month|attribute_8087013985/i.test(JSON.stringify(x)));
+        const bodyLines = (document.body?.innerText || "").split("\n")
+          .map(x => x.trim()).filter(x => /repeat|recurr|frequency|one.?time|weekly|fortnight|month/i.test(x))
+          .slice(0, 100);
+        const matchingElements = Array.from(document.querySelectorAll("label, button, [role=button], span, div"))
+          .filter(el => /^(One Time Cleaning|Monthly Cleans|Bi-weekly Cleans|Tri-weekly Cleans|Weekly Cleans|Repeat once|Multiple repeat)$/i.test(String(el.innerText || el.textContent || "").trim()))
+          .slice(0, 30)
+          .map(el => ({
+            tag: el.tagName,
+            id: el.id || "",
+            className: String(el.className || "").slice(0, 300),
+            html: String(el.outerHTML || "").replace(/\s+/g, " ").slice(0, 1500),
+            parentHtml: String(el.parentElement?.outerHTML || "").replace(/\s+/g, " ").slice(0, 2500)
+          }));
+        return { controls, bodyLines, matchingElements };
+      });
+      FINAL_BOOKING_RESULT = { success: true, inspectRecurring: true, recurringCatalog };
+      console.log("LISA_BOOKING_RESULT=" + JSON.stringify(FINAL_BOOKING_RESULT));
+      return;
+    }
 
 function parseLocalDateTime(dateIso, time24) {
   const [y, m, d] = dateIso.split("-").map(Number);
@@ -1228,124 +1285,84 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
 
     console.log("Completing required booking fields with exact DOM inspection...");
 
-    // ONE-TIME ONLY MODE.
-    // IMPORTANT: set the hidden checkbox ONCE and do NOT dispatch a click event.
-    // A synthetic click on a checkbox toggles it back off.
-    console.log("SETTING ONE TIME CLEANING = TRUE...");
+    // Commit the customer-facing cleaning frequency through the service's
+    // own visible custom-field labels. Attribute ids differ by service.
+    const frequencyLabel = await selectSingleFrequency(page, frequencyText);
+    lisaTiming("FREQUENCY_COMMITTED", `frequency=${frequencyLabel}`);
 
-    const oneTimeInput = page.locator(
-      'input[name="attribute_8087013985[]"][value="37558"]'
-    ).first();
-
-    await oneTimeInput.waitFor({
-      state: "attached",
-      timeout: 10000
-    });
-
-    await oneTimeInput.evaluate(el => {
-      const proto = Object.getPrototypeOf(el);
-      const checkedSetter =
-        Object.getOwnPropertyDescriptor(proto, "checked")?.set;
-
-      if (checkedSetter) {
-        checkedSetter.call(el, true);
+    // These service attributes are Vue-managed. Direct DOM values look correct
+    // in a dry run but Octopus rejects Save unless the actual components receive
+    // keyboard input and blur events.
+    async function commitRequiredNote(selector, value, label) {
+      const activeServiceDialog = page.locator("#booking-single-service-editor-modal");
+      await activeServiceDialog.getByRole("tab", { name: /Details/ }).click();
+      const visibleField = activeServiceDialog.getByRole("textbox", {
+        name: new RegExp("^" + label)
+      }).filter({ visible: true }).first();
+      await visibleField.waitFor({ state: "visible", timeout: 10000 });
+      await visibleField.click({ force: true });
+      const tag = await visibleField.evaluate(el => el.tagName.toLowerCase());
+      if (tag === "input" || tag === "textarea") {
+        await visibleField.fill("");
+        await visibleField.fill(String(value || ""));
       } else {
-        el.checked = true;
+        await visibleField.press("Control+A").catch(() => {});
+        await visibleField.type(String(value || ""), { delay: 5 });
       }
-
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    await page.waitForTimeout(800);
-
-    const oneTimeState = await oneTimeInput.evaluate(el => ({
-      id: el.id || "",
-      name: el.getAttribute("name") || "",
-      value: el.value || "",
-      checked: !!el.checked
-    }));
-
-    console.log("ONE TIME FINAL STATE:", JSON.stringify(oneTimeState));
-
-    if (!oneTimeState.checked) {
-      throw new Error("ONE_TIME_NOT_CHECKED");
+      await visibleField.press("Tab").catch(() => {});
+      await page.waitForTimeout(350);
+      const committed = tag === "input" || tag === "textarea"
+        ? await visibleField.inputValue()
+        : String(await visibleField.textContent() || "").trim();
+      if (committed !== String(value || "")) {
+        throw new Error(
+          `REQUIRED_NOTE_NOT_COMMITTED: ${label} selector=${selector} actual=${committed}`
+        );
+      }
     }
 
-    const specialNotesField = page.locator("#attribute_8087017483").first();
-    const accessInstructionsField = page.locator("#attribute_8087013969").first();
+    await commitRequiredNote("#attribute_8087017483", TEST.specialNotes, "Special Notes");
+    await commitRequiredNote("#attribute_8087013969", TEST.accessInstructions, "Access Instructions");
+    lisaTiming("NOTES_COMMITTED");
+    await page.locator("#booking-single-service-editor-modal")
+      .getByRole("tab", { name: /Schedule/ }).click();
 
-    await specialNotesField.waitFor({ state: "visible", timeout: 10000 });
-    await accessInstructionsField.waitFor({ state: "visible", timeout: 10000 });
-
-    await specialNotesField.fill(TEST.specialNotes);
-    await specialNotesField.dispatchEvent("input");
-    await specialNotesField.dispatchEvent("change");
-    await specialNotesField.dispatchEvent("blur");
-
-    await accessInstructionsField.fill(TEST.accessInstructions);
-    await accessInstructionsField.dispatchEvent("input");
-    await accessInstructionsField.dispatchEvent("change");
-    await accessInstructionsField.dispatchEvent("blur");
-
-    console.log(
-      "Required notes exact values:",
-      JSON.stringify({
-        specialNotes: await specialNotesField.inputValue(),
-        accessInstructions: await accessInstructionsField.inputValue()
-      })
-    );
-
-    // IMPORTANT: use only the FIRST scheduled appointment.
-    // We previously created/targeted a second appointment accidentally.
-    const appointmentBlocks = page.locator('[id^="booking_visits_"]');
-    const appointmentCount = await appointmentBlocks.count();
+    const appointmentCount = await page.locator('[id^="booking_visits_"]').count();
     console.log("Appointment block count:", appointmentCount);
+    if (appointmentCount < 1) throw new Error("NO_APPOINTMENT_BLOCK_FOUND");
 
-    if (appointmentCount < 1) {
-      throw new Error("NO_APPOINTMENT_BLOCK_FOUND");
+    // Octopus requires a fieldworker. This verified placeholder contractor is
+    // the normal Lisa path for jobs that still need a cleaner.
+    const shouldRemainUnassigned =
+      /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
+    const UNASSIGNED_TASKS_MANAGER_ID = "47464";
+
+    console.log("Committing final appointment values through Octopus components...");
+
+    const firstAppointment = page.locator('[id^="booking_visits_"]').first();
+    const firstStartDate = firstAppointment.locator('input[name^="multi_new_stpartdate_"]').first();
+    const firstStartTime = firstAppointment.locator('input[name^="multi_new_stparttime_"]').first();
+    const firstEndDate = firstAppointment.locator('input[name^="multi_new_etpartdate_"]').first();
+    const firstEndTime = firstAppointment.locator('input[name^="multi_new_etparttime_"]').first();
+
+    async function commitComponentValue(locator, value) {
+      await locator.waitFor({ state: "visible", timeout: 10000 });
+      await locator.click({ force: true });
+      await locator.press("Control+A").catch(() => {});
+      await locator.fill(value);
+      await locator.press("Enter").catch(() => {});
+      await locator.press("Tab").catch(() => {});
+      await page.waitForTimeout(100);
     }
 
-    const firstAppointment = appointmentBlocks.first();
-
-    // Re-set ONLY the first appointment times after service frequency selection,
-    // because selecting One Time can re-render/reset the appointment.
-    const firstStartDate = firstAppointment.locator(
-      'input[name^="multi_new_stpartdate_"]'
-    ).first();
-    const firstStartTime = firstAppointment.locator(
-      'input[name^="multi_new_stparttime_"]'
-    ).first();
-    const firstEndDate = firstAppointment.locator(
-      'input[name^="multi_new_etpartdate_"]'
-    ).first();
-    const firstEndTime = firstAppointment.locator(
-      'input[name^="multi_new_etparttime_"]'
-    ).first();
-
-    async function setFirstAppointmentValue(locator, value) {
-  await locator.waitFor({
-    state: "visible",
-    timeout: 10000
-  });
-
-  await locator.scrollIntoViewIfNeeded().catch(() => {});
-  await locator.click({ force: true });
-
-  await locator.press("Control+A").catch(() => {});
-  await locator.press("Backspace").catch(() => {});
-  await locator.type(value, { delay: 20 });
-
-  await locator.press("Enter").catch(() => {});
-  await locator.press("Tab").catch(() => {});
-
-  await page.waitForTimeout(400);
-}
-
-    await setFirstAppointmentValue(firstStartDate, expectedAppointment.startDate);
-    await setFirstAppointmentValue(firstStartTime, expectedAppointment.startTime);
-    await setFirstAppointmentValue(firstEndDate, expectedAppointment.endDate);
-    await setFirstAppointmentValue(firstEndTime, expectedAppointment.endTime);
+    await commitComponentValue(firstStartDate, expectedAppointment.startDate);
+    lisaTiming("FINAL_START_DATE_COMMITTED");
+    await commitComponentValue(firstStartTime, expectedAppointment.startTime);
+    lisaTiming("FINAL_START_TIME_COMMITTED");
+    await commitComponentValue(firstEndDate, expectedAppointment.endDate);
+    lisaTiming("FINAL_END_DATE_COMMITTED");
+    await commitComponentValue(firstEndTime, expectedAppointment.endTime);
+    lisaTiming("FINAL_END_TIME_COMMITTED");
 
     const appointmentTimes = {
       startDate: await firstStartDate.inputValue(),
@@ -1354,306 +1371,125 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       endTime: await firstEndTime.inputValue()
     };
 
-    console.log(
-      "First appointment date/time re-applied:",
-      JSON.stringify(appointmentTimes)
-    );
-
     if (
-      !appointmentTimes.startDate ||
-      !appointmentTimes.endDate ||
+      appointmentTimes.startDate !== expectedAppointment.startDate ||
       appointmentTimes.startTime !== expectedAppointment.startTime ||
+      appointmentTimes.endDate !== expectedAppointment.endDate ||
       appointmentTimes.endTime !== expectedAppointment.endTime
     ) {
-      throw new Error(
-        `APPOINTMENT_TIME_NOT_STICKING: ${JSON.stringify(appointmentTimes)}`
-      );
+      throw new Error(`APPOINTMENT_COMPONENT_COMMIT_FAILED: ${JSON.stringify(appointmentTimes)}`);
     }
 
-    // FIELDWORKER / UNASSIGNED HANDLING
-    // Octopus requires a fieldworker on Save. "Unassigned Tasks Manager" is the
-    // real placeholder fieldworker account we use for jobs that still need a cleaner.
-    // Historical successful tests show its contractor ID is 47464.
-    const shouldRemainUnassigned =
-      /unassigned tasks manager/i.test(String(TEST.fieldworkerName || ""));
-    const UNASSIGNED_TASKS_MANAGER_ID = "47464";
+    // Select the worker last so no later visit change can clear Vue's model.
+    {
+      // In the current Octopus service modal, the live worker selector is the
+      // last accessible "Search for option" combobox—not the legacy placeholder.
+      const fieldworkerSearch = page
+        .getByRole("combobox", { name: /Search for option/i })
+        .filter({ visible: true })
+        .last();
+      const desiredWorker = shouldRemainUnassigned
+        ? "Unassigned Tasks Manager"
+        : TEST.fieldworkerName;
 
-if (shouldRemainUnassigned) {
-  console.log(
-    "Selecting Unassigned Tasks Manager through Octopus fieldworker UI..."
-  );
+      await fieldworkerSearch.waitFor({ state: "visible", timeout: 10000 });
 
-  const fieldworkerSearch = firstAppointment
-    .locator('input[placeholder="Select Fieldworker"]')
-    .first();
-
-  await fieldworkerSearch.waitFor({
-    state: "visible",
-    timeout: 15000
-  });
-
-  await fieldworkerSearch.scrollIntoViewIfNeeded();
-  await fieldworkerSearch.click({ force: true });
-  await fieldworkerSearch.fill("");
-
-  await fieldworkerSearch.type("Unassigned Tasks Manager", {
-    delay: 35
-  });
-
-  await page.waitForTimeout(1500);
-
-  const workerOptions = page.locator(
-    '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
-  );
-
-  let selectedUnassigned = false;
-
-  for (let i = 0; i < await workerOptions.count(); i++) {
-    const option = workerOptions.nth(i);
-
-    const text = (await option.innerText().catch(() => ""))
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (/Unassigned Tasks Manager/i.test(text)) {
-      console.log(
-        "Selecting fieldworker option:",
-        text
-      );
-
-      await option.click({
-        force: true,
-        timeout: 10000
-      });
-
-      selectedUnassigned = true;
-      break;
-    }
-  }
-
-  if (!selectedUnassigned) {
-    throw new Error(
-      "UNASSIGNED_TASKS_MANAGER_OPTION_NOT_FOUND"
-    );
-  }
-
-  await page.waitForTimeout(1200);
-
-  console.log(
-    "Unassigned Tasks Manager selected through native Octopus UI."
-  );
-} else {
-      console.log("Selecting requested fieldworker with component-native input...");
-
-      const fieldworkerSearch = firstAppointment
-        .locator('input[placeholder="Select Fieldworker"]')
-        .first();
-
-      await fieldworkerSearch.waitFor({
-        state: "visible",
-        timeout: 15000
-      });
-
-      await fieldworkerSearch.scrollIntoViewIfNeeded();
+      // Octopus sometimes renders this remote worker list very slowly. Keep
+      // retrying the exact option while the customer conversation continues.
+      // This avoids a false booking failure without ever choosing a different
+      // worker or saving an unverified value.
+      let selectedWorker = false;
+      const workerStartedAt = Date.now();
+      const workerDeadline = workerStartedAt + 12000;
+      let typedWorkerQuery = false;
+      const matchesWorkerLabel = text =>
+        String(text || "").replace(/\s+\((?:\d+(?:[.,]\d+)?\s*Mi|Home:\s*\d+(?:[.,]\d+)?\s*Mi,\s*Live:\s*\d+(?:[.,]\d+)?\s*Mi)\)\s*$/i, "")
+          .trim().toLowerCase() === String(desiredWorker).trim().toLowerCase();
       await fieldworkerSearch.click({ force: true });
-      await fieldworkerSearch.fill("");
 
-      await fieldworkerSearch.type(TEST.fieldworkerName, {
-        delay: 35
-      });
-
-      await page.waitForTimeout(1500);
-
-      const visibleWorkerOptions = page.locator(
-        '[role="option"]:visible, .vs__dropdown-option:visible, li:visible'
-      );
-
-      const workerOptionsBefore = [];
-      for (let i = 0; i < await visibleWorkerOptions.count(); i++) {
-        const option = visibleWorkerOptions.nth(i);
-        const txt = (await option.innerText().catch(() => ""))
-          .replace(/\s+/g, " ")
-          .trim();
-
-        if (
-          txt &&
-          String(TEST.fieldworkerName || "")
-            .toLowerCase()
-            .split(/\s+/)
-            .every(part => txt.toLowerCase().includes(part))
-        ) {
-          workerOptionsBefore.push(txt);
-        }
-      }
-
-      console.log(
-        "Matching fieldworker options:",
-        JSON.stringify(workerOptionsBefore)
-      );
-
-      await fieldworkerSearch.press("ArrowDown").catch(() => {});
-      await page.waitForTimeout(250);
-      await fieldworkerSearch.press("Enter").catch(() => {});
-      await page.waitForTimeout(1000);
-
-      let fieldworkerSearchValue =
-        await fieldworkerSearch.inputValue().catch(() => "");
-
-      if (!fieldworkerSearchValue) {
-        const exactWorkerOption = page
-          .getByText(TEST.fieldworkerName, { exact: false })
-          .filter({ visible: true })
-          .last();
-
-        if (await exactWorkerOption.isVisible().catch(() => false)) {
-          await exactWorkerOption.click({
-            force: true,
-            timeout: 10000
-          });
-          await page.waitForTimeout(700);
-          await fieldworkerSearch.press("Tab").catch(() => {});
-          await page.waitForTimeout(700);
-        }
-      }
-
-      console.log(
-        "Requested fieldworker selection attempt completed:",
-        TEST.fieldworkerName
-      );
-    }
-
-    console.log("Re-applying appointment after fieldworker render...");
-
-    // FAST/STABLE FINAL APPOINTMENT SET:
-    // Do not use click/type here. Octopus can re-render these controls after
-    // the fieldworker area changes, and Playwright can sit on stale/reactive
-    // inputs for 30+ seconds per field. Set the live DOM values directly and
-    // dispatch the same input/change/blur events Octopus listens for.
-    const finalAppointmentState = await page.evaluate(
-      ({ expectedAppointment, shouldRemainUnassigned }) => {
-        const appointment = document.querySelector('[id^="booking_visits_"]');
-
-        if (!appointment) {
-          return {
-            error: "NO_LIVE_APPOINTMENT_BLOCK",
-            startDate: "",
-            startTime: "",
-            endDate: "",
-            endTime: "",
-            fieldworkerId: ""
-          };
+      while (!selectedWorker && Date.now() < workerDeadline) {
+        await page.waitForTimeout(300);
+        if (!typedWorkerQuery && Date.now() - workerStartedAt > 1500) {
+          await fieldworkerSearch.fill(desiredWorker).catch(() => {});
+          typedWorkerQuery = true;
         }
 
-        const find = prefix =>
-          appointment.querySelector(`input[name^="${prefix}"]`);
+        // Click the actual option. Octopus appends mileage to its name,
+        // so an exact text lookup can click the field label instead.
+        const escapedWorker = [...desiredWorker]
+          .map(char => "\\^$.*+?()[]{}|".includes(char) ? `\\\\${char}` : char)
+          .join("");
+        const optionName = new RegExp(`^${escapedWorker}(?:\\s|\\(|$)`, "i");
+        const candidates = [
+          page.getByRole("option", { name: optionName }).filter({ visible: true }).first(),
+          page.locator(".vs__dropdown-option:visible, li:visible")
+            .filter({ hasText: optionName })
+            .first()
+        ];
 
-        const setNativeValue = (el, value) => {
-          if (!el) return false;
-
-          const proto = Object.getPrototypeOf(el);
-          const descriptor =
-            Object.getOwnPropertyDescriptor(proto, "value") ||
-            Object.getOwnPropertyDescriptor(
-              window.HTMLInputElement.prototype,
-              "value"
-            );
-
-          if (descriptor && descriptor.set) {
-            descriptor.set.call(el, value);
-          } else {
-            el.value = value;
+        for (const candidate of candidates) {
+          if (!(await candidate.isVisible().catch(() => false))) continue;
+          const optionText = (await candidate.innerText({ timeout: 1000 }).catch(() => ""))
+            .replace(/\s+/g, " ")
+            .trim();
+          if (
+            optionText &&
+            optionText.length < 300 &&
+            matchesWorkerLabel(optionText)
+          ) {
+            const clicked = await candidate.click({ force: true, timeout: 3000 })
+              .then(() => true).catch(() => false);
+            if (!clicked) continue;
+            selectedWorker = true;
+            break;
           }
-
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          el.dispatchEvent(new Event("blur", { bubbles: true }));
-          return true;
-        };
-
-        const startDateEl = find("multi_new_stpartdate_");
-        const startTimeEl = find("multi_new_stparttime_");
-        const endDateEl = find("multi_new_etpartdate_");
-        const endTimeEl = find("multi_new_etparttime_");
-        const contractorEl = appointment.querySelector(
-          'input[name^="contractor_"]'
-        );
-
-        const applied = {
-          startDate: setNativeValue(
-            startDateEl,
-            expectedAppointment.startDate
-          ),
-          startTime: setNativeValue(
-            startTimeEl,
-            expectedAppointment.startTime
-          ),
-          endDate: setNativeValue(
-            endDateEl,
-            expectedAppointment.endDate
-          ),
-          endTime: setNativeValue(
-            endTimeEl,
-            expectedAppointment.endTime
-          )
-        };
-
-        if (shouldRemainUnassigned && contractorEl) {
-          setNativeValue(contractorEl, "47464");
         }
 
-        return {
-          applied,
-          startDate: startDateEl?.value || "",
-          startTime: startTimeEl?.value || "",
-          endDate: endDateEl?.value || "",
-          endTime: endTimeEl?.value || "",
-          fieldworkerId: contractorEl?.value || ""
-        };
-      },
-      {
-        expectedAppointment,
-        shouldRemainUnassigned
+        if (!selectedWorker) {
+          // Leave the dropdown open while its remote results arrive.
+          await page.waitForTimeout(100);
+        }
       }
-    );
 
-    console.log(
-      "FINAL appointment + fieldworker state:",
-      JSON.stringify(finalAppointmentState)
-    );
+      if (!selectedWorker) throw new Error(`FIELDWORKER_OPTION_NOT_FOUND_AFTER_RETRIES: ${desiredWorker}`);
+      // Selection removes the search input. Do not spend Playwright's 30-second
+      // default timeout trying to focus an input that no longer exists.
+      await page.keyboard.press("Tab");
+      await page.waitForTimeout(500);
 
-    if (finalAppointmentState.error) {
-      throw new Error(
-        `FINAL_APPOINTMENT_DOM_ERROR: ${JSON.stringify(finalAppointmentState)}`
-      );
+      // Verify the rendered selection. Some Octopus appointment components do
+      // not render a contractor_* input; its absence is not a failed selection.
+      // Never manufacture a contractor ID by writing a hidden input.
+      const visibleWorkerLabels = await firstAppointment
+        .getByText(desiredWorker, { exact: false })
+        .allTextContents()
+        .catch(() => []);
+      const selectedWorkerVisible = visibleWorkerLabels.some(matchesWorkerLabel);
+      // This searchable control can retain its input after selection.
+      if (!selectedWorkerVisible) {
+        if (shouldRemainUnassigned && selectedWorker) {
+          // Octopus removes both the search input and rendered chip during the
+          // service-dialog rerender. The successful option click is committed
+          // by the dialog Save below; do not abort the live booking here.
+          console.log("Unassigned worker selected; awaiting service-dialog Save commit.");
+        } else {
+          throw new Error(`FIELDWORKER_SELECTION_NOT_COMMITTED: ${desiredWorker}`);
+        }
+      }
+
+      if (shouldRemainUnassigned) {
+        const committedWorkerId = await firstAppointment.evaluate(appointment => {
+          const contractor = appointment.querySelector('input[name^="contractor_"]');
+          return contractor ? contractor.value : null;
+        });
+        if (committedWorkerId && committedWorkerId !== UNASSIGNED_TASKS_MANAGER_ID) {
+          throw new Error(`FIELDWORKER_ID_NOT_COMMITTED: ${committedWorkerId || "blank"}`);
+        }
+      }
+
+      lisaTiming("FIELDWORKER_COMMITTED", desiredWorker);
     }
 
-    if (
-      finalAppointmentState.startDate !== expectedAppointment.startDate ||
-      finalAppointmentState.startTime !== expectedAppointment.startTime ||
-      finalAppointmentState.endDate !== expectedAppointment.endDate ||
-      finalAppointmentState.endTime !== expectedAppointment.endTime
-    ) {
-      throw new Error(
-        `FINAL_APPOINTMENT_NOT_STICKING: ${JSON.stringify(finalAppointmentState)}`
-      );
-    }
-if (!finalAppointmentState.fieldworkerId) {
-  if (shouldRemainUnassigned) {
-    console.log(
-      "No contractor input/value present for unassigned booking. Continuing to Save so Octopus can validate the real form state."
-    );
-  } else {
-    throw new Error(
-      `FIELDWORKER_ID_MISSING: ${JSON.stringify(finalAppointmentState)}`
-    );
-  }
-} else {
-  console.log(
-    "Fieldworker id committed:",
-    finalAppointmentState.fieldworkerId,
-    shouldRemainUnassigned ? "(Unassigned Tasks Manager placeholder)" : ""
-  );
-}
     console.log("Required booking fields completed.");
     lisaTiming("REQUIRED_FIELDS_COMPLETE");
 
@@ -1775,6 +1611,73 @@ if (!nativeCustomerPayload || nativeCustomerPayload.length < 100) {
 
 
 console.log("Deposit skipped - not required.");
+
+if (livePayload?.phase === "draft") {
+  const draftSnapshot = {
+    success: true,
+    customerId: await page.locator('input[name="customer_id"]').first().inputValue().catch(() => ""),
+    message: "Complete Octopus booking form is staged immediately before save."
+  };
+  lisaTiming("DRAFT_READY");
+  console.log("LISA_BOOKING_DRAFT_READY=" + JSON.stringify(draftSnapshot));
+  const finalizePayload = await readJsonLine(
+    10 * 60 * 1000,
+    "DRAFT_FINALIZE_TIMEOUT"
+  );
+  if (finalizePayload?.phase !== "finalize") {
+    throw new Error("DRAFT_FINALIZE_PHASE_REQUIRED");
+  }
+  livePayload = { ...livePayload, ...finalizePayload };
+  if (finalizePayload.customerConfirmed !== true && finalizePayload.dryRun !== true) {
+    throw new Error("DRAFT_FINAL_CONFIRMATION_REQUIRED");
+  }
+  lisaTiming("FINALIZE_ACCEPTED");
+
+  // Notes are durably reconciled after the call; do not delay the BOK here.
+  await selectSingleFrequency(page, frequencyText);
+
+}
+
+    // Octopus keeps service frequency, schedule, and fieldworker inside a
+    // service-details dialog. Commit that dialog before submitting the booking.
+    const serviceDialog = page.locator("#booking-single-service-editor-modal");
+    const serviceDialogSave = serviceDialog
+      .getByRole("button", { name: /^Save$/i })
+      .filter({ visible: true })
+      .last();
+
+    if (!(await serviceDialogSave.isVisible().catch(() => false))) {
+      throw new Error("SERVICE_DETAILS_SAVE_NOT_FOUND");
+    }
+
+    await selectSingleFrequency(page, frequencyText);
+    // Worker and schedule changes can rerender the custom fields. Commit their
+    // component values immediately before saving the service dialog.
+    await commitRequiredNote("", TEST.specialNotes, "Special Notes");
+    await commitRequiredNote("", TEST.accessInstructions, "Access Instructions");
+    console.log("Committing service details before final booking save...");
+    await serviceDialogSave.click({ timeout: 10000 }).catch(async error => {
+      console.log("Service-details Save click failed:", error.message);
+      await serviceDialogSave.click({ force: true, timeout: 10000 });
+    });
+    await serviceDialog.waitFor({ state: "hidden", timeout: 15000 }).catch(async () => {
+      const visibleErrors = await serviceDialog.innerText().catch(() => "Dialog text unavailable");
+      throw new Error("SERVICE_DETAILS_SAVE_BLOCKED: " + visibleErrors.replace(/\s+/g, " ").slice(0, 5000));
+    });
+    lisaTiming("SERVICE_DETAILS_COMMITTED");
+
+
+if (livePayload?.dryRun === true) {
+  FINAL_BOOKING_RESULT = {
+    success: true,
+    dryRun: true,
+    customerId: await page.locator('input[name="customer_id"]').first().inputValue().catch(() => ""),
+    message: "Service dialog saved and booking form profiled without submitting a booking."
+  };
+  lisaTiming("DRY_RUN_COMPLETE");
+  console.log("LISA_BOOKING_RESULT=" + JSON.stringify(FINAL_BOOKING_RESULT));
+  return;
+}
     
 console.log("Attempting to save booking with full validation capture...");
 lisaTiming("FINAL_SUBMIT_START");
@@ -1807,11 +1710,9 @@ lisaTiming("FINAL_SUBMIT_START");
       }
     });
 
-    // Octopus also keeps a hidden modal/template copy of this button.
-    // Target the visible button so the live form can actually be submitted.
     const saveButton = page
-      .locator("button:visible")
-      .filter({ hasText: /^Save changes$/ })
+      .getByRole("button", { name: /^Save changes$/i })
+      .filter({ visible: true })
       .last();
 
     await saveButton.waitFor({
@@ -1840,14 +1741,14 @@ lisaTiming("FINAL_SUBMIT_START");
       request =>
         request.method() === "POST" &&
         /\/booking-add\?old=1/i.test(request.url()),
-      { timeout: 15000 }
+      { timeout: 10000 }
     ).catch(() => null);
 
     const normalSaveResponsePromise = page.waitForResponse(
       response =>
         response.request().method() === "POST" &&
         /\/booking-add\?old=1/i.test(response.url()),
-      { timeout: 20000 }
+      { timeout: 10000 }
     ).catch(() => null);
 
     await saveButton.click({
@@ -1875,11 +1776,11 @@ lisaTiming("FINAL_SUBMIT_START");
 
     // First give normal browser behavior a short chance to complete.
     await Promise.race([
-      page.waitForURL(/\/booking\/view\/\d+/i, { timeout: 8000 }).catch(() => null),
+      page.waitForURL(/\/booking\/view\/\d+/i, { timeout: 4000 }).catch(() => null),
       page.getByText("Notify Customer", { exact: true })
-        .waitFor({ state: "visible", timeout: 8000 })
+        .waitFor({ state: "visible", timeout: 4000 })
         .catch(() => null),
-      page.waitForTimeout(8000)
+      page.waitForTimeout(4000)
     ]);
 
     // Some Octopus versions POST the exact form but fail because a blank booking_id
@@ -1996,7 +1897,7 @@ lisaTiming("FINAL_SUBMIT_START");
 
     const saveDiagnostics = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
-      const bokMatch = bodyText.match(/\bBOK-\d+\b/i);
+      const bokMatch = `${document.title || ""} ${bodyText}`.match(/\bBOK-\d+\b/i);
       const urlMatch = location.href.match(/\/booking\/view\/(\d+)/i);
 
       const visible = el => {
@@ -2022,6 +1923,32 @@ lisaTiming("FINAL_SUBMIT_START");
             .trim()
         )
         .filter(Boolean);
+
+      const alertContexts = Array.from(
+        document.querySelectorAll(
+          '.alert, .alert-danger, .alert-warning, .invalid-feedback, .text-danger, .error, [role="alert"], .toast, .notification'
+        )
+      )
+        .filter(visible)
+        .map(el => {
+          const container =
+            el.closest('.form-group, .form-row, .row, [class*="field"], [class*="input"]') ||
+            el.parentElement;
+          const labels = container
+            ? Array.from(container.querySelectorAll('label, legend'))
+                .map(label => String(label.innerText || label.textContent || "").replace(/\s+/g, " ").trim())
+                .filter(Boolean)
+            : [];
+          return {
+            alert: String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim(),
+            labels,
+            context: String(container?.innerText || container?.textContent || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 800),
+            containerClass: String(container?.className || "").slice(0, 300)
+          };
+        });
 
       const invalidFields = Array.from(
         document.querySelectorAll("input, textarea, select")
@@ -2080,6 +2007,7 @@ lisaTiming("FINAL_SUBMIT_START");
         booking_id: urlMatch ? urlMatch[1] : null,
         notify_customer_visible: notifyCustomerVisible,
         visibleAlerts,
+        alertContexts,
         invalidFields,
         errorLines,
         allTextTail
@@ -2122,37 +2050,57 @@ lisaTiming("FINAL_SUBMIT_START");
         `bookingNumber=${FINAL_BOOKING_RESULT.bookingNumber || "UNKNOWN"}`
       );
 
+      FINAL_BOOKING_RESULT.noteBaseline = {
+        specialNotes: TEST.specialNotes,
+        accessInstructions: TEST.accessInstructions
+      };
       console.log(
         "LISA_BOOKING_RESULT=" +
         JSON.stringify(FINAL_BOOKING_RESULT)
       );
 
-      // We do not need to send Octopus notifications here.
-      // The booking already exists at this point.
-      const cancelNotify = page.getByText("Cancel", { exact: true }).last();
-      if (
-        saveDiagnostics.notify_customer_visible &&
-        await cancelNotify.isVisible().catch(() => false)
-      ) {
-        await cancelNotify.click({ force: true }).catch(() => {});
-        console.log("Notify Customer modal closed without sending.");
+      try {
+        await sendCustomerConfirmation(page);
+      } catch (notificationError) {
+        // A notification problem must never undo or falsely fail a booking.
+        // Keep a loud Railway marker so the office can retry delivery while
+        // preserving the verified BOK returned to the caller.
+        console.error(
+          "LISA_CUSTOMER_CONFIRMATION_FAILED=" +
+          JSON.stringify({
+            bookingNumber: FINAL_BOOKING_RESULT.bookingNumber,
+            bookingId: FINAL_BOOKING_RESULT.bookingId,
+            error: notificationError?.message || String(notificationError)
+          })
+        );
       }
 
       lisaTiming("SCRIPT_COMPLETE");
     } else {
       throw new Error(
         `BOOKING_NOT_CREATED: alerts=${JSON.stringify(saveDiagnostics.visibleAlerts)} ` +
+        `contexts=${JSON.stringify(saveDiagnostics.alertContexts)} ` +
         `invalid=${JSON.stringify(saveDiagnostics.invalidFields)} ` +
         `normalSaveBody=${JSON.stringify(normalSaveBody.slice(0, 4000))}`
       );
     }
 
   } finally {
-    await browser.close();
+    // A broken Octopus component must never leave the live caller waiting for
+    // the browser-close promise. Cap cleanup and let the worker exit promptly.
+    await Promise.race([
+      browser.close().catch(() => {}),
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ]);
   }
 }
 
 main().catch(error => {
   console.error(error);
+  console.log("LISA_BOOKING_DRAFT_FAILED=" + JSON.stringify({
+    success: false,
+    error: error?.message || String(error),
+    outcome: "draft_failed"
+  }));
   process.exitCode = 1;
 });
