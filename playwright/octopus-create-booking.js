@@ -1400,7 +1400,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       // worker or saving an unverified value.
       let selectedWorker = false;
       const workerStartedAt = Date.now();
-      const workerDeadline = workerStartedAt + 12000;
+      const workerDeadline = workerStartedAt + 30000;
       let typedWorkerQuery = false;
       const matchesWorkerLabel = text =>
         String(text || "").replace(/\s+\((?:\d+(?:[.,]\d+)?\s*Mi|Home:\s*\d+(?:[.,]\d+)?\s*Mi,\s*Live:\s*\d+(?:[.,]\d+)?\s*Mi)\)\s*$/i, "")
@@ -1409,7 +1409,7 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
 
       while (!selectedWorker && Date.now() < workerDeadline) {
         await page.waitForTimeout(300);
-        if (!typedWorkerQuery && Date.now() - workerStartedAt > 1500) {
+        if (!typedWorkerQuery && Date.now() - workerStartedAt > 500) {
           await fieldworkerSearch.fill(desiredWorker).catch(() => {});
           typedWorkerQuery = true;
         }
@@ -1445,9 +1445,25 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
           }
         }
 
+        if (!selectedWorker && typedWorkerQuery) {
+          // Octopus' remote fieldworker autocomplete can render plain text
+          // outside the expected option/list markup. Scan visible short labels
+          // and click only an exact worker-name match (mileage suffix allowed).
+          const visibleTexts = page.locator('body *:visible');
+          const labels = await visibleTexts.evaluateAll(nodes => nodes
+            .map((node, index) => ({ index, text: (node.innerText || '').replace(/\\s+/g, ' ').trim() }))
+            .filter(item => item.text && item.text.length < 180));
+          const exact = labels.find(item => matchesWorkerLabel(item.text));
+          if (exact) {
+            const node = visibleTexts.nth(exact.index);
+            const clicked = await node.click({ force: true, timeout: 3000 })
+              .then(() => true).catch(() => false);
+            if (clicked) selectedWorker = true;
+          }
+        }
         if (!selectedWorker) {
           // Leave the dropdown open while its remote results arrive.
-          await page.waitForTimeout(100);
+          await page.waitForTimeout(250);
         }
       }
 
