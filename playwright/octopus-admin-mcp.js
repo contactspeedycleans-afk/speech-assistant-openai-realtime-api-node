@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHmac, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chromium } from "playwright";
+import { createWithLisaFastBooking } from "./fast-booking-client.js";
 
 const PORT=Number(process.env.PORT||3000);
 const BASE=(process.env.PUBLIC_BASE_URL||"").replace(/\/$/,"");
@@ -70,7 +71,7 @@ const tools=[
  {name:"get_booking",description:"Inspect one OctopusPro booking by numeric booking ID.",inputSchema:{type:"object",properties:{booking_id:{type:"string"}},required:["booking_id"],additionalProperties:false},annotations:ro},
  {name:"inspect_booking_billing",description:"Read billing, payment-method, customer, and invoice information for a booking. This does not charge or refund money.",inputSchema:{type:"object",properties:{booking_id:{type:"string"}},required:["booking_id"],additionalProperties:false},annotations:ro},
  {name:"get_booking_page",description:"Read an OctopusPro booking using its exact admin URL.",inputSchema:{type:"object",properties:{booking_url:{type:"string"}},required:["booking_url"],additionalProperties:false},annotations:ro},
- {name:"create_booking",description:"Create a new OctopusPro booking. This changes live customer data and requires confirmation.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},street_number:{type:"string"},street:{type:"string"},city:{type:"string"},state:{type:"string"},zip:{type:"string"},service_name:{type:"string"},date:{type:"string",description:"YYYY-MM-DD"},start_time:{type:"string",description:"HH:MM in local business time"},duration_hours:{type:"number",minimum:0.5},price:{type:"number",minimum:0},fieldworker_name:{type:"string"},special_notes:{type:"string"},access_instructions:{type:"string"}},required:["customer_name","phone","street_number","street","city","state","zip","date","start_time","duration_hours","price"],additionalProperties:false},annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}},
+ {name:"create_booking",description:"Create a new OctopusPro booking through Lisa's proven Fast Booking path after a duplicate check. The booking is created as Unassigned Tasks Manager; a requested fieldworker is reported as pending for a separate verified assignment.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},street_number:{type:"string"},street:{type:"string"},city:{type:"string"},state:{type:"string"},zip:{type:"string"},service_name:{type:"string"},date:{type:"string",description:"YYYY-MM-DD"},start_time:{type:"string",description:"HH:MM in local business time"},duration_hours:{type:"number",minimum:0.5},price:{type:"number",minimum:0},fieldworker_name:{type:"string",description:"Requested cleaner name. Creation remains unassigned until a separate assignment is verified."},special_notes:{type:"string"},access_instructions:{type:"string"}},required:["customer_name","phone","street_number","street","city","state","zip","date","start_time","duration_hours","price"],additionalProperties:false},annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}},
  {name:"reschedule_booking",description:"Reschedule a live OctopusPro booking and notify the customer. Requires confirmation.",inputSchema:{type:"object",properties:{booking_id:{type:"string"},date:{type:"string",description:"YYYY-MM-DD"},start_time:{type:"string",description:"HH:MM in local business time"}},required:["booking_id","date","start_time"],additionalProperties:false},annotations:write},
  {name:"cancel_booking",description:"Cancel a live OctopusPro booking without a fee and notify the customer. Requires final confirmation.",inputSchema:{type:"object",properties:{booking_id:{type:"string"},reason:{type:"string",minLength:3}},required:["booking_id","reason"],additionalProperties:false},annotations:write}
 ];
@@ -87,8 +88,15 @@ async function callTool(name,args){
  if(name==="get_booking")return runAutomation("./octopus-booking-actions.js",[String(args.booking_id)],{},bookingResult);
  if(name==="inspect_booking_billing")return runAutomation("./octopus-booking-actions.js",["billing",String(args.booking_id)],{},bookingResult);
  if(name==="create_booking"){
-  const payload={customerName:args.customer_name,customerPhone:args.phone,customerEmail:args.email,streetNumber:args.street_number,street:args.street,city:args.city,state:args.state,zip:args.zip,serviceName:args.service_name||"Standard Cleaning",requestedDate:args.date,requestedStartTime:args.start_time,durationHours:args.duration_hours,quotedPrice:args.price,fieldworkerName:args.fieldworker_name||"Unassigned Tasks Manager",specialNotes:args.special_notes||".",accessInstructions:args.access_instructions||"."};
-  return runAutomation("./octopus-create-booking.js",[],{LISA_BOOKING_PAYLOAD:JSON.stringify(payload)},createResult);
+  const preflight=await lookup({phone:args.phone,customer_name:args.customer_name,date:args.date,limit:10});
+  const existing=[...(Array.isArray(preflight?.bookings)?preflight.bookings:[]),...(preflight?.booking?[preflight.booking]:[])];
+  if(existing.length){
+   return {success:false,outcome:"duplicate_booking_blocked",error:"An Octopus booking already matches this customer and date. Review the existing booking before creating another one.",existing_bookings:existing};
+  }
+  const requestedFieldworker=String(args.fieldworker_name||"").trim();
+  const payload={customerName:args.customer_name,customerPhone:args.phone,customerEmail:args.email,streetNumber:args.street_number,street:args.street,city:args.city,state:args.state,zip:args.zip,serviceName:args.service_name||"Standard Cleaning",requestedDate:args.date,requestedStartTime:args.start_time,durationHours:args.duration_hours,quotedPrice:args.price,fieldworkerName:"Unassigned Tasks Manager",specialNotes:args.special_notes||".",accessInstructions:args.access_instructions||"."};
+  const result=await createWithLisaFastBooking(payload);
+  return {...result,requestedFieldworkerName:requestedFieldworker||null,fieldworkerAssignmentStatus:requestedFieldworker?"pending_post_booking_assignment":"unassigned"};
  }
  if(name==="reschedule_booking")return runAutomation("./octopus-booking-actions.js",["reschedule",String(args.booking_id),String(args.date),String(args.start_time)],{},bookingResult);
  if(name==="cancel_booking")return runAutomation("./octopus-booking-actions.js",["cancel",String(args.booking_id),String(args.reason)],{},bookingResult);
