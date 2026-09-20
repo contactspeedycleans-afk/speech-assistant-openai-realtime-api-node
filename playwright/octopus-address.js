@@ -2,6 +2,7 @@ export function normalizeAddress(value) {
   return String(value || '').toLowerCase()
     .replace(/\b(?:road|street|avenue|court|drive|lane|boulevard|place|terrace|highway)\b/g,
       word => ({road:'rd',street:'st',avenue:'ave',court:'ct',drive:'dr',lane:'ln',boulevard:'blvd',place:'pl',terrace:'ter',highway:'hwy'}[word]))
+    .replace(/\b(?:east|west|north|south)\b/g, word => ({east:'e',west:'w',north:'n',south:'s'}[word]))
     .replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
 
@@ -245,6 +246,36 @@ export async function selectOctopusAddress(page, address) {
         await field(placeholder).press('Tab');
       }
     }
+
+    // Preserve the approved service address supplied by the customer/owner.
+    // Google can attach a nearby postal locality/ZIP to rural roads even when
+    // the selected street is physically correct. Keep Google's coordinates,
+    // but write the approved locality/state/postcode back into Octopus.
+    for (const [placeholder, approved] of [
+      ['Suburb / Locality', String(address.suburb || '').trim()],
+      ['State', String(address.state || '').trim()],
+      ['Postal / Zip code', postcode],
+    ]) {
+      if (!approved) continue;
+      const current = await read(placeholder);
+      if (normalizeAddress(current) !== normalizeAddress(approved)) {
+        await field(placeholder).fill(approved);
+        await field(placeholder).press('Tab');
+        await page.waitForTimeout(150);
+      }
+    }
+
+    const approvedBookingAddress = `${address.streetNumber} ${address.streetAddress}, ${address.suburb}, ${address.state}${postcode ? ` ${postcode}` : ''}`.trim();
+    const bookingAddressField = field('Booking address');
+    if (approvedBookingAddress && await bookingAddressField.count()) {
+      const currentBookingAddress = await read('Booking address');
+      if (normalizeAddress(currentBookingAddress) !== normalizeAddress(approvedBookingAddress)) {
+        await bookingAddressField.fill(approvedBookingAddress);
+        await bookingAddressField.press('Tab');
+        await page.waitForTimeout(150);
+      }
+    }
+
     const location = {
       bookingAddress:await read('Booking address'),
       addressLine1:await read('Address Line 1'),
