@@ -7,7 +7,13 @@ function required(value, name) {
   return normalized;
 }
 
-async function postBookingAction(url, secret, payload, fetchImpl) {
+async function postBookingAction(
+  url,
+  secret,
+  payload,
+  fetchImpl,
+  { allowUnsuccessful = false } = {}
+) {
   const response = await fetchImpl(url, {
     method: "POST",
     headers: {
@@ -28,7 +34,7 @@ async function postBookingAction(url, secret, payload, fetchImpl) {
     );
   }
 
-  if (!response.ok || result?.success === false) {
+  if (!response.ok || (!allowUnsuccessful && result?.success === false)) {
     throw new Error(
       result?.error ||
         result?.message ||
@@ -39,6 +45,39 @@ async function postBookingAction(url, secret, payload, fetchImpl) {
   return result;
 }
 
+function connectionOptions({
+  fetchImpl = fetch,
+  url = process.env.LISA_FAST_BOOKING_ACTION_URL || DEFAULT_FAST_BOOKING_URL,
+  secret = process.env.LISA_FAST_BOOKING_SECRET || process.env.LISA_ACTION_SECRET
+} = {}) {
+  return {
+    fetchImpl,
+    endpoint: required(url, "LISA_FAST_BOOKING_ACTION_URL"),
+    actionSecret: required(secret, "LISA_FAST_BOOKING_SECRET")
+  };
+}
+
+export async function searchWithLisaFastBooking(payload, options = {}) {
+  const { fetchImpl, endpoint, actionSecret } = connectionOptions(options);
+  return postBookingAction(
+    endpoint,
+    actionSecret,
+    { ...payload, action: "lookup" },
+    fetchImpl
+  );
+}
+
+export async function lookupAddressWithLisaFastBooking(payload, options = {}) {
+  const { fetchImpl, endpoint, actionSecret } = connectionOptions(options);
+  return postBookingAction(
+    endpoint,
+    actionSecret,
+    { ...payload, action: "lookup_address" },
+    fetchImpl,
+    { allowUnsuccessful: true }
+  );
+}
+
 export async function createWithLisaFastBooking(
   payload,
   {
@@ -47,41 +86,24 @@ export async function createWithLisaFastBooking(
     secret = process.env.LISA_FAST_BOOKING_SECRET || process.env.LISA_ACTION_SECRET
   } = {}
 ) {
-  const endpoint = required(url, "LISA_FAST_BOOKING_ACTION_URL");
-  const actionSecret = required(secret, "LISA_FAST_BOOKING_SECRET");
+  const { endpoint, actionSecret } = connectionOptions({ fetchImpl, url, secret });
 
-  // This is intentionally the same contract used by Lisa on live calls.
-  // Fast Booking stages and saves with Octopus' unassigned placeholder; a
-  // requested cleaner must be assigned after the verified BOK is created.
-  const stagedPayload = {
+  // The admin tool runs after the complete booking has been confirmed, so use
+  // Fast Booking's single-pass action instead of another draft/finalize round trip.
+  const confirmedPayload = {
     ...payload,
-    action: "draft_fast",
-    customerConfirmed: false,
+    action: "create_fast",
+    customerConfirmed: true,
     fieldworkerName: "Unassigned Tasks Manager",
     source: "OCTOPUS_ADMIN_BRIDGE_FAST",
     recurringFrequency: payload.recurringFrequency || "one_time",
     frequency: payload.frequency || "one_time"
   };
 
-  const draft = await postBookingAction(
-    endpoint,
-    actionSecret,
-    stagedPayload,
-    fetchImpl
-  );
-  const draftId = String(draft?.draftId || "").trim();
-  if (!draftId) throw new Error("Fast Booking did not return a draft ID");
-
   const result = await postBookingAction(
     endpoint,
     actionSecret,
-    {
-      action: "finalize_fast",
-      draftId,
-      customerConfirmed: true,
-      specialNotes: payload.specialNotes || ".",
-      accessInstructions: payload.accessInstructions || "."
-    },
+    confirmedPayload,
     fetchImpl
   );
 
@@ -107,4 +129,3 @@ export async function createWithLisaFastBooking(
     fieldworkerAssignment: "Unassigned Tasks Manager"
   };
 }
-

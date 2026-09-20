@@ -3,7 +3,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHmac, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chromium } from "playwright";
-import { createWithLisaFastBooking } from "./fast-booking-client.js";
+import {
+ createWithLisaFastBooking,
+ lookupAddressWithLisaFastBooking,
+ searchWithLisaFastBooking
+} from "./fast-booking-client.js";
 
 const PORT=Number(process.env.PORT||3000);
 const BASE=(process.env.PUBLIC_BASE_URL||"").replace(/\/$/,"");
@@ -60,26 +64,26 @@ async function runAutomation(script,args=[],extraEnv={},marker){
  return result;
 }
 const bookingResult=/===== BOOKING ACTION RESULT =====\s*([\s\S]*?)\s*===== END BOOKING ACTION RESULT =====/;
-const lookupResult=/LISA_LOOKUP_RESULT=(\{[^\r\n]*\})/;
 const createResult=/LISA_BOOKING_RESULT=(\{[^\r\n]*\})/;
 const ro={readOnlyHint:true,destructiveHint:false,openWorldHint:false};
 const write={readOnlyHint:false,destructiveHint:true,openWorldHint:false};
 const tools=[
  {name:"octopus_login_health",description:"Verify administrator login without changing data.",inputSchema:{type:"object",properties:{},additionalProperties:false},annotations:ro},
- {name:"search_clients_and_bookings",description:"Search OctopusPro clients and bookings by name, phone, email, booking number, booking ID, date, or time scope.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},booking_number:{type:"string"},booking_id:{type:"string"},date:{type:"string",description:"YYYY-MM-DD"},scope:{type:"string",enum:["all","today","tomorrow","future","upcoming","past","history"]},limit:{type:"integer",minimum:1,maximum:10}},additionalProperties:false},annotations:ro},
- {name:"get_client_history",description:"Read a client's OctopusPro booking history. Supply at least one exact client identifier.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},limit:{type:"integer",minimum:1,maximum:10}},additionalProperties:false},annotations:ro},
+ {name:"search_clients_and_bookings",description:"Search live OctopusPro broadly by name, phone, email, service address, booking number, booking ID, date, or time scope. Returns up to 25 matching bookings.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},service_address:{type:"string"},booking_number:{type:"string"},booking_id:{type:"string"},date:{type:"string",description:"YYYY-MM-DD"},scope:{type:"string",enum:["all","today","tomorrow","future","upcoming","past","history"]},limit:{type:"integer",minimum:1,maximum:25}},additionalProperties:false},annotations:ro},
+ {name:"get_client_history",description:"Read a client's live OctopusPro booking history. Supply at least one exact client identifier.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},service_address:{type:"string"},limit:{type:"integer",minimum:1,maximum:25}},additionalProperties:false},annotations:ro},
  {name:"get_booking",description:"Inspect one OctopusPro booking by numeric booking ID.",inputSchema:{type:"object",properties:{booking_id:{type:"string"}},required:["booking_id"],additionalProperties:false},annotations:ro},
  {name:"inspect_booking_billing",description:"Read billing, payment-method, customer, and invoice information for a booking. This does not charge or refund money.",inputSchema:{type:"object",properties:{booking_id:{type:"string"}},required:["booking_id"],additionalProperties:false},annotations:ro},
  {name:"get_booking_page",description:"Read an OctopusPro booking using its exact admin URL.",inputSchema:{type:"object",properties:{booking_url:{type:"string"}},required:["booking_url"],additionalProperties:false},annotations:ro},
+ {name:"lookup_address",description:"Use OctopusPro's native address autocomplete to resolve and verify a service address before booking. Returns the selected address, coordinates, and up to five Octopus suggestions when an exact safe match is not found.",inputSchema:{type:"object",properties:{full_address:{type:"string",description:"A normal spoken or written full address."},street_number:{type:"string"},street:{type:"string"},city:{type:"string"},state:{type:"string"},zip:{type:"string"}},anyOf:[{required:["full_address"]},{required:["street_number","street"]}],additionalProperties:false},annotations:ro},
  {name:"create_booking",description:"Create a new OctopusPro booking through Lisa's proven Fast Booking path after a duplicate check. The booking is created as Unassigned Tasks Manager; a requested fieldworker is reported as pending for a separate verified assignment.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},street_number:{type:"string"},street:{type:"string"},city:{type:"string"},state:{type:"string"},zip:{type:"string"},service_name:{type:"string"},date:{type:"string",description:"YYYY-MM-DD"},start_time:{type:"string",description:"HH:MM in local business time"},duration_hours:{type:"number",minimum:0.5},price:{type:"number",minimum:0},fieldworker_name:{type:"string",description:"Requested cleaner name. Creation remains unassigned until a separate assignment is verified."},special_notes:{type:"string"},access_instructions:{type:"string"}},required:["customer_name","phone","street_number","street","city","state","zip","date","start_time","duration_hours","price"],additionalProperties:false},annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}},
  {name:"reschedule_booking",description:"Reschedule a live OctopusPro booking and notify the customer. Requires confirmation.",inputSchema:{type:"object",properties:{booking_id:{type:"string"},date:{type:"string",description:"YYYY-MM-DD"},start_time:{type:"string",description:"HH:MM in local business time"}},required:["booking_id","date","start_time"],additionalProperties:false},annotations:write},
  {name:"cancel_booking",description:"Cancel a live OctopusPro booking without a fee and notify the customer. Requires final confirmation.",inputSchema:{type:"object",properties:{booking_id:{type:"string"},reason:{type:"string",minLength:3}},required:["booking_id","reason"],additionalProperties:false},annotations:write}
 ];
-function requireSearchKey(args){if(!args.customer_name&&!args.phone&&!args.email&&!args.booking_number&&!args.booking_id&&!args.date)throw Error("Provide at least one search field")}
+function requireSearchKey(args){if(!args.customer_name&&!args.phone&&!args.email&&!args.service_address&&!args.booking_number&&!args.booking_id&&!args.date)throw Error("Provide at least one search field")}
 async function lookup(args,scope){
  requireSearchKey(args);
- const payload={customerName:args.customer_name,customerPhone:args.phone,customerEmail:args.email,bookingNumber:args.booking_number,bookingId:args.booking_id,requestedDate:args.date,scope:scope||args.scope||"all",limit:args.limit||10};
- return runAutomation("./octopus-live-lookup.js",[],{LISA_LOOKUP_PAYLOAD:JSON.stringify(payload)},lookupResult);
+ const payload={customerName:args.customer_name,customerPhone:args.phone,customerEmail:args.email,serviceAddress:args.service_address,bookingNumber:args.booking_number,bookingId:args.booking_id,requestedDate:args.date,scope:scope||args.scope||"all",limit:args.limit||25};
+ return searchWithLisaFastBooking(payload);
 }
 async function callTool(name,args){
  if(name==="octopus_login_health")return withPage(async page=>({authenticated:true,organization:ORGANIZATION,url:page.url()}));
@@ -87,6 +91,7 @@ async function callTool(name,args){
  if(name==="get_client_history")return lookup(args,"history");
  if(name==="get_booking")return runAutomation("./octopus-booking-actions.js",[String(args.booking_id)],{},bookingResult);
  if(name==="inspect_booking_billing")return runAutomation("./octopus-booking-actions.js",["billing",String(args.booking_id)],{},bookingResult);
+ if(name==="lookup_address")return lookupAddressWithLisaFastBooking({fullAddress:args.full_address,streetNumber:args.street_number,street:args.street,city:args.city,state:args.state,zip:args.zip});
  if(name==="create_booking"){
   const preflight=await lookup({phone:args.phone,customer_name:args.customer_name,date:args.date,limit:10});
   const existing=[...(Array.isArray(preflight?.bookings)?preflight.bookings:[]),...(preflight?.booking?[preflight.booking]:[])];
@@ -138,7 +143,7 @@ const server=http.createServer(async(req,res)=>{
  let rpc;try{rpc=JSON.parse(rawRpc)}catch{console.warn("Invalid MCP JSON",{length:rawRpc.length,contentType:req.headers["content-type"],accept:req.headers.accept,prefix:rawRpc.slice(0,160)});return json(res,400,{error:"invalid_json"})}
  const base={jsonrpc:"2.0",id:rpc.id};
  try{
-  if(rpc.method==="initialize")return json(res,200,{...base,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"speedycleans-octopus-admin",version:"0.4.0"},instructions:"Tool metadata is public for discovery. Every tool call requires an authorized SpeedyCleans OAuth token."}});
+  if(rpc.method==="initialize")return json(res,200,{...base,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"speedycleans-octopus-admin",version:"0.5.0"},instructions:"Tool metadata is public for discovery. Every tool call requires an authorized SpeedyCleans OAuth token."}});
   if(rpc.method==="notifications/initialized"){res.writeHead(204);return res.end()}
   if(rpc.method==="tools/list")return json(res,200,{...base,result:{tools}});
   if(rpc.method==="tools/call"){
