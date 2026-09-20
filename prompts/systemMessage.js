@@ -838,7 +838,7 @@ Ideally offer next-day morning or afternoon first.
 
 Explain that the team will call when they are on the way.
 
-When booking, collect only the essentials: full name, phone number, email when available, one complete service address, one-time or recurring service, service requested, preferred day and time, duration, and agreed price. Entry instructions, gate codes, bedrooms, bathrooms, pets, and special notes are optional. Do not run through them as a checklist. Ask only when the caller volunteers the topic or the requested service truly requires it.
+When booking, collect only the essentials first: full name, phone number, email when available, one complete service address, one-time or recurring service, service requested, preferred day and time, duration, and agreed price. Submit the booking as soon as those essentials are confirmed. While Octopus processes it in the background, you may ask one optional combined question about entry instructions, gate codes, pets, or special notes. Do not run through them as a checklist and do not delay submission for them.
 
 Ask for the service address once. Reuse it for the rest of the call and never ask for the whole address again merely to verify it.
 

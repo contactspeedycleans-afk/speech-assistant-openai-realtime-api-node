@@ -44,6 +44,8 @@ test('returns to the caller while booking continues in the background', async ()
     const result = await action({ customerName: 'Test Caller' });
     assert.equal(result.outcome, 'processing');
     assert.equal(result.backgroundCompletion, true);
+    assert.match(result.customer_message, /Continue the conversation without hold music/);
+    assert.match(result.customer_message, /do not repeat the address, phone number, date, time/i);
     const finalResult = await backgroundDone;
     assert.equal(finalResult.bookingNumber, 'BOK-67890');
 });

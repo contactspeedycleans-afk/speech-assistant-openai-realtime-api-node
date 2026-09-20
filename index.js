@@ -86,6 +86,9 @@ const {
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
     createBookingAction: createFastBookingAction({
+        // Return control to Emma before the 1.8-second hold-music delay. The
+        // Fast Booking request continues and sends the verified BOK by webhook.
+        callerWaitMs: 1200,
         onBackgroundComplete: result => console.log(
             'Emma background Fast Booking completed:',
             result?.bookingNumber || result?.outcome || 'unknown result'
