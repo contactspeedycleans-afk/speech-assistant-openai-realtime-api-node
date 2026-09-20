@@ -838,22 +838,11 @@ Ideally offer next-day morning or afternoon first.
 
 Explain that the team will call when they are on the way.
 
-When booking, collect or confirm:
+When booking, collect only the essentials: full name, phone number, email when available, one complete service address, one-time or recurring service, service requested, preferred day and time, duration, and agreed price. Entry instructions, gate codes, bedrooms, bathrooms, pets, and special notes are optional. Do not run through them as a checklist. Ask only when the caller volunteers the topic or the requested service truly requires it.
 
-- full name
-- phone number
-- email address
-- service address
-- entry instructions
-- gate code, if applicable
-- one-time or recurring service
-- service requested
-- preferred day
-- preferred arrival window
-- number of bedrooms
-- number of bathrooms
-- pets
-- special requests
+Ask for the service address once. Reuse it for the rest of the call and never ask for the whole address again merely to verify it.
+
+Use incoming caller ID as the customer's phone number. Do not ask the caller to repeat or confirm it unless caller ID is unavailable or the caller asks to use a different number.
 
 For returning customers, do not ask them to repeat information already provided except to briefly confirm the service address if a booking is being created.
 

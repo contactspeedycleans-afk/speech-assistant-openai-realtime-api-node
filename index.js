@@ -16,6 +16,7 @@ import { createTwilioRecording } from './lib/twilioRecording.js';
 import { createOpenAiToolHandlers } from './lib/openAiToolHandlers.js';
 import { buildSessionContext } from './lib/sessionContextBuilder.js';
 import { buildOpenAiSession } from './lib/openAiSessionBuilder.js';
+import { createFastBookingAction } from './lib/fastBookingAction.js';
 import { createTechnicianSearch } from './lib/technicianSearch.js';
 import { runSmsReceptionist } from './lib/smsReceptionist.js';
 import { execFile } from 'node:child_process';
@@ -76,6 +77,7 @@ const {
     handleKnowledgeTool,
     handleTechnicianStatusTool,
     handleBillingLookupTool,
+    handleCreateBookingTool,
     handleCancelBookingTool,
     handleRescheduleBookingTool,
     cancelBookingAction,
@@ -83,6 +85,16 @@ const {
 } = createOpenAiToolHandlers({
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
+    createBookingAction: createFastBookingAction({
+        onBackgroundComplete: result => console.log(
+            'Emma background Fast Booking completed:',
+            result?.bookingNumber || result?.outcome || 'unknown result'
+        ),
+        onBackgroundError: error => console.error(
+            'Emma background Fast Booking failed:',
+            error?.message || error
+        )
+    }),
     db
 });
 
@@ -2703,6 +2715,7 @@ const toolsThatMayTakeTime = new Set([
     'search_company_knowledge',
     'record_technician_status_update',
     'lookup_octopus_billing',
+    'create_octopus_booking',
     'cancel_octopus_booking',
     'reschedule_octopus_booking'
 ]);
@@ -2741,21 +2754,50 @@ try {
                 });
 
             if (!billingHandled) {
-                const cancellationHandled =
-                    await handleCancelBookingTool({
+                const bookingHandled =
+                    await handleCreateBookingTool({
                         response,
                         openAiWs,
                         WebSocket,
-                        customerBookings
+                        callerPhone,
+                        bookingDefaults: {
+                            customerName: [customer?.first_name, customer?.last_name].filter(Boolean).join(' '),
+                            customerFirstName: customer?.first_name || '',
+                            customerLastName: customer?.last_name || '',
+                            customerPhone: customer?.phone || callerPhone || '',
+                            customerEmail: customer?.email || outboundCustomerEmail || '',
+                            serviceAddress: customer?.address || outboundCustomerAddress || '',
+                            streetNumber: outboundStreetNumber,
+                            street: outboundStreet,
+                            city: customer?.city || outboundCity || '',
+                            state: customer?.state || outboundState || '',
+                            zip: customer?.zip || outboundZip || '',
+                            serviceType: outboundServiceType,
+                            recurringFrequency: outboundRecurringFrequency,
+                            requestedDate: outboundRequestedDate,
+                            requestedStartTime: outboundRequestedStartTime,
+                            arrivalWindow: outboundArrivalWindow,
+                            durationMinutes: outboundDurationMinutes
+                        }
                     });
 
-                if (!cancellationHandled) {
-                    await handleRescheduleBookingTool({
-                        response,
-                        openAiWs,
-                        WebSocket,
-                        customerBookings
-                    });
+                if (!bookingHandled) {
+                    const cancellationHandled =
+                        await handleCancelBookingTool({
+                            response,
+                            openAiWs,
+                            WebSocket,
+                            customerBookings
+                        });
+
+                    if (!cancellationHandled) {
+                        await handleRescheduleBookingTool({
+                            response,
+                            openAiWs,
+                            WebSocket,
+                            customerBookings
+                        });
+                    }
                 }
             }
         }
