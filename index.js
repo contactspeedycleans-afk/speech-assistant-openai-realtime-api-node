@@ -534,6 +534,48 @@ async function stageFastBooking(body) {
     };
 }
 
+const activeFastBookingFinalizations = new Map();
+const completedFastBookingFinalizations = new Map();
+const FAST_BOOKING_IDEMPOTENCY_TTL_MS = 15 * 60 * 1000;
+
+function fastBookingFingerprint(body = {}) {
+    const phone = normalizeLisaPhone(body.customerPhone || body.phone || '');
+    const date = String(body.requestedDate || body.bookingDate || '').trim();
+    const time = String(body.requestedStartTime || body.startTime || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '');
+    const streetNumber = String(body.streetNumber || '').trim().toLowerCase();
+    const street = String(body.street || body.streetAddress || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '');
+    if (!phone || !date || !time) return '';
+    return [phone, date, time, streetNumber, street].join('|');
+}
+
+function releaseDuplicateFastBookingDraft(draftId, draft) {
+    if (!draft) return;
+    activeFastBookingDrafts.delete(draftId);
+    clearTimeout(draft.expiryTimer);
+    try {
+        if (draft.worker?.child && draft.worker.child.exitCode === null) {
+            draft.worker.child.kill('SIGTERM');
+        }
+    } catch {}
+}
+
+function getCompletedFastBooking(fingerprint) {
+    if (!fingerprint) return null;
+    const cached = completedFastBookingFinalizations.get(fingerprint);
+    if (!cached) return null;
+    if (Date.now() - cached.completedAt > FAST_BOOKING_IDEMPOTENCY_TTL_MS) {
+        completedFastBookingFinalizations.delete(fingerprint);
+        return null;
+    }
+    return cached.result;
+}
+
 async function finalizeFastBooking(body) {
     const draftId = String(body.draftId || '').trim();
     const draft = activeFastBookingDrafts.get(draftId);
@@ -545,8 +587,6 @@ async function finalizeFastBooking(body) {
         };
     }
 
-    // Keep the draft addressable until Octopus returns a verified save result.
-    // A failed finalize is rebuilt under the same draftId so Lisa can retry it.
     const startedAt = Date.now();
     await draft.stagedPromise;
     const mergedBody = {
@@ -559,39 +599,130 @@ async function finalizeFastBooking(body) {
             String(body.accessInstructions || draft.body.accessInstructions || '').trim() ||
             'No special access instructions reported.'
     };
-    const resultPromise = waitForWorkerMarker(
-        draft.worker,
-        'LISA_BOOKING_RESULT=',
-        60000
-    );
-    draft.worker.child.stdin.write(JSON.stringify({
-        ...mergedBody,
-        phase: 'finalize',
-        customerConfirmed: body.customerConfirmed === true,
-        dryRun: body.dryRun === true
-    }) + '\n');
-    draft.worker.child.stdin.end();
 
-    const result = await resultPromise;
-    if (result.success === true) {
-        activeFastBookingDrafts.delete(draftId);
-        clearTimeout(draft.expiryTimer);
-    } else {
-        clearTimeout(draft.expiryTimer);
-        try {
-            await rearmFastBookingDraft(draftId, mergedBody);
-        } catch (rearmError) {
-            console.error('[FAST_BOOKING_DRAFT] could not retain failed draft:', draftId, rearmError.message);
+    // IDEMPOTENCY GUARD:
+    // A caller/client timeout does not mean the Octopus worker stopped. The same
+    // appointment can be retried while the original worker is still saving.
+    // Key the write by customer + appointment + address so concurrent or immediate
+    // retries wait for/reuse the original BOK instead of creating another booking.
+    const fingerprint = fastBookingFingerprint(mergedBody);
+    const completed = getCompletedFastBooking(fingerprint);
+    if (completed?.success === true && completed?.bookingNumber) {
+        console.warn(
+            '[FAST_BOOKING_IDEMPOTENCY] returning cached verified booking',
+            fingerprint,
+            completed.bookingNumber
+        );
+        releaseDuplicateFastBookingDraft(draftId, draft);
+        return {
+            ...completed,
+            draftId,
+            deduplicated: true,
+            idempotencySource: 'completed_cache',
+            finalizeElapsedMs: Date.now() - startedAt,
+            stagedBody: mergedBody
+        };
+    }
+
+    const active = fingerprint ? activeFastBookingFinalizations.get(fingerprint) : null;
+    if (active) {
+        console.warn(
+            '[FAST_BOOKING_IDEMPOTENCY] joining in-flight booking',
+            fingerprint,
+            'ownerDraft=' + active.draftId,
+            'duplicateDraft=' + draftId
+        );
+        releaseDuplicateFastBookingDraft(draftId, draft);
+        const sharedResult = await active.promise;
+        return {
+            ...sharedResult,
+            draftId,
+            deduplicated: true,
+            idempotencySource: 'in_flight',
+            originalDraftId: active.draftId,
+            finalizeElapsedMs: Date.now() - startedAt,
+            stagedBody: mergedBody
+        };
+    }
+
+    const executeFinalize = async () => {
+        const resultPromise = waitForWorkerMarker(
+            draft.worker,
+            'LISA_BOOKING_RESULT=',
+            60000
+        );
+        draft.worker.child.stdin.write(JSON.stringify({
+            ...mergedBody,
+            phase: 'finalize',
+            customerConfirmed: body.customerConfirmed === true,
+            dryRun: body.dryRun === true
+        }) + '\n');
+        draft.worker.child.stdin.end();
+
+        const result = await resultPromise;
+        if (result.success === true) {
+            activeFastBookingDrafts.delete(draftId);
+            clearTimeout(draft.expiryTimer);
+        } else {
+            clearTimeout(draft.expiryTimer);
+            try {
+                await rearmFastBookingDraft(draftId, mergedBody);
+            } catch (rearmError) {
+                console.error(
+                    '[FAST_BOOKING_DRAFT] could not retain failed draft:',
+                    draftId,
+                    rearmError.message
+                );
+            }
+        }
+
+        const finalResult = {
+            ...result,
+            draftId,
+            retryDraftRetained:
+                result.success !== true && activeFastBookingDrafts.has(draftId),
+            finalizeElapsedMs: Date.now() - startedAt,
+            totalElapsedMs: Date.now() - draft.stagedAt,
+            stagedBody: mergedBody
+        };
+
+        if (
+            fingerprint &&
+            finalResult.success === true &&
+            finalResult.bookingNumber
+        ) {
+            completedFastBookingFinalizations.set(fingerprint, {
+                result: finalResult,
+                completedAt: Date.now()
+            });
+            console.log(
+                '[FAST_BOOKING_IDEMPOTENCY] cached verified booking',
+                fingerprint,
+                finalResult.bookingNumber
+            );
+        }
+        return finalResult;
+    };
+
+    const executionPromise = executeFinalize();
+    if (fingerprint) {
+        activeFastBookingFinalizations.set(fingerprint, {
+            draftId,
+            promise: executionPromise,
+            startedAt: Date.now()
+        });
+    }
+
+    try {
+        return await executionPromise;
+    } finally {
+        if (fingerprint) {
+            const current = activeFastBookingFinalizations.get(fingerprint);
+            if (current?.promise === executionPromise) {
+                activeFastBookingFinalizations.delete(fingerprint);
+            }
         }
     }
-    return {
-        ...result,
-        draftId,
-        retryDraftRetained: result.success !== true && activeFastBookingDrafts.has(draftId),
-        finalizeElapsedMs: Date.now() - startedAt,
-        totalElapsedMs: Date.now() - draft.stagedAt,
-        stagedBody: mergedBody
-    };
 }
 
 // Begin warming without delaying HTTP startup.
