@@ -164,18 +164,28 @@ async function openBooking(page) {
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForTimeout(5000);
 
-  if (page.url().toLowerCase().includes("/login")) {
+  // Octopus can redirect an unauthenticated admin deep-link to
+  // customerPortal/not-found instead of /login. Treat any unexpected destination
+  // as an auth/session miss, re-authenticate once, then retry the exact booking.
+  let currentUrl = page.url();
+  if (
+    currentUrl.toLowerCase().includes("/login") ||
+    currentUrl.toLowerCase().includes("/customerportal/not-found") ||
+    !currentUrl.includes(`/booking/view/${bookingId}`)
+  ) {
     await loginToOctopus(page);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(5000);
+    currentUrl = page.url();
   }
-  if (page.url().toLowerCase().includes("/checkuserinmulticompanies")) {
+  if (currentUrl.toLowerCase().includes("/checkuserinmulticompanies")) {
     await selectOrganization(page);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(5000);
+    currentUrl = page.url();
   }
-  if (!page.url().includes(`/booking/view/${bookingId}`)) {
-    throw new Error(`Booking page did not open. Current URL: ${page.url()}`);
+  if (!currentUrl.includes(`/booking/view/${bookingId}`)) {
+    throw new Error(`Booking page did not open after re-authentication. Current URL: ${currentUrl}`);
   }
 }
 
