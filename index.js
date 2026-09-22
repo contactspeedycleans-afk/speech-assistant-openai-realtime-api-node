@@ -1392,6 +1392,9 @@ let callMode = 'INBOUND_LEAD';
 
 let voicemailHangupScheduled = false;
 let voicemailTakeoverStarted = false;
+// Permanent per-call terminal latch. Once voicemail is detected, no later
+// Twilio stop/close event may reinterpret the call as answered/completed.
+let outboundTerminalStatus = '';
 let lastAssistantTranscript = '';
 let completedAssistantTranscripts = [];
 let completedCustomerTranscripts = [];
@@ -2277,6 +2280,7 @@ const takeOverVoicemailCall = async (transcript) => {
     }
 
     voicemailTakeoverStarted = true;
+    outboundTerminalStatus = 'voicemail';
     console.log(
         'Voicemail system detected from incoming audio. Taking over call:',
         callSid,
@@ -2377,6 +2381,17 @@ const scoreOutboundCall = ({ customerText, assistantText, outcome }) => {
 };
 
         const sendOutboundCompletion = async (status = 'completed') => {
+    // TERMINAL STATUS INVARIANT:
+    // voicemail is sticky. Twilio emits stop/close after voicemail takeover;
+    // those events must never downgrade/replace voicemail with "completed".
+    const canonicalStatus =
+        outboundTerminalStatus === 'voicemail' || voicemailTakeoverStarted
+            ? 'voicemail'
+            : status;
+    if (canonicalStatus === 'voicemail') {
+        outboundTerminalStatus = 'voicemail';
+    }
+
     if (
         completionWebhookSent ||
         completionWebhookSending ||
@@ -2401,7 +2416,7 @@ EMMA:
 ${assistantTranscript}`;
 
       const outcome = classifyOutboundCall({
-          status,
+          status: canonicalStatus,
           customerText: customerTranscript,
           assistantText: assistantTranscript
       });
@@ -2416,7 +2431,7 @@ ${assistantTranscript}`;
       const confirmationTiming = getConfirmationTiming(callPurpose, outboundRequestedDate);
       const confirmationResult = confirmationTiming.isConfirmation
           ? (() => {
-              const voicemailLike = status === 'voicemail' || soundsLikeVoicemailSystem(customerTranscript);
+              const voicemailLike = canonicalStatus === 'voicemail' || voicemailTakeoverStarted || soundsLikeVoicemailSystem(customerTranscript);
               const explicitCancel =
                   /\b(cancel (?:it|the cleaning|the appointment|tomorrow'?s? (?:cleaning|appointment|visit))|cancelled|canceled|do not want (?:it|the cleaning|the appointment)|don't want (?:it|the cleaning|the appointment)|cannot make (?:it|the appointment)|can't make (?:it|the appointment))\b/.test(lowerCustomer);
               const explicitConfirm =
@@ -2447,7 +2462,7 @@ ${assistantTranscript}`;
 const completionPayload = {
     callSid,
     sheetRowNumber,
-    status,
+    status: canonicalStatus,
     transcript,
     summary: transcript,
     outcome,
@@ -2472,7 +2487,16 @@ const completionPayload = {
     requestedStartTime: outboundRequestedStartTime,
     arrivalWindow: outboundArrivalWindow,
     durationMinutes: outboundDurationMinutes,
-    ...(confirmationResult || {})
+    ...(confirmationResult || {}),
+    ...(canonicalStatus === 'voicemail'
+        ? {
+            outcome: 'voicemail',
+            answered: false,
+            confirmationStatus: 'no_answer',
+            cancellationVerified: false,
+            voicemailDetected: true
+        }
+        : {})
 };
 
 const retryDelaysMs = [0, 1500, 3000, 6000, 12000, 24000];
@@ -2727,6 +2751,34 @@ if (
                         );
                     }
                         
+if (
+    voicemailTakeoverStarted &&
+    response.type === 'response.function_call_arguments.done' &&
+    ['cancel_octopus_booking', 'reschedule_octopus_booking', 'create_octopus_booking'].includes(response.name)
+) {
+    console.warn(
+        'BLOCKED_WRITE_AFTER_VOICEMAIL',
+        response.name,
+        callSid || 'unknown'
+    );
+    if (openAiWs.readyState === WebSocket.OPEN) {
+        openAiWs.send(JSON.stringify({
+            type: 'conversation.item.create',
+            item: {
+                type: 'function_call_output',
+                call_id: response.call_id,
+                output: JSON.stringify({
+                    success: false,
+                    blocked: true,
+                    outcome: 'voicemail_no_action',
+                    error: 'Write action blocked because voicemail was detected.'
+                })
+            }
+        }));
+    }
+    return;
+}
+
 const toolsThatMayTakeTime = new Set([
     'search_company_knowledge',
     'record_technician_status_update',
