@@ -50,6 +50,66 @@ async function login(page){
 }
 async function withPage(fn){const browser=await chromium.launch({headless:true});try{const page=await browser.newPage();await login(page);return await fn(page)}finally{await browser.close()}}
 
+
+async function runTargetedCustomerNameFix(){
+ const raw=String(process.env.OCTOPUS_TARGET_CUSTOMER_NAME_FIX||"").trim();
+ if(!raw)return;
+ let cfg;
+ try{cfg=JSON.parse(raw)}catch(e){console.error("OCTOPUS_NAME_FIX_INVALID_JSON",e.message);return}
+ const customerId=String(cfg.customerId||"").trim();
+ const firstName=String(cfg.firstName||"").trim();
+ const lastName=String(cfg.lastName||"").trim();
+ if(!/^\d+$/.test(customerId)||!firstName||!lastName){console.error("OCTOPUS_NAME_FIX_INVALID_CONFIG");return}
+ try{
+  const result=await withPage(async page=>{
+   const viewUrl="https://admin.octopuspro.com/customer/view/"+customerId;
+   await page.goto(viewUrl,{waitUntil:"domcontentloaded",timeout:60000});
+   await page.waitForTimeout(2500);
+   const editLink=page.locator('a[href*="/customer/"][href*="edit"],a:has-text("Edit"),button:has-text("Edit")').first();
+   if(await editLink.isVisible().catch(()=>false)){
+    const href=await editLink.getAttribute("href").catch(()=>null);
+    if(href)await page.goto(new URL(href,page.url()).toString(),{waitUntil:"domcontentloaded",timeout:60000});
+    else await editLink.click();
+    await page.waitForTimeout(2500);
+   }else{
+    await page.goto("https://admin.octopuspro.com/customer/edit/"+customerId,{waitUntil:"domcontentloaded",timeout:60000});
+    await page.waitForTimeout(2500);
+   }
+
+   const inputs=page.locator("input");
+   const count=await inputs.count();
+   let first=null,last=null;
+   for(let i=0;i<count;i++){
+    const el=inputs.nth(i);
+    const meta=[
+      await el.getAttribute("name").catch(()=>""),await el.getAttribute("id").catch(()=>""),await el.getAttribute("placeholder").catch(()=>""),await el.getAttribute("aria-label").catch(()=>"" )
+    ].filter(Boolean).join(" ").toLowerCase();
+    if(!first && /(^|\W)(first[_ -]*name|firstname)(\W|$)/.test(meta) && !/(first[_ -]*name2|first[_ -]*name3|secondary|spouse)/.test(meta))first=el;
+    if(!last && /(^|\W)(last[_ -]*name|lastname|surname)(\W|$)/.test(meta) && !/(last[_ -]*name2|last[_ -]*name3|secondary|spouse)/.test(meta))last=el;
+   }
+   if(!first||!last){
+    const debug=await inputs.evaluateAll(els=>els.map(el=>({name:el.name,id:el.id,placeholder:el.placeholder,value:el.value,type:el.type})).slice(0,100));
+    throw new Error("Name fields not found: "+JSON.stringify(debug));
+   }
+   await first.fill(firstName);
+   await last.fill(lastName);
+   const save=page.locator('button:has-text("Save"),button:has-text("Update"),input[type="submit"][value*="Save" i],input[type="submit"][value*="Update" i],button[type="submit"]').first();
+   if(!(await save.isVisible().catch(()=>false)))throw new Error("Save button not found");
+   await save.click();
+   await page.waitForTimeout(4000);
+   await page.goto(viewUrl,{waitUntil:"domcontentloaded",timeout:60000});
+   await page.waitForTimeout(2500);
+   const body=(await page.locator("body").innerText()).replace(/\s+/g," ");
+   const expected=(firstName+" "+lastName).toLowerCase();
+   if(!body.toLowerCase().includes(expected))throw new Error("Verification failed; profile still does not show "+firstName+" "+lastName);
+   return {customerId,firstName,lastName,verified:true,url:page.url()};
+  });
+  console.log("OCTOPUS_TARGET_CUSTOMER_NAME_FIX_SUCCESS="+JSON.stringify(result));
+ }catch(e){
+  console.error("OCTOPUS_TARGET_CUSTOMER_NAME_FIX_FAILED="+String(e?.stack||e));
+ }
+}
+
 const execFileAsync=promisify(execFile);
 async function runAutomation(script,args=[],extraEnv={},marker){
  const {stdout="",stderr=""}=await execFileAsync(process.execPath,[new URL(script,import.meta.url).pathname,...args],{
@@ -153,4 +213,4 @@ const server=http.createServer(async(req,res)=>{
   return json(res,200,{...base,error:{code:-32601,message:"Method not found"}});
  }catch(e){return json(res,200,{...base,result:{isError:true,content:[{type:"text",text:e.message}]}})}
 });
-server.listen(PORT,"0.0.0.0",()=>console.log("Octopus admin OAuth MCP listening on "+PORT));
+server.listen(PORT,"0.0.0.0",()=>{console.log("Octopus admin OAuth MCP listening on "+PORT);runTargetedCustomerNameFix().catch(e=>console.error("OCTOPUS_TARGET_CUSTOMER_NAME_FIX_FATAL",e));});
