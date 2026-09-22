@@ -533,7 +533,7 @@ async function cancelBooking(page) {
   await cancelledOption.click();
 
   const noticeHeading = page.getByText("Cancellation Notice", { exact: true });
-  await noticeHeading.waitFor({ state: "visible", timeout: 20000 });
+  await noticeHeading.waitFor({ state: "visible", timeout: 8000 });
 
   const dialog = noticeHeading.locator("xpath=ancestor::*[@role='dialog'][1]");
   const modal = (await dialog.count()) > 0 ? dialog : page.locator(".modal.show").last();
@@ -581,8 +581,8 @@ async function cancelBooking(page) {
   const notifyHeading = page.getByText("Notify Customer", { exact: true });
 
   await Promise.race([
-    invoiceHeading.waitFor({ state: "visible", timeout: 25000 }),
-    notifyHeading.waitFor({ state: "visible", timeout: 25000 })
+    invoiceHeading.waitFor({ state: "visible", timeout: 8000 }),
+    notifyHeading.waitFor({ state: "visible", timeout: 8000 })
   ]).catch(() => {});
 
   let invoiceVoided = false;
@@ -604,9 +604,9 @@ async function cancelBooking(page) {
     }
     await voidInvoiceButton.click();
 
-    let okButton = await waitForLargestVisibleExactText(page, "Ok", 3500);
-    if (!okButton) okButton = await waitForLargestVisibleExactText(page, "OK", 3500);
-    if (!okButton) okButton = await waitForLargestVisibleExactText(page, "Okay", 1500);
+    let okButton = await waitForLargestVisibleExactText(page, "Ok", 1500);
+    if (!okButton) okButton = await waitForLargestVisibleExactText(page, "OK", 1500);
+    if (!okButton) okButton = await waitForLargestVisibleExactText(page, "Okay", 750);
     if (okButton) {
       await okButton.click();
     } else {
@@ -655,23 +655,23 @@ async function cancelBooking(page) {
     const saveChangesButton = await waitForLargestVisibleExactText(
       page,
       "Save changes",
-      20000
+      5000
     );
     if (!saveChangesButton) {
       throw new Error("Could not find the visible Save changes button");
     }
     await saveChangesButton.click();
-    sendButton = await waitForLargestVisibleExactText(page, "Send", 25000);
+    sendButton = await waitForLargestVisibleExactText(page, "Send", 5000);
   }
 
   if (sendButton) {
     await sendButton.click();
     notificationSent = true;
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(750);
   }
 
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(1000);
   const finalState = await getPageState(page);
 
   logResult({
