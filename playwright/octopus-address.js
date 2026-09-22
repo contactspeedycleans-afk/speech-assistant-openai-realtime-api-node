@@ -1,7 +1,12 @@
 export function normalizeAddress(value) {
   return String(value || '').toLowerCase()
+    .replace(/\b(?:north\s*west|northwest)\b/g, 'nw')
+    .replace(/\b(?:north\s*east|northeast)\b/g, 'ne')
+    .replace(/\b(?:south\s*west|southwest)\b/g, 'sw')
+    .replace(/\b(?:south\s*east|southeast)\b/g, 'se')
     .replace(/\b(?:road|street|avenue|court|drive|lane|boulevard|place|terrace|highway)\b/g,
       word => ({road:'rd',street:'st',avenue:'ave',court:'ct',drive:'dr',lane:'ln',boulevard:'blvd',place:'pl',terrace:'ter',highway:'hwy'}[word]))
+    .replace(/\b(?:east|west|north|south)\b/g, word => ({east:'e',west:'w',north:'n',south:'s'}[word]))
     .replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
 
