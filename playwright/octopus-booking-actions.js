@@ -604,9 +604,22 @@ async function cancelBooking(page) {
     }
     await voidInvoiceButton.click();
 
-    const okButton = await waitForLargestVisibleExactText(page, "Ok", 20000);
-    if (!okButton) throw new Error("Could not find the visible Ok button");
-    await okButton.click();
+    const okButton = await waitForLargestVisibleExactText(page, "Ok", 8000);
+    if (okButton) {
+      await okButton.click();
+    } else {
+      // Newer Octopus builds sometimes apply the void immediately and dismiss
+      // the confirmation without rendering a second "Ok" button. Only continue
+      // if the invoice dialog has actually advanced/closed; otherwise fail safe.
+      await page.waitForTimeout(750);
+      const invoiceStillVisible = await invoiceHeading.isVisible().catch(() => false);
+      const notifyNowVisible = await notifyHeading.isVisible().catch(() => false);
+      const saveNowVisible = Boolean(await getLargestVisibleExactText(page, "Save changes"));
+      if (invoiceStillVisible && !notifyNowVisible && !saveNowVisible) {
+        throw new Error("Invoice void confirmation did not advance after Convert invoice to Void");
+      }
+      console.log("Invoice void advanced without a separate Ok confirmation.");
+    }
     invoiceVoided = true;
   }
 
