@@ -618,7 +618,30 @@ async function cancelBooking(page) {
       const notifyNowVisible = await notifyHeading.isVisible().catch(() => false);
       const saveNowVisible = Boolean(await getLargestVisibleExactText(page, "Save changes"));
       if (invoiceStillVisible && !notifyNowVisible && !saveNowVisible) {
-        throw new Error("Invoice void confirmation did not advance after Convert invoice to Void");
+        const dialogButtons = await invoiceModal
+          .locator("button, [role='button'], input[type='button'], input[type='submit']")
+          .evaluateAll(elements => elements
+            .filter(el => {
+              const style = getComputedStyle(el);
+              const rect = el.getBoundingClientRect();
+              return style.display !== 'none' &&
+                     style.visibility !== 'hidden' &&
+                     rect.width > 0 &&
+                     rect.height > 0;
+            })
+            .map(el => String(el.innerText || el.value || el.textContent || '')
+              .replace(/\s+/g, ' ')
+              .trim())
+            .filter(Boolean)
+          )
+          .catch(() => []);
+        const dialogText = await invoiceModal.innerText().catch(() => '');
+        throw new Error(
+          "INVOICE_VOID_CONFIRMATION_UNKNOWN buttons=" +
+          JSON.stringify(dialogButtons) +
+          " text=" +
+          JSON.stringify(dialogText.replace(/\s+/g, ' ').slice(0, 1200))
+        );
       }
       console.log("Invoice void advanced without a separate Ok confirmation.");
     }
