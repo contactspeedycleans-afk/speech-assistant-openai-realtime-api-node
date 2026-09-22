@@ -2415,20 +2415,33 @@ ${assistantTranscript}`;
       const lowerAssistantForResult = assistantTranscript.toLowerCase();
       const confirmationTiming = getConfirmationTiming(callPurpose, outboundRequestedDate);
       const confirmationResult = confirmationTiming.isConfirmation
-          ? {
-              answered: customerTranscript.trim().length > 0,
-              confirmationStatus: /\b(cancel|cancelled|canceled|do not want|don't want|cannot make|can't make)\b/.test(lowerCustomer)
-                  ? 'cancel_requested'
-                  : /\b(yes|yeah|yep|correct|confirm|confirmed|still works|that works|sounds good|okay|ok)\b/.test(lowerCustomer)
-                      ? 'confirmed'
-                      : customerTranscript.trim().length > 0
-                          ? 'unclear'
-                          : 'no_answer',
-              securePhonePaymentRequested: /\b(card|credit card|debit card|pay by phone|over the phone)\b/.test(lowerCustomer),
-              formDeliveryRequested: /\b(text|email|link|form)\b/.test(lowerCustomer),
-              cancellationVerified: /\b(cancelled|canceled)\b/.test(lowerAssistantForResult) &&
-                  !/\b(could not|couldn't|unable|not cancelled|not canceled|staff review|office.*review)\b/.test(lowerAssistantForResult)
-          }
+          ? (() => {
+              const voicemailLike = status === 'voicemail' || soundsLikeVoicemailSystem(customerTranscript);
+              const explicitCancel =
+                  /\b(cancel (?:it|the cleaning|the appointment|tomorrow'?s? (?:cleaning|appointment|visit))|cancelled|canceled|do not want (?:it|the cleaning|the appointment)|don't want (?:it|the cleaning|the appointment)|cannot make (?:it|the appointment)|can't make (?:it|the appointment))\b/.test(lowerCustomer);
+              const explicitConfirm =
+                  /\b(yes|yeah|yep)\b.{0,35}\b(?:still want|want the cleaning|keep (?:it|the appointment)|appointment|cleaning|tomorrow)\b/.test(lowerCustomer) ||
+                  /\b(?:that works|still works|sounds good|keep it|keep the appointment|confirm(?:ed)?(?: it| the appointment)?)\b/.test(lowerCustomer);
+              const answered = !voicemailLike && customerTranscript.trim().length > 0;
+              return {
+                  answered,
+                  confirmationStatus: voicemailLike
+                      ? 'no_answer'
+                      : explicitCancel
+                          ? 'cancel_requested'
+                          : explicitConfirm
+                              ? 'confirmed'
+                              : answered
+                                  ? 'unclear'
+                                  : 'no_answer',
+                  securePhonePaymentRequested: answered && /\b(card|credit card|debit card|pay by phone|over the phone)\b/.test(lowerCustomer),
+                  formDeliveryRequested: answered && /\b(text|email|link|form)\b/.test(lowerCustomer),
+                  // Never infer a completed cancellation from Emma's spoken words.
+                  // A customer request is only cancel_requested until the Octopus action
+                  // itself returns a verified cancellation result.
+                  cancellationVerified: false
+              };
+          })()
           : null;
 
 const completionPayload = {
