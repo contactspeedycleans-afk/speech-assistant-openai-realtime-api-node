@@ -2,6 +2,7 @@ import { selectSingleFrequency } from "./octopus-frequency.js";
 import { selectOctopusAddress } from "./octopus-address.js";
 import { chromium } from "playwright";
 import { existsSync } from "node:fs";
+import twilio from "twilio";
 
 const OCTOPUS_EMAIL = process.env.OCTOPUS_EMAIL;
 const OCTOPUS_PASSWORD = process.env.OCTOPUS_PASSWORD;
@@ -10,6 +11,9 @@ const ORGANIZATION_NAME =
 const LISA_AUTH_STATE_PATH =
   process.env.LISA_AUTH_STATE_PATH || "/tmp/lisa-octopus-auth.json";
 const LISA_PREWARM_ONLY = process.env.LISA_BOOKING_PREWARM === "1";
+const SPEEDYCLEANS_CONFIRMATION_FORM_URL =
+  process.env.SPEEDYCLEANS_CONFIRMATION_FORM_URL ||
+  "https://app.hellosign.com/s/h4NSTcK9";
 
 let livePayload = process.env.LISA_BOOKING_PAYLOAD
   ? JSON.parse(process.env.LISA_BOOKING_PAYLOAD)
@@ -143,67 +147,88 @@ function lisaTiming(stage, extra = "") {
   LISA_TIMER_LAST = now;
 }
 
-async function sendCustomerConfirmation(page) {
-  const notifyHeading = page.getByText("Notify Customer", { exact: true });
+async function sendCustomerConfirmation(bookingResult) {
+  const accountSid =
+    process.env.TWILIO_ACCT_SID ||
+    process.env.TWILIO_ACCOUNT_SID ||
+    "";
+  const authToken = process.env.TWILIO_AUTH_TOKEN || "";
+  const fromNumber =
+    process.env.TWILIO_PHONE_NUMBER ||
+    process.env.TWILIO_NUMBER ||
+    "";
+  const toNumber = String(TEST.customerPhone || "").trim();
 
-  // Octopus renders this modal a moment after the booking itself is saved.
-  // The booking result is already emitted to the caller before this function
-  // runs, so notification delivery never keeps the customer on the phone.
-  await notifyHeading.waitFor({ state: "visible", timeout: 15000 });
-  await page.waitForTimeout(2500);
-
-  const roleDialog = notifyHeading.locator(
-    "xpath=ancestor::*[@role='dialog'][1]"
-  );
-  const modalDialog = notifyHeading.locator(
-    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' modal ')][1]"
-  );
-  const dialog = (await roleDialog.count()) > 0
-    ? roleDialog
-    : (await modalDialog.count()) > 0
-      ? modalDialog
-      : page.locator("body");
-
-  // Native Octopus checkboxes are normally preselected. Explicitly enable
-  // any visible SMS/text or email channel checkbox in case account defaults
-  // change later.
-  const channelInputs = dialog.locator('input[type="checkbox"]');
-  const selectedChannels = [];
-  for (let index = 0; index < await channelInputs.count(); index += 1) {
-    const input = channelInputs.nth(index);
-    if (!await input.isVisible().catch(() => false)) continue;
-
-    const context = await input.evaluate(element => {
-      const container = element.closest("label, .form-group, .row, li, div");
-      return String(container?.innerText || container?.textContent || "")
-        .replace(/\s+/g, " ")
-        .trim();
-    }).catch(() => "");
-
-    if (!/\b(?:sms|text|email|e-mail)\b/i.test(context)) continue;
-    if (!await input.isChecked().catch(() => false)) {
-      await input.check({ force: true });
-    }
-    selectedChannels.push(context);
+  if (!accountSid || !authToken || !fromNumber) {
+    throw new Error("SPEEDYCLEANS_CONFIRMATION_TWILIO_NOT_CONFIGURED");
+  }
+  if (!toNumber) {
+    throw new Error("SPEEDYCLEANS_CONFIRMATION_PHONE_MISSING");
   }
 
-  const sendCandidates = dialog.getByText("Send", { exact: true });
-  let sendButton = null;
-  for (let index = 0; index < await sendCandidates.count(); index += 1) {
-    const candidate = sendCandidates.nth(index);
-    if (await candidate.isVisible().catch(() => false)) sendButton = candidate;
-  }
-  if (!sendButton) {
-    throw new Error("NOTIFY_CUSTOMER_SEND_BUTTON_NOT_FOUND");
+  const firstName =
+    String(TEST.customerFirstName || TEST.customerName || "")
+      .trim()
+      .split(/\s+/)[0] || "there";
+
+  const bookingDate = String(TEST.bookingDate || "").trim();
+  let dateLabel = bookingDate;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(bookingDate)) {
+    const [year, month, day] = bookingDate.split("-").map(Number);
+    dateLabel = new Intl.DateTimeFormat("en-US", {
+      weekday: "long",
+      month: "short",
+      day: "numeric"
+    }).format(new Date(Date.UTC(year, month - 1, day, 12, 0, 0)));
   }
 
-  await sendButton.click({ timeout: 10000 });
-  await notifyHeading.waitFor({ state: "hidden", timeout: 15000 });
+  const formatClock = totalMinutes => {
+    const normalized = ((totalMinutes % 1440) + 1440) % 1440;
+    const hour24 = Math.floor(normalized / 60);
+    const minute = normalized % 60;
+    const period = hour24 >= 12 ? "PM" : "AM";
+    const hour12 = hour24 % 12 || 12;
+    return minute ? `${hour12}:${String(minute).padStart(2, "0")} ${period}` : `${hour12} ${period}`;
+  };
+
+  let timeLabel = String(TEST.startTime || "").trim();
+  const timeMatch = timeLabel.match(/^(\d{1,2}):(\d{2})/);
+  if (timeMatch) {
+    const startMinutes = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
+    const durationMinutes = Math.round(Number(TEST.durationHours || 2) * 60);
+    timeLabel = `${formatClock(startMinutes)}-${formatClock(startMinutes + durationMinutes)}`;
+  }
+
+  const bookingNumber = String(bookingResult?.bookingNumber || "").trim();
+  const when = [dateLabel, timeLabel ? `from ${timeLabel}` : ""]
+    .filter(Boolean)
+    .join(" ");
+
+  const body =
+    `Hi ${firstName}! Your SpeedyCleans cleaning${when ? ` is reserved for ${when}` : " is reserved"}. ` +
+    `Booking: ${bookingNumber}. To fully confirm your appointment, please complete the service authorization and card-on-file form here: ` +
+    `${SPEEDYCLEANS_CONFIRMATION_FORM_URL} - SpeedyCleans`;
+
+  const client = twilio(accountSid, authToken);
+  const message = await client.messages.create({
+    from: fromNumber,
+    to: toNumber,
+    body
+  });
+
   console.log(
     "LISA_CUSTOMER_CONFIRMATION_SENT=" +
-    JSON.stringify({ sms: true, email: true, selectedChannels })
+    JSON.stringify({
+      channel: "speedycleans_twilio",
+      bookingNumber,
+      to: toNumber,
+      messageSid: message.sid,
+      formUrl: SPEEDYCLEANS_CONFIRMATION_FORM_URL,
+      octopusLinksIncluded: false
+    })
   );
 }
+
 
 lisaTiming("SCRIPT_START");
 
@@ -2060,7 +2085,7 @@ lisaTiming("FINAL_SUBMIT_START");
       );
 
       try {
-        await sendCustomerConfirmation(page);
+        await sendCustomerConfirmation(FINAL_BOOKING_RESULT);
       } catch (notificationError) {
         // A notification problem must never undo or falsely fail a booking.
         // Keep a loud Railway marker so the office can retry delivery while
