@@ -604,7 +604,9 @@ async function cancelBooking(page) {
     }
     await voidInvoiceButton.click();
 
-    const okButton = await waitForLargestVisibleExactText(page, "Ok", 8000);
+    let okButton = await waitForLargestVisibleExactText(page, "Ok", 3500);
+    if (!okButton) okButton = await waitForLargestVisibleExactText(page, "OK", 3500);
+    if (!okButton) okButton = await waitForLargestVisibleExactText(page, "Okay", 1500);
     if (okButton) {
       await okButton.click();
     } else {
