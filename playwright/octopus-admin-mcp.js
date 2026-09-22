@@ -102,35 +102,27 @@ async function runTargetedCustomerNameFix(){
    }
 
    let clicked=false;
-   const actionSelectors=[
-     'a[title*="edit" i]','button[title*="edit" i]','[aria-label*="edit" i]',
-     'a[class*="edit" i]','button[class*="edit" i]','[class*="pencil" i]',
-     'a[onclick*="edit" i]','button[onclick*="edit" i]',
-     'a[data-target*="customer" i]','button[data-target*="customer" i]',
-     'a[data-bs-target*="customer" i]','button[data-bs-target*="customer" i]'
-   ];
-   for(const sel of actionSelectors){
-     const els=page.locator(sel);
-     const count=await els.count();
-     for(let i=0;i<count;i++){
-       const el=els.nth(i);
-       if(await el.isVisible().catch(()=>false)){
-         const txt=((await el.innerText().catch(()=>''))+' '+(await el.getAttribute('title').catch(()=>''))+' '+(await el.getAttribute('aria-label').catch(()=>''))).toLowerCase();
-         if(txt.includes('edit')||sel.includes('customer')||sel.includes('pencil')){
-           await el.click().catch(()=>{});
-           await page.waitForTimeout(1500);
-           clicked=true;
-           break;
-         }
-       }
+   // Octopus customer pages use an icon-only inline edit toggle next to the name.
+   // It has no title/aria text, so generic "edit" selectors miss it.
+   if(exactCount){
+     const nameNode=exact.first();
+     const card=nameNode.locator('xpath=ancestor::div[contains(@class,"first_name") or contains(@class,"customer-summary-content")][1]');
+     const toggle=card.locator('button.view-edit-toggle-btn').first();
+     if(await toggle.count() && await toggle.isVisible().catch(()=>false)){
+       await toggle.click();
+       await page.waitForTimeout(1200);
+       clicked=true;
      }
-     if(clicked)break;
    }
-
-   if(!clicked && exactCount){
-     await exact.first().click().catch(()=>{});
-     await page.waitForTimeout(1500);
+   if(!clicked){
+     const toggle=page.locator('button.view-edit-toggle-btn').first();
+     if(await toggle.isVisible().catch(()=>false)){
+       await toggle.click();
+       await page.waitForTimeout(1200);
+       clicked=true;
+     }
    }
+   if(!clicked)throw new Error("Inline customer edit toggle not found");
 
    const visibleInputs=page.locator('input:visible,textarea:visible');
    const n=await visibleInputs.count();
