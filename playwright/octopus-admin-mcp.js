@@ -65,44 +65,122 @@ async function runTargetedCustomerNameFix(){
    const viewUrl="https://admin.octopuspro.com/customer/view/"+customerId;
    await page.goto(viewUrl,{waitUntil:"domcontentloaded",timeout:60000});
    await page.waitForTimeout(2500);
-   const editLink=page.locator('a[href*="/customer/"][href*="edit"],a:has-text("Edit"),button:has-text("Edit")').first();
-   if(await editLink.isVisible().catch(()=>false)){
-    const href=await editLink.getAttribute("href").catch(()=>null);
-    if(href)await page.goto(new URL(href,page.url()).toString(),{waitUntil:"domcontentloaded",timeout:60000});
-    else await editLink.click();
-    await page.waitForTimeout(2500);
-   }else{
-    await page.goto("https://admin.octopuspro.com/customer/edit/"+customerId,{waitUntil:"domcontentloaded",timeout:60000});
-    await page.waitForTimeout(2500);
+
+   const currentTitle=(await page.title()).trim();
+   if(currentTitle.toLowerCase()===(firstName+" "+lastName).toLowerCase()){
+     return {customerId,firstName,lastName,verified:true,alreadyCorrect:true,url:page.url()};
    }
 
-   const inputs=page.locator("input");
-   const count=await inputs.count();
+   const currentName=currentTitle || "That's Albanitis";
+   const exact=page.getByText(currentName,{exact:true});
+   const exactCount=await exact.count();
+   const candidates=[];
+
+   for(let i=0;i<exactCount;i++){
+     const node=exact.nth(i);
+     try{
+       const info=await node.evaluate(el=>{
+         const chain=[];
+         let p=el;
+         for(let depth=0;depth<7 && p;depth++,p=p.parentElement){
+           const actions=[...p.querySelectorAll('a,button,[role="button"],[onclick],[data-target],[data-bs-target]')].slice(0,30).map(a=>({
+             tag:a.tagName,
+             text:(a.innerText||a.getAttribute('aria-label')||a.getAttribute('title')||'').trim(),
+             href:a.getAttribute('href'),
+             onclick:a.getAttribute('onclick'),
+             title:a.getAttribute('title'),
+             aria:a.getAttribute('aria-label'),
+             cls:a.className,
+             dataTarget:a.getAttribute('data-target')||a.getAttribute('data-bs-target')
+           }));
+           chain.push({tag:p.tagName,id:p.id,cls:p.className,actions});
+         }
+         return chain;
+       });
+       candidates.push({index:i,info});
+     }catch{}
+   }
+
+   let clicked=false;
+   const actionSelectors=[
+     'a[title*="edit" i]','button[title*="edit" i]','[aria-label*="edit" i]',
+     'a[class*="edit" i]','button[class*="edit" i]','[class*="pencil" i]',
+     'a[onclick*="edit" i]','button[onclick*="edit" i]',
+     'a[data-target*="customer" i]','button[data-target*="customer" i]',
+     'a[data-bs-target*="customer" i]','button[data-bs-target*="customer" i]'
+   ];
+   for(const sel of actionSelectors){
+     const els=page.locator(sel);
+     const count=await els.count();
+     for(let i=0;i<count;i++){
+       const el=els.nth(i);
+       if(await el.isVisible().catch(()=>false)){
+         const txt=((await el.innerText().catch(()=>''))+' '+(await el.getAttribute('title').catch(()=>''))+' '+(await el.getAttribute('aria-label').catch(()=>''))).toLowerCase();
+         if(txt.includes('edit')||sel.includes('customer')||sel.includes('pencil')){
+           await el.click().catch(()=>{});
+           await page.waitForTimeout(1500);
+           clicked=true;
+           break;
+         }
+       }
+     }
+     if(clicked)break;
+   }
+
+   if(!clicked && exactCount){
+     await exact.first().click().catch(()=>{});
+     await page.waitForTimeout(1500);
+   }
+
+   const visibleInputs=page.locator('input:visible,textarea:visible');
+   const n=await visibleInputs.count();
    let first=null,last=null;
-   for(let i=0;i<count;i++){
-    const el=inputs.nth(i);
-    const meta=[
-      await el.getAttribute("name").catch(()=>""),await el.getAttribute("id").catch(()=>""),await el.getAttribute("placeholder").catch(()=>""),await el.getAttribute("aria-label").catch(()=>"" )
-    ].filter(Boolean).join(" ").toLowerCase();
-    if(!first && /(^|\W)(first[_ -]*name|firstname)(\W|$)/.test(meta) && !/(first[_ -]*name2|first[_ -]*name3|secondary|spouse)/.test(meta))first=el;
-    if(!last && /(^|\W)(last[_ -]*name|lastname|surname)(\W|$)/.test(meta) && !/(last[_ -]*name2|last[_ -]*name3|secondary|spouse)/.test(meta))last=el;
+   const debug=[];
+   for(let i=0;i<n;i++){
+     const el=visibleInputs.nth(i);
+     const meta=[
+       await el.getAttribute("name").catch(()=>""),await el.getAttribute("id").catch(()=>""),await el.getAttribute("placeholder").catch(()=>""),await el.getAttribute("aria-label").catch(()=>""),await el.getAttribute("value").catch(()=>"")
+     ].filter(Boolean).join(" ").toLowerCase();
+     debug.push({meta,value:await el.inputValue().catch(()=>''),tag:await el.evaluate(e=>e.tagName).catch(()=>'')});
+     if(!first && (/(^|\W)(first[_ -]*name|firstname)(\W|$)/.test(meta) || (await el.inputValue().catch(()=>''))==="That's")) first=el;
+     if(!last && (/(^|\W)(last[_ -]*name|lastname|surname)(\W|$)/.test(meta) || (await el.inputValue().catch(()=>''))==="Albanitis")) last=el;
    }
+
    if(!first||!last){
-    const debug=await inputs.evaluateAll(els=>els.map(el=>({name:el.name,id:el.id,placeholder:el.placeholder,value:el.value,type:el.type})).slice(0,100));
-    throw new Error("Name fields not found: "+JSON.stringify(debug));
+     console.error("OCTOPUS_NAME_FIX_CANDIDATES="+JSON.stringify(candidates).slice(0,16000));
+     console.error("OCTOPUS_NAME_FIX_VISIBLE_INPUTS="+JSON.stringify(debug).slice(0,12000));
+     throw new Error("Name fields not found after opening customer editor");
    }
+
    await first.fill(firstName);
    await last.fill(lastName);
-   const save=page.locator('button:has-text("Save"),button:has-text("Update"),input[type="submit"][value*="Save" i],input[type="submit"][value*="Update" i],button[type="submit"]').first();
-   if(!(await save.isVisible().catch(()=>false)))throw new Error("Save button not found");
-   await save.click();
-   await page.waitForTimeout(4000);
+
+   const saveSelectors=[
+     'button:visible:has-text("Save")','button:visible:has-text("Update")',
+     'input[type="submit"]:visible[value*="Save" i]','input[type="submit"]:visible[value*="Update" i]',
+     'button[type="submit"]:visible'
+   ];
+   let saved=false;
+   for(const sel of saveSelectors){
+     const el=page.locator(sel).first();
+     if(await el.isVisible().catch(()=>false)){
+       await el.click();
+       saved=true;
+       break;
+     }
+   }
+   if(!saved)throw new Error("Customer name save control not found");
+
+   await page.waitForTimeout(3500);
    await page.goto(viewUrl,{waitUntil:"domcontentloaded",timeout:60000});
    await page.waitForTimeout(2500);
    const body=(await page.locator("body").innerText()).replace(/\s+/g," ");
+   const title=(await page.title()).trim();
    const expected=(firstName+" "+lastName).toLowerCase();
-   if(!body.toLowerCase().includes(expected))throw new Error("Verification failed; profile still does not show "+firstName+" "+lastName);
-   return {customerId,firstName,lastName,verified:true,url:page.url()};
+   if(!body.toLowerCase().includes(expected) && title.toLowerCase()!==expected){
+     throw new Error("Verification failed after save; current title="+title);
+   }
+   return {customerId,firstName,lastName,verified:true,url:page.url(),title};
   });
   console.log("OCTOPUS_TARGET_CUSTOMER_NAME_FIX_SUCCESS="+JSON.stringify(result));
  }catch(e){
