@@ -794,6 +794,7 @@ fastify.post('/sms-message', async (request, reply) => {
     const twilioNumber = String(body.to || body.To || '').trim();
     const customerMessage = String(body.message || body.Body || '').trim();
     const messageSid = String(body.message_sid || body.MessageSid || '').trim();
+    const suppliedHistory = body.conversation_history ?? body.conversationHistory ?? body.history;
 
     if (!customerPhone || !twilioNumber || !customerMessage) {
         return reply.code(400).send({
@@ -860,10 +861,33 @@ fastify.post('/sms-message', async (request, reply) => {
         [customerPhone, twilioNumber]
     );
 
-    const history = historyResult.rows.reverse().map((row) => ({
+    const localHistory = historyResult.rows.reverse().map((row) => ({
         role: row.direction === 'outbound' ? 'assistant' : 'user',
         content: row.message
     }));
+    let externalHistory = [];
+    try {
+        const parsed = typeof suppliedHistory === 'string'
+            ? JSON.parse(suppliedHistory)
+            : suppliedHistory;
+        if (Array.isArray(parsed)) {
+            externalHistory = parsed
+                .map((entry) => ({
+                    role: entry?.role === 'assistant' || entry?.direction === 'outbound'
+                        ? 'assistant'
+                        : 'user',
+                    content: String(entry?.content || entry?.message || entry?.body || '').trim()
+                }))
+                .filter((entry) => entry.content)
+                .slice(-20);
+        }
+    } catch (error) {
+        console.warn('Ignoring invalid CRM SMS conversation history:', error?.message || error);
+    }
+    // Genie CRM is authoritative when it supplies a thread because it contains
+    // human-written outbound texts as well as Lisa's replies. This prevents Lisa
+    // from treating a customer's answer to an office text as a new conversation.
+    const history = externalHistory.length ? externalHistory : localHistory;
 
     const customerBookings = smsCustomer
         ? await findCustomerBookings(smsCustomer.id, customerPhone)
