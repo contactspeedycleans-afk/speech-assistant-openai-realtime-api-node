@@ -21,6 +21,11 @@ import { createTechnicianSearch } from './lib/technicianSearch.js';
 import { runSmsReceptionist } from './lib/smsReceptionist.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import {
+    buildLsaBookingLinkSms,
+    createLsaLineMatcher,
+    normalizeUsPhone
+} from './lib/lsaBookingLink.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -35,6 +40,42 @@ const twilioClient = twilio(
     process.env.TWILIO_AUTH_TOKEN
 );
 
+const isLsaDestination = createLsaLineMatcher(
+    process.env.LISA_LSA_PHONE_NUMBERS || process.env.LSA_PHONE_NUMBERS || ''
+);
+const lsaBookingLink =
+    process.env.SPEEDYCLEANS_BOOKING_LINK ||
+    'https://speedycleans.com/get-a-quote';
+const lsaBookingOfferText = process.env.LISA_BOOKING_OFFER_TEXT || '';
+const lsaBookingTextSends = new Map();
+
+async function sendLsaBookingLink({ callSid, callerPhone, twilioNumber }) {
+    const normalizedCaller = normalizeUsPhone(callerPhone);
+    const normalizedDestination = normalizeUsPhone(twilioNumber);
+    if (!normalizedCaller || !normalizedDestination || !isLsaDestination(twilioNumber)) {
+        return;
+    }
+
+    const dedupeKey = callSid || `${normalizedCaller}:${normalizedDestination}`;
+    const previousSend = lsaBookingTextSends.get(dedupeKey);
+    if (previousSend && Date.now() - previousSend < 6 * 60 * 60 * 1000) return;
+    lsaBookingTextSends.set(dedupeKey, Date.now());
+
+    try {
+        const message = await twilioClient.messages.create({
+            to: callerPhone,
+            from: twilioNumber,
+            body: buildLsaBookingLinkSms({
+                bookingLink: lsaBookingLink,
+                offerText: lsaBookingOfferText
+            })
+        });
+        console.log('LSA booking link text sent:', message.sid || 'queued');
+    } catch (error) {
+        lsaBookingTextSends.delete(dedupeKey);
+        console.error('LSA booking link text failed:', error.message);
+    }
+}
 if (!OPENAI_API_KEY) {
     console.error('Missing OPENAI_API_KEY.');
     process.exit(1);
@@ -86,15 +127,15 @@ const {
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
     createBookingAction: createFastBookingAction({
-        // Return control to Emma before the 1.8-second hold-music delay. The
+        // Return control to Lisa before the 1.8-second hold-music delay. The
         // Fast Booking request continues and sends the verified BOK by webhook.
         callerWaitMs: 1200,
         onBackgroundComplete: result => console.log(
-            'Emma background Fast Booking completed:',
+            'Lisa background Fast Booking completed:',
             result?.bookingNumber || result?.outcome || 'unknown result'
         ),
         onBackgroundError: error => console.error(
-            'Emma background Fast Booking failed:',
+            'Lisa background Fast Booking failed:',
             error?.message || error
         )
     }),
@@ -567,23 +608,40 @@ fastify.all('/incoming-call', async (request, reply) => {
         request.body?.CallSid ||
         request.query?.CallSid ||
         '';
+    const lsaDestinationCandidates = [
+        twilioNumber,
+        request.body?.Called,
+        request.query?.Called,
+        request.body?.ForwardedFrom,
+        request.query?.ForwardedFrom
+    ].filter(Boolean);
+    const isLsaLine = lsaDestinationCandidates.some(isLsaDestination);
 
     console.log('Incoming caller phone:', callerPhone || 'unknown');
+
+    // Do not delay the voice connection while Twilio queues the text.
+    if (isLsaLine) {
+        void sendLsaBookingLink({ callSid, callerPhone, twilioNumber });
+    }
 
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
 <Stream url="wss://emma-development-production.up.railway.app/media-stream">   <Parameter
     name="callerPhone"
-    value="${callerPhone}"
+    value="${escapeXml(callerPhone)}"
 />
 <Parameter
     name="twilioNumber"
-    value="${twilioNumber}"
+    value="${escapeXml(twilioNumber)}"
 />
 <Parameter
     name="callMode"
     value="INBOUND_LEAD"
+/>
+<Parameter
+    name="isLsaLine"
+    value="${isLsaLine ? 'true' : 'false'}"
 />
 </Stream>
     </Connect>
@@ -650,7 +708,7 @@ function buildConfirmationVoicemailMessage({ callPurpose = '', customerName = ''
     if (!timing.isConfirmation) return '';
 
     const firstName = String(customerName || '').trim().split(/\s+/)[0] || '';
-    return `Hi${firstName ? ` ${firstName}` : ''}, this is Emma with SpeedyCleans. I was calling to confirm your cleaning ${timing.dayWord}. Please reply to our text or call us back at 517-777-8712 to confirm or cancel. Thank you!`;
+    return `Hi${firstName ? ` ${firstName}` : ''}, this is Lisa with SpeedyCleans. I was calling to confirm your cleaning ${timing.dayWord}. Please reply to our text or call us back at 517-777-8712 to confirm or cancel. Thank you!`;
 }
 
 fastify.post('/outbound-call', async (request, reply) => {
@@ -907,7 +965,7 @@ fastify.post('/sms-message', async (request, reply) => {
     const smsReply = String(smsResult.reply || '').trim();
 
     if (!smsReply) {
-        throw new Error('Emma generated an empty SMS reply.');
+        throw new Error('Lisa generated an empty SMS reply.');
     }
 
     await db.query(
@@ -1268,7 +1326,7 @@ fastify.all('/outbound-custom-answer', async (request, reply) => {
             bookingDate: leadBookingData.requestedDate
         });
         const voicemailMessage = confirmationVoicemailMessage ||
-            `Hi${customerName ? ` ${String(customerName).split(/\s+/)[0]}` : ''}, this is Emma with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!`;
+            `Hi${customerName ? ` ${String(customerName).split(/\s+/)[0]}` : ''}, this is Lisa with SpeedyCleans following up about your cleaning request. Our Forever Clean members can get cleaning sessions starting at just $82.50. If you're interested, please call us back at 517-777-8712 or reply to our text. We look forward to helping you!`;
 
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -1343,7 +1401,7 @@ fastify.all('/outbound-press1', async (request, reply) => {
         const voicemailResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>
-        Hi, this is Emma calling from Speedy Solutions about the house cleaning quote you requested.
+        Hi, this is Lisa, SpeedyCleans' AI receptionist, calling about the house cleaning quote you requested.
         We would love to help you get your cleaning scheduled.
         Please call us back at 517-777-8712, or simply reply to the text message we send you.
         We look forward to speaking with you. Have a wonderful day.
@@ -1389,6 +1447,7 @@ let latestMediaTimestamp = 0;
 let callerPhone = '';
 let twilioNumber = '';
 let callMode = 'INBOUND_LEAD';
+let isLsaLine = false;
 
 let voicemailHangupScheduled = false;
 let voicemailTakeoverStarted = false;
@@ -1482,7 +1541,7 @@ const startHoldMusic = () => {
     stopHoldMusic();
     holdMusicSample = 0;
 
-    // Let Emma finish saying "one moment" before the melody begins.
+    // Let Lisa finish saying "one moment" before the melody begins.
     holdMusicDelayTimer = setTimeout(() => {
         holdMusicDelayTimer = null;
         holdMusicTimer = setInterval(() => {
@@ -1555,7 +1614,16 @@ const sessionUpdate = buildOpenAiSession({
     customerContext,
     recentCallContext,
     bookingContext,
-    memoryFirstContext
+    memoryFirstContext,
+    entryContext: callMode === 'OUTBOUND_PRESS_1' || isLsaLine
+        ? `QUOTE / LSA OPENING - HIGHEST PRIORITY:
+- Start by saying you are Lisa, SpeedyCleans' AI receptionist. This short AI disclosure is required for this call.
+- Explain in one brief sentence that you can check availability and book immediately.
+- Mention that eligible booking offers may be available, but never invent an offer or promise a discount that is not in approved company information.
+- Keep the opening short and move directly into helping.`
+        : `STANDARD OPENING - HIGHEST PRIORITY:
+- Introduce yourself as Lisa without announcing that you are AI.
+- Only explain that you are an AI receptionist if the caller asks for a human or directly asks whether you are AI.`
 });
 
                 console.log(
@@ -1564,7 +1632,7 @@ const sessionUpdate = buildOpenAiSession({
                 );
 
                 console.log(
-                    'Customer address provided to Emma:',
+                    'Customer address provided to Lisa:',
                     customerAddress || 'not available'
                 );
 
@@ -1723,7 +1791,7 @@ The customer previously requested cleaning information through Angi.
 
 Begin naturally by saying:
 
-"Hi! This is Emma with Speedy Solutions. You recently requested information through Angi about cleaning services, so I'm just following up to see if you're still looking for cleaning."
+"Hi! This is Lisa, SpeedyCleans' AI receptionist. You recently requested information through Angi about cleaning services, so I'm following up to see if you're still looking for cleaning."
 
 Wait for the customer's response.
 
@@ -1774,20 +1842,22 @@ Keep the conversation friendly, natural, and conversational.
 
 Say:
 
-"Thank you for calling SpeedyCleans. This is Emma. How can I help you today?"
+${isLsaLine
+    ? '"Thank you for calling SpeedyCleans. I\'m Lisa, your AI receptionist. I can check availability and help you book right now. How can I help?"'
+    : '"Thank you for calling SpeedyCleans. This is Lisa. How can I help you today?"'}
 
 HUMAN-TRANSFER POLICY Ã¢â‚¬â€ FOLLOW EXACTLY:
 
 - Do not transfer the caller to a receptionist, manager, owner, dispatcher, technician, office worker, or any specifically requested person.
 - Do not claim that you are transferring the call.
 - Do not place the caller on hold for a person.
-- You are Emma, SpeedyCleans' 24/7 AI receptionist and primary inbound call takerâ€”not a basic bot, phone menu, or transfer operator.
+- You are Lisa, SpeedyCleans' 24/7 AI receptionist and primary inbound call takerâ€”not a basic bot, phone menu, or transfer operator.
 - You can handle real work, including quotes, scheduling, service questions, appointment updates, billing questions, customer requests, complaints, and technician messages.
 - Make one confident attempt to explain the advantage of immediate AI assistance. If the caller still wants a human, stop persuading and take a complete callback message.
 
 If the caller asks for a receptionist, representative, human, manager, owner, office staff, or transfer, say:
 
-"I'm Emma, SpeedyCleans' 24/7 AI receptionist. This isn't a basic bot or a transfer lineâ€”I'm built to actually handle things right here, including quotes, scheduling, service questions, appointment updates, billing questions, and customer requests. I'm continuously upgraded with our latest information and tools, so I can often help faster than waiting for a traditional receptionist. Tell me what you need, and let's take care of it now."
+"I'm Lisa, SpeedyCleans' 24/7 AI receptionist. This isn't a basic bot or a transfer lineâ€”I'm built to actually handle things right here, including quotes, scheduling, service questions, appointment updates, billing questions, and customer requests. I'm continuously upgraded with our latest information and tools, so I can often help faster than waiting for a traditional receptionist. Tell me what you need, and let's take care of it now."
 
 Then ask:
 
@@ -1851,19 +1921,19 @@ Examples:
 Customer:
 "Monthly."
 
-Emma:
+Lisa:
 "Perfect. Our best value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, monthly cleaning starts at $127.50 for two hours. Forever Clean is our best deal by far."
 
 Customer:
 "Biweekly."
 
-Emma:
+Lisa:
 "Perfect. Our best value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, every-two-week cleaning starts at $120 for two hours, and she brings all professional cleaning supplies and equipment."
 
 Customer:
 "Weekly."
 
-Emma:
+Lisa:
 "Great. Our best value is Forever Clean. It's $250 for the year and gives you 45% off cleaning for a full year, bringing a typical two-hour cleaning down to just $82.50. Without a membership, weekly cleaning starts at $112.50 for two hours, and she brings all professional cleaning supplies and equipment."
 
 After giving the applicable price, immediately continue with scheduling.
@@ -2117,7 +2187,9 @@ Do not ask additional booking questions after confirming the appointment.`
 
 Say:
 
-"Thank you for calling SpeedyCleans. This is Emma. How can I help you today?"
+${isLsaLine
+    ? '"Thank you for calling SpeedyCleans. I\'m Lisa, your AI receptionist. I can check availability and help you book right now. How can I help?"'
+    : '"Thank you for calling SpeedyCleans. This is Lisa. How can I help you today?"'}
 
 Allow the caller to briefly explain what they need.
 
@@ -2297,7 +2369,7 @@ const takeOverVoicemailCall = async (transcript) => {
             customerName: outboundCustomerName,
             bookingDate: outboundRequestedDate
         });
-        const fallbackVoicemailMessage = 'Hi, this is Emma with Speedy Solutions calling about your Angi request. Please call us back at 5 1 7, 7 7 7, 8 7 1 2. Thank you.';
+        const fallbackVoicemailMessage = 'Hi, this is Lisa, SpeedyCleans\' AI receptionist, calling about your Angi request. Please call us back at 5 1 7, 7 7 7, 8 7 1 2. Thank you.';
         const voicemailTwiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say voice="alice">${escapeXml(confirmationVoicemailMessage || fallbackVoicemailMessage)}</Say>
@@ -2451,7 +2523,7 @@ ${assistantTranscript}`;
                                   : 'no_answer',
                   securePhonePaymentRequested: answered && /\b(card|credit card|debit card|pay by phone|over the phone)\b/.test(lowerCustomer),
                   formDeliveryRequested: answered && /\b(text|email|link|form)\b/.test(lowerCustomer),
-                  // Never infer a completed cancellation from Emma's spoken words.
+                  // Never infer a completed cancellation from Lisa's spoken words.
                   // A customer request is only cancel_requested until the Octopus action
                   // itself returns a verified cancellation result.
                   cancellationVerified: false
@@ -2930,6 +3002,10 @@ callMode =
     customParameters.callMode ||
     'INBOUND_LEAD';
 
+isLsaLine =
+    customParameters.isLsaLine === 'true' ||
+    isLsaDestination(twilioNumber);
+
 console.log(
     'Twilio number called:',
     twilioNumber
@@ -2973,7 +3049,7 @@ console.log(
     sheetRowNumber || 'not provided'
 );
 console.log(
-    'Emma call mode:',
+    'Lisa call mode:',
     callMode
 );
 
