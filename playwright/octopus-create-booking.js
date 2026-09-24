@@ -1396,11 +1396,24 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       endTime: await firstEndTime.inputValue()
     };
 
+    // Octopus normalizes visible date fields by dropping a leading zero from
+    // single-digit days ("02 October" -> "2 October"). That is the same date,
+    // not a failed component commit. Compare canonical display values so
+    // formatting alone cannot falsely fail a booking.
+    const canonicalAppointmentDate = value => String(value || "")
+      .replace(/\b0(\d)\b/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+    const canonicalAppointmentTime = value => String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toUpperCase();
+
     if (
-      appointmentTimes.startDate !== expectedAppointment.startDate ||
-      appointmentTimes.startTime !== expectedAppointment.startTime ||
-      appointmentTimes.endDate !== expectedAppointment.endDate ||
-      appointmentTimes.endTime !== expectedAppointment.endTime
+      canonicalAppointmentDate(appointmentTimes.startDate) !== canonicalAppointmentDate(expectedAppointment.startDate) ||
+      canonicalAppointmentTime(appointmentTimes.startTime) !== canonicalAppointmentTime(expectedAppointment.startTime) ||
+      canonicalAppointmentDate(appointmentTimes.endDate) !== canonicalAppointmentDate(expectedAppointment.endDate) ||
+      canonicalAppointmentTime(appointmentTimes.endTime) !== canonicalAppointmentTime(expectedAppointment.endTime)
     ) {
       throw new Error(`APPOINTMENT_COMPONENT_COMMIT_FAILED: ${JSON.stringify(appointmentTimes)}`);
     }
