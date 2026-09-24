@@ -1371,11 +1371,20 @@ lisaTiming("DATE_TIME_SET", `${TEST.bookingDate} ${TEST.startTime}`);
       endTime: await firstEndTime.inputValue()
     };
 
+    const canonicalAppointmentDate = value => String(value || "")
+      .replace(/\b0(\d)\b/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+    const canonicalAppointmentTime = value => String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toUpperCase();
+
     if (
-      appointmentTimes.startDate !== expectedAppointment.startDate ||
-      appointmentTimes.startTime !== expectedAppointment.startTime ||
-      appointmentTimes.endDate !== expectedAppointment.endDate ||
-      appointmentTimes.endTime !== expectedAppointment.endTime
+      canonicalAppointmentDate(appointmentTimes.startDate) !== canonicalAppointmentDate(expectedAppointment.startDate) ||
+      canonicalAppointmentTime(appointmentTimes.startTime) !== canonicalAppointmentTime(expectedAppointment.startTime) ||
+      canonicalAppointmentDate(appointmentTimes.endDate) !== canonicalAppointmentDate(expectedAppointment.endDate) ||
+      canonicalAppointmentTime(appointmentTimes.endTime) !== canonicalAppointmentTime(expectedAppointment.endTime)
     ) {
       throw new Error(`APPOINTMENT_COMPONENT_COMMIT_FAILED: ${JSON.stringify(appointmentTimes)}`);
     }
