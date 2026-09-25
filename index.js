@@ -1024,6 +1024,45 @@ fastify.post(
                 return reply.send(lookupResult);
             }
 
+
+            if (action === 'assign') {
+                const bookingId = String(body.bookingId || body.booking_id || '').trim();
+                const fieldworkerName = String(body.fieldworkerName || body.cleanerName || '').trim();
+                if (!/^\d+$/.test(bookingId) || !fieldworkerName) {
+                    return reply.send({
+                        success:false,
+                        outcome:'assignment_fields_required',
+                        error:'bookingId and fieldworkerName are required.'
+                    });
+                }
+
+                const { stdout, stderr } = await execFileAsync(
+                    process.execPath,
+                    ['playwright/octopus-booking-actions.js','assign',bookingId,fieldworkerName],
+                    {
+                        cwd:process.cwd(),
+                        env:{...process.env},
+                        timeout:120000,
+                        maxBuffer:10 * 1024 * 1024
+                    }
+                );
+                if (stderr) console.log('Lisa assignment stderr:', stderr);
+                const line=stdout.split(/\r?\n/).find(line=>line.startsWith('LISA_ASSIGN_RESULT='));
+                if (!line) {
+                    return reply.send({
+                        success:false,
+                        outcome:'assignment_result_missing',
+                        error:'Assignment automation did not return a verified result.'
+                    });
+                }
+                const result=JSON.parse(line.slice('LISA_ASSIGN_RESULT='.length));
+                return reply.send({
+                    ...result,
+                    success:result.ok===true && ['assigned_and_verified','already_assigned'].includes(result.outcome),
+                    verified_assigned_in_octopus:result.ok===true && ['assigned_and_verified','already_assigned'].includes(result.outcome)
+                });
+            }
+
             if (action === 'cancel') {
                 const result =
                     await cancelBookingAction({
