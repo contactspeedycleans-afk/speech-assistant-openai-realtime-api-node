@@ -13,6 +13,7 @@ const mode = [
   "reschedule",
   "capture-reschedule",
   "capture-assign",
+  "assign",
   "diagnose",
   "update-notes",
   "billing"
@@ -37,7 +38,9 @@ const requestedFieldworkerId =
 const requestedCleaner =
   mode === "capture-assign"
     ? args.slice(3).join(" ").trim()
-    : "";
+    : mode === "assign"
+      ? args.slice(2).join(" ").trim()
+      : "";
 
 if (!OCTOPUS_EMAIL) throw new Error("Missing OCTOPUS_EMAIL");
 if (!OCTOPUS_PASSWORD) throw new Error("Missing OCTOPUS_PASSWORD");
@@ -73,7 +76,7 @@ if (
 }
 
 if (
-  mode === "capture-assign" &&
+  ["capture-assign", "assign"].includes(mode) &&
   !requestedCleaner
 ) {
   throw new Error(
@@ -1813,6 +1816,104 @@ async function chooseCleanerFromOpenAssignmentUi(
 }
 
 
+
+async function assignCleanerByName(page) {
+  const initialState = await getPageState(page);
+
+  if (initialState.cancelled) {
+    const result = {ok:false,action:"assign",booking_id:Number(bookingId),outcome:"blocked_cancelled_booking",changed:false};
+    console.log("LISA_ASSIGN_RESULT=" + JSON.stringify(result));
+    return;
+  }
+  if (initialState.unsafeState) {
+    const result = {ok:false,action:"assign",booking_id:Number(bookingId),outcome:"blocked_active_booking",reason:"Booking is already in " + initialState.unsafeState + ".",changed:false};
+    console.log("LISA_ASSIGN_RESULT=" + JSON.stringify(result));
+    return;
+  }
+
+  const contractorField = page.locator('input[name="contractor_0"]').first();
+  await contractorField.waitFor({state:"attached",timeout:20000});
+  const beforeId = String(await contractorField.inputValue().catch(()=>"")).trim();
+  const beforeText = await page.locator("body").innerText();
+  const escapedCleaner = requestedCleaner.split(/\s+/).filter(Boolean).map(part=>part.replace(/[.*+?^$\{\}()|[\]\\]/g,"\\$&")).join(".*");
+  const alreadyRequested = new RegExp(escapedCleaner,"i").test(beforeText);
+  const unassigned = /Unassigned Tasks Manager|Unassigned Fieldworkers?/i.test(beforeText) || beforeId==="47464" || beforeId==="0" || !beforeId;
+
+  if (!unassigned) {
+    const result = {
+      ok:alreadyRequested,action:"assign",booking_id:Number(bookingId),
+      requested_cleaner:requestedCleaner,outcome:alreadyRequested?"already_assigned":"blocked_already_assigned",
+      contractor_id:beforeId,changed:false
+    };
+    console.log("LISA_ASSIGN_RESULT=" + JSON.stringify(result));
+    return;
+  }
+
+  await clickAssignmentControl(page);
+  await chooseCleanerFromOpenAssignmentUi(page, requestedCleaner);
+
+  const applyButton = await waitForLargestVisibleExactText(page,"Apply",5000);
+  if (applyButton) {
+    await applyButton.click({timeout:8000}).catch(async()=>applyButton.evaluate(el=>el.click()));
+    await page.waitForTimeout(1200);
+  }
+
+  const selected = await page.evaluate(()=>{
+    const contractor=document.querySelector('input[name="contractor_0"]');
+    const ids=Array.from(document.querySelectorAll('input[id^="contractor_ids_"]')).map(field=>String(field.value||"")).filter(Boolean);
+    return {contractor:String(contractor?.value||""),ids,updateFlag:String(document.querySelector("#booking_updates_flag")?.value||"")};
+  });
+
+  const selectedId = selected.contractor && selected.contractor!=="47464" && selected.contractor!=="0"
+    ? selected.contractor
+    : selected.ids.find(value=>value && value!=="47464" && value!=="0") || "";
+
+  if (!selectedId) {
+    const result={ok:false,action:"assign",booking_id:Number(bookingId),requested_cleaner:requestedCleaner,outcome:"cleaner_selected_but_id_not_resolved",selection:selected,changed:false};
+    console.log("LISA_ASSIGN_RESULT=" + JSON.stringify(result));
+    return;
+  }
+
+  await page.evaluate((fieldworkerId)=>{
+    const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")?.set;
+    const setValue=(field,value)=>{
+      if(!field)return;
+      if(setter)setter.call(field,value); else field.value=value;
+      field.dispatchEvent(new Event("input",{bubbles:true}));
+      field.dispatchEvent(new Event("change",{bubbles:true}));
+    };
+    setValue(document.querySelector('input[name="contractor_0"]'),fieldworkerId);
+    for(const field of document.querySelectorAll('input[id^="contractor_ids_"]')) setValue(field,fieldworkerId);
+    setValue(document.querySelector("#booking_updates_flag"),"1");
+  },selectedId);
+
+  const saveButton=page.locator("#save_booking_btn_id").first();
+  if(await saveButton.isVisible().catch(()=>false)){
+    await saveButton.click({timeout:10000});
+  } else {
+    const fallback=await waitForLargestVisibleExactText(page,"Save changes",10000);
+    if(!fallback) throw new Error("Could not find Save changes for assignment.");
+    await fallback.click({timeout:10000}).catch(async()=>fallback.evaluate(el=>el.click()));
+  }
+
+  await page.waitForTimeout(8000);
+  await page.reload({waitUntil:"domcontentloaded",timeout:60000});
+  await page.waitForTimeout(3000);
+
+  const afterText=await page.locator("body").innerText();
+  const afterId=String(await page.locator('input[name="contractor_0"]').first().inputValue().catch(()=>"")).trim();
+  const verified=new RegExp(escapedCleaner,"i").test(afterText) && afterId && afterId!=="47464" && afterId!=="0";
+
+  const result={
+    ok:Boolean(verified),action:"assign",booking_id:Number(bookingId),
+    requested_cleaner:requestedCleaner,previous_contractor_id:beforeId,
+    contractor_id:afterId||selectedId,
+    outcome:verified?"assigned_and_verified":"assignment_verification_failed",
+    changed:Boolean(verified)
+  };
+  console.log("LISA_ASSIGN_RESULT=" + JSON.stringify(result));
+}
+
 async function captureAssignCleaner(page) {
   const initialState =
     await getPageState(page);
@@ -2867,6 +2968,7 @@ async function main() {
     if (mode === "cancel") await cancelBooking(page);
     else if (["reschedule", "capture-reschedule"].includes(mode)) await rescheduleBooking(page);
     else if (mode === "capture-assign") await captureAssignCleaner(page);
+    else if (mode === "assign") await assignCleanerByName(page);
     else if (mode === "update-notes") console.log("LISA_NOTE_UPDATE_RESULT=" + JSON.stringify(await updateBookingNotes(page, JSON.parse(process.env.LISA_NOTE_UPDATE_PAYLOAD || "{}"))));
     else if (mode === "diagnose") await diagnoseBookingPage(page);
     else if (mode === "billing") await inspectBilling(page);
