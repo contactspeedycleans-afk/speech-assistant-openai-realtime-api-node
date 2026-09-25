@@ -904,15 +904,26 @@ fastify.post(
             String(
                 request.headers['x-lisa-secret'] || ''
             ).trim();
+        const genieSecret =
+            String(process.env.GENIE_CRM_SYNC_SECRET || '').trim();
+        const suppliedGenieSecret =
+            String(request.headers['x-genie-secret'] || '').trim();
         const isolatedTestSecret =
             String(process.env.LISA_FAST_BOOKING_TEST_ONLY || '').toLowerCase() === 'true'
                 ? String(process.env.LISA_TEST_ACTION_SECRET || '').trim()
                 : '';
 
+        const bodySource = String(request.body?.source || '').trim().toUpperCase();
+        const genieAuthorized =
+            bodySource === 'GENIE_CRM' &&
+            Boolean(genieSecret) &&
+            suppliedGenieSecret === genieSecret;
+
         if (
             !configuredSecret ||
             (suppliedSecret !== configuredSecret &&
-             (!isolatedTestSecret || suppliedSecret !== isolatedTestSecret))
+             (!isolatedTestSecret || suppliedSecret !== isolatedTestSecret) &&
+             !genieAuthorized)
         ) {
             return reply
                 .code(401)
