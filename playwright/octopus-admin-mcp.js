@@ -16,6 +16,7 @@ const APPROVAL=process.env.OAUTH_APPROVAL_CODE;
 const EMAIL=process.env.OCTOPUS_EMAIL;
 const PASSWORD=process.env.OCTOPUS_PASSWORD;
 const ORGANIZATION=process.env.OCTOPUS_ORGANIZATION_NAME||"SpeedyCleans";
+const GENIE_SECRET=String(process.env.GENIE_CRM_SYNC_SECRET||"").trim();
 const SCOPES=["octopus:read","octopus:write","octopus:financial"];
 if(!BASE||!SECRET||!APPROVAL||!EMAIL||!PASSWORD) throw new Error("Missing required bridge configuration");
 
@@ -50,6 +51,94 @@ async function login(page){
 }
 async function withPage(fn){const browser=await chromium.launch({headless:true});try{const page=await browser.newPage();await login(page);return await fn(page)}finally{await browser.close()}}
 
+
+
+async function assignExistingBookingByName(bookingId,cleanerName){
+ return withPage(async page=>{
+  const url="https://admin.octopuspro.com/booking/view/"+bookingId;
+  await page.goto(url,{waitUntil:"domcontentloaded",timeout:60000});
+  await page.waitForTimeout(3500);
+  if(!page.url().includes("/booking/view/"+bookingId))throw Error("Booking page did not open: "+page.url());
+
+  const bodyText=await page.locator("body").innerText();
+  if(/CANCELLED/i.test(bodyText))throw Error("Cannot assign a cancelled booking.");
+  if(/\b(?:EN ROUTE|ON THE WAY|ARRIVED|CHECKED IN|JOB STARTED|WORK STARTED|IN PROGRESS)\b/i.test(bodyText))throw Error("Cannot reassign an active booking.");
+
+  const contractor=page.locator('input[name="contractor_0"]').first();
+  await contractor.waitFor({state:"attached",timeout:15000});
+  const beforeId=String(await contractor.inputValue().catch(()=>"")).trim();
+  const unassigned=/Unassigned Tasks Manager|Unassigned Fieldworkers?/i.test(bodyText)||beforeId==="47464"||beforeId==="0"||!beforeId;
+  const escaped=cleanerName.replace(/[.*+?^\${}()|[\]\\]/g,"\\$&");
+  if(!unassigned){
+   const already=new RegExp(escaped,"i").test(bodyText);
+   return {success:already,bookingId:Number(bookingId),cleanerName,changed:false,outcome:already?"already_assigned":"booking_already_assigned",contractorId:beforeId};
+  }
+
+  const matches=page.getByText("Unassigned Tasks Manager",{exact:true});
+  const candidates=[];
+  for(let i=0;i<await matches.count();i++){
+   const node=matches.nth(i);
+   if(!(await node.isVisible().catch(()=>false)))continue;
+   const box=await node.boundingBox();
+   if(box)candidates.push({node,box});
+  }
+  if(!candidates.length)throw Error("Visible assignment control not found.");
+  candidates.sort((a,b)=>b.box.x-a.box.x||a.box.y-b.box.y);
+  await candidates[0].node.click({timeout:10000});
+  await page.waitForTimeout(1200);
+
+  const inputs=page.locator("input:visible");
+  let searchInput=null;
+  for(let i=0;i<await inputs.count();i++){
+   const el=inputs.nth(i);
+   const identity=[
+    await el.getAttribute("placeholder").catch(()=>""),await el.getAttribute("aria-label").catch(()=>""),await el.getAttribute("name").catch(()=>""),await el.getAttribute("id").catch(()=>"")
+   ].filter(Boolean).join(" ");
+   if(/search|fieldworker|worker|technician|staff|assignee|assign/i.test(identity)){searchInput=el;break}
+  }
+  if(searchInput){await searchInput.fill(cleanerName);await page.waitForTimeout(1200)}
+
+  let cleaner=page.getByText(cleanerName,{exact:true});
+  let selected=null;
+  for(let i=0;i<await cleaner.count();i++){const node=cleaner.nth(i);if(await node.isVisible().catch(()=>false)){selected=node;break}}
+  if(!selected){
+   cleaner=page.getByText(new RegExp(escaped,"i"));
+   for(let i=0;i<await cleaner.count();i++){const node=cleaner.nth(i);if(await node.isVisible().catch(()=>false)){selected=node;break}}
+  }
+  if(!selected){
+   const relevant=(await page.locator("body").innerText()).split(/\r?\n/).map(v=>v.trim()).filter(v=>/fieldworker|worker|unassigned|william/i.test(v)).slice(0,80);
+   throw Error('Cleaner "'+cleanerName+'" not found in assignment UI. '+JSON.stringify(relevant));
+  }
+  await selected.click({timeout:10000});
+  await page.waitForTimeout(1000);
+
+  const applyCandidates=page.getByText("Apply",{exact:true});
+  for(let i=0;i<await applyCandidates.count();i++){
+   const node=applyCandidates.nth(i);
+   if(await node.isVisible().catch(()=>false)){await node.click({timeout:5000}).catch(()=>{});await page.waitForTimeout(1000);break}
+  }
+
+  const selectedId=String(await contractor.inputValue().catch(()=>"")).trim();
+  if(!selectedId||selectedId==="47464"||selectedId==="0")throw Error("Cleaner selection did not update Octopus contractor ID.");
+
+  await page.evaluate(()=>{
+   const flag=document.querySelector("#booking_updates_flag");
+   if(flag){flag.value="1";flag.dispatchEvent(new Event("change",{bubbles:true}))}
+  });
+
+  const save=page.locator("#save_booking_btn_id").first();
+  if(!(await save.isVisible().catch(()=>false)))throw Error("Save changes button not available.");
+  await save.click({timeout:10000});
+  await page.waitForTimeout(7000);
+
+  await page.goto(url,{waitUntil:"domcontentloaded",timeout:60000});
+  await page.waitForTimeout(2500);
+  const afterText=await page.locator("body").innerText();
+  const afterId=String(await page.locator('input[name="contractor_0"]').first().inputValue().catch(()=>"")).trim();
+  const verified=new RegExp(escaped,"i").test(afterText)&&afterId&&afterId!=="47464"&&afterId!=="0";
+  return {success:Boolean(verified),bookingId:Number(bookingId),cleanerName,changed:Boolean(verified),outcome:verified?"assigned_and_verified":"assignment_verification_failed",contractorId:afterId||selectedId};
+ });
+}
 
 async function runTargetedCustomerNameFix(){
  const raw=String(process.env.OCTOPUS_TARGET_CUSTOMER_NAME_FIX||"").trim();
@@ -244,6 +333,22 @@ const authMetadata={issuer:BASE,authorization_response_iss_parameter_supported:t
 
 const server=http.createServer(async(req,res)=>{
  const u=new URL(req.url,BASE);
+
+ if(u.pathname==="/internal/assign-booking"&&req.method==="POST"){
+  const supplied=String(req.headers["x-genie-secret"]||"").trim();
+  if(!GENIE_SECRET||supplied!==GENIE_SECRET)return json(res,401,{error:"unauthorized"});
+  let data;try{data=JSON.parse(await body(req)||"{}")}catch{return json(res,400,{error:"invalid_json"})}
+  const bookingId=String(data.bookingId||data.booking_id||"").trim();
+  const cleanerName=String(data.fieldworkerName||data.cleanerName||"").trim();
+  if(!/^\d+$/.test(bookingId)||!cleanerName)return json(res,400,{error:"bookingId and fieldworkerName are required"});
+  try{
+   const result=await assignExistingBookingByName(bookingId,cleanerName);
+   return json(res,result.success?200:409,result);
+  }catch(e){
+   console.error("OCTOPUS_INTERNAL_ASSIGN_FAILED",e?.stack||e);
+   return json(res,500,{success:false,outcome:"assignment_automation_error",error:String(e?.message||e)});
+  }
+ }
  if(u.pathname==="/health")return json(res,200,{ok:true,oauth:true});
  if(u.pathname==="/.well-known/oauth-protected-resource"||u.pathname==="/.well-known/oauth-protected-resource/mcp")return json(res,200,protectedMetadata);
  if(u.pathname==="/.well-known/oauth-authorization-server")return json(res,200,authMetadata);
