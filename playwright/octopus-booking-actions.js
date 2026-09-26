@@ -1306,6 +1306,30 @@ async function rescheduleBooking(page) {
     newStartMinutes + oldDurationMinutes
   );
 
+  const notifyCustomer = process.env.LISA_SKIP_RESCHEDULE_NOTIFICATION !== 'true';
+  const expectedDate = process.env.LISA_RESCHEDULE_EXPECTED_DATE || '';
+  const expectedStart = process.env.LISA_RESCHEDULE_EXPECTED_START || '';
+  if (newStartMinutes + oldDurationMinutes >= 1440) {
+    throw new Error('Appointments crossing midnight require staff review.');
+  }
+  // Replays after an interrupted CRM response verify the existing target without another save.
+  if (normalizeDateText(oldFromDate) === normalizeDateText(newDateText) &&
+      parseClockTime(oldFromTime) === newStartMinutes) {
+    logResult({ok: true, action: 'reschedule', booking_id: Number(bookingId),
+      outcome: 'already_rescheduled', new_date: oldFromDate, new_start_time: oldFromTime,
+      new_end_time: oldToTime, duration_minutes: oldDurationMinutes,
+      verified_rescheduled_in_octopus: true, verification_source: 'fresh_booking_page',
+      customer_notification_sent: false, changed: false});
+    return;
+  }
+  if ((expectedDate && normalizeDateText(oldFromDate) !== normalizeDateText(formatLongDate(expectedDate))) ||
+      (expectedStart && parseClockTime(oldFromTime) !== parseClockTime(expectedStart))) {
+    logResult({ok: false, action: 'reschedule', booking_id: Number(bookingId),
+      outcome: 'appointment_changed_since_confirmation', verified_rescheduled_in_octopus: false,
+      customer_notification_sent: false, changed: false});
+    return;
+  }
+
   console.log("Rescheduling appointment:", {
     oldFromDate,
     oldFromTime,
@@ -1402,9 +1426,10 @@ async function rescheduleBooking(page) {
     return;
   }
 
-  const notifyHeading = page.getByText("Notify Customer", { exact: true });
-  await notifyHeading.waitFor({ state: "visible", timeout: 30000 });
-  await page.waitForTimeout(3000);
+  if (notifyCustomer) {
+    const notifyHeading = page.getByText("Notify Customer", { exact: true });
+    await notifyHeading.waitFor({ state: "visible", timeout: 30000 });
+  }
 
   const saveBody = saveResponseSummary?.body || {};
   const serverVerified =
@@ -1465,7 +1490,7 @@ async function rescheduleBooking(page) {
     parseClockTime(persistedAppointment.fromTime) === newStartMinutes &&
     parseClockTime(persistedAppointment.toTime) ===
       (newStartMinutes + oldDurationMinutes) % 1440;
-  const persisted = serverVerified || pageVerified;
+  const persisted = pageVerified;
 
   if (!persisted) {
     logResult({
@@ -1490,70 +1515,19 @@ async function rescheduleBooking(page) {
     return;
   }
 
-  const sendButton = await waitForLargestVisibleExactText(page, "Send", 20000);
-  if (!sendButton) {
-    throw new Error("Could not find the Notify Customer Send button.");
+  if (notifyCustomer) {
+    const sendButton = await waitForLargestVisibleExactText(page, "Send", 20000);
+    if (!sendButton) throw new Error("Could not find the Notify Customer Send button.");
+    await sendButton.click();
+    await page.waitForTimeout(4000);
   }
-  await sendButton.click();
-  await page.waitForTimeout(4000);
-
-  if (serverVerified) {
-    logResult({
-      ok: true,
-      action: "reschedule",
-      booking_id: Number(bookingId),
-      outcome: "rescheduled",
-      previous_date: oldFromDate,
-      previous_start_time: oldFromTime,
-      previous_end_time: oldToTime,
-      new_date: newDateText,
-      new_start_time: newStartText,
-      new_end_time: newEndText,
-      duration_minutes: oldDurationMinutes,
-      customer_notification_sent: true,
-      verified_rescheduled_in_octopus: true,
-      verification_source: "octopus_save_response",
-      changed: true
-    });
-    return;
-  }
-
-  await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
-  await page.waitForTimeout(5000);
-
-  const savedAppointment = await readStoredAppointment(page);
-  const savedFromDate = savedAppointment.fromDate;
-  const savedFromTime = savedAppointment.fromTime;
-  const savedToDate = savedAppointment.toDate;
-  const savedToTime = savedAppointment.toTime;
-
-  const dateVerified =
-    normalizeDateText(savedFromDate) === normalizeDateText(newDateText) &&
-    normalizeDateText(savedToDate) === normalizeDateText(newDateText);
-  const timeVerified =
-    parseClockTime(savedFromTime) === newStartMinutes &&
-    parseClockTime(savedToTime) ===
-      (newStartMinutes + oldDurationMinutes) % 1440;
-  const verified = serverVerified || (dateVerified && timeVerified);
-
   logResult({
-    ok: verified,
-    action: "reschedule",
-    booking_id: Number(bookingId),
-    outcome: verified ? "rescheduled" : "verification_failed",
-    previous_date: oldFromDate,
-    previous_start_time: oldFromTime,
-    previous_end_time: oldToTime,
-    new_date: verified && serverVerified ? newDateText : savedFromDate,
-    new_start_time: verified && serverVerified ? newStartText : savedFromTime,
-    new_end_time: verified && serverVerified ? newEndText : savedToTime,
-    duration_minutes: oldDurationMinutes,
-    customer_notification_sent: true,
-    verified_rescheduled_in_octopus: verified,
-    verification_source: serverVerified
-      ? "octopus_save_response"
-      : "fresh_booking_page",
-    changed: verified
+    ok: true, action: 'reschedule', booking_id: Number(bookingId), outcome: 'rescheduled',
+    previous_date: oldFromDate, previous_start_time: oldFromTime, previous_end_time: oldToTime,
+    new_date: persistedAppointment.fromDate, new_start_time: persistedAppointment.fromTime,
+    new_end_time: persistedAppointment.toTime, duration_minutes: oldDurationMinutes,
+    customer_notification_sent: notifyCustomer, verified_rescheduled_in_octopus: true,
+    verification_source: 'fresh_booking_page', changed: true
   });
 }
 
@@ -2965,7 +2939,7 @@ async function main() {
     const page = await context.newPage();
     // Unauthenticated deep links can redirect to customerPortal/not-found
     // instead of /login. Authenticate before opening the appointment editor.
-    if (mode === 'update-notes') await loginToOctopus(page);
+    if (['update-notes', 'reschedule', 'capture-reschedule'].includes(mode)) await loginToOctopus(page);
     await openBooking(page);
 
     if (mode === "cancel") await cancelBooking(page);

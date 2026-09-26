@@ -1091,6 +1091,9 @@ fastify.post(
             if (action === 'reschedule') {
                 const result =
                     await rescheduleBookingAction({
+                        notifyCustomer: body.notifyCustomer !== false,
+                        expectedDate: String(body.expectedDate || ''),
+                        expectedStartTime: String(body.expectedStartTime || ''),
                         bookingId:
                             body.bookingId,
                         requestedDate:
