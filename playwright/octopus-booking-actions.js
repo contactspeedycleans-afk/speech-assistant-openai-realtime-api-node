@@ -2963,6 +2963,9 @@ async function main() {
       viewport: { width: 1600, height: 1000 }
     });
     const page = await context.newPage();
+    // Unauthenticated deep links can redirect to customerPortal/not-found
+    // instead of /login. Authenticate before opening the appointment editor.
+    if (mode === 'update-notes') await loginToOctopus(page);
     await openBooking(page);
 
     if (mode === "cancel") await cancelBooking(page);

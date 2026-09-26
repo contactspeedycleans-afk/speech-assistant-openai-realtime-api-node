@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateNoteJob} from '../lib/booking-note-rules.js';
+import {validateNoteJob,validateCustomerEvidence} from '../lib/booking-note-rules.js';
 import {syncGenieBookingNotes} from '../lib/genie-booking-notes.js';
 const payload={bookingSystem:'genie_crm',genieJobId:'00000000-0000-4000-8000-000000000001',
   callSid:'CA'+'1'.repeat(32),bookingNumber:'BOK-123',transcript:'Customer: Side door.',baseline:{specialNotes:'',accessInstructions:''}};
@@ -24,4 +24,9 @@ test('staff conflict never edits or acknowledges',async()=>{
 });
 test('already completed replay never edits again',async()=>{
   const result=await syncGenieBookingNotes(payload,{},()=>{throw Error('must not edit')},async()=>({alreadyComplete:true}));assert.equal(result.outcome,'notes_already_synced');
+});
+test('Lisa statements cannot serve as evidence for new customer instructions',()=>{
+  const notes={specialNotes:'One pet present.',accessInstructions:null,needsReview:false,reviewReason:'',specialNotesEvidence:['One pet present.'],accessInstructionsEvidence:[]};
+  assert.throws(()=>validateCustomerEvidence(notes,'Customer: One person.\nLisa: One pet present.'),/NOTES_REQUIRE_REVIEW/);
+  assert.throws(()=>validateCustomerEvidence({...notes,specialNotesEvidence:[]},'Customer: Hello.'),/NOTES_REQUIRE_REVIEW/);
 });
