@@ -820,6 +820,7 @@ async function cacheLisaCreatedBooking({ bookingId, bookingNumber, body }) {
 const fastBookingWebhookDeliveries = new Set();
 
 async function sendFastBookingSuccessWebhook({ bookingId, bookingNumber, body }) {
+    if (String(body?.source || '').toUpperCase() === 'GENIE_CRM') return true;
     const successWebhookUrl = String(
         process.env.LISA_BOOKING_SUCCESS_WEBHOOK_URL || ''
     ).trim();
@@ -1450,7 +1451,7 @@ fastify.post(
                     process.env.LISA_BOOKING_SUCCESS_WEBHOOK_URL || ''
                 ).trim();
 
-                if (successWebhookUrl) {
+                if (successWebhookUrl && !genieAuthorized) {
                     const successPayload = {
                         event: 'LISA_BOOKING_CREATED',
                         bookingNumber,
@@ -4181,3 +4182,4 @@ fastify.listen(
         );
     }
 );
+
