@@ -17,3 +17,14 @@ assert.equal(matchesStreetAndState('4827 Rolling Acres Drive, Fremont, MI, USA',
 assert.equal(matchesStreetAndState('4247 Rolling Acres Drive, Hartland Township, MI, USA',{streetNumber:'4247',streetAddress:'Rolling Acres Drive',suburb:'Hartland',state:'MI'}),true);
 assert.equal(chooseClosestAddress(['4827 Rolling Acres Drive, Fremont, MI, USA'],{streetNumber:'4827',streetAddress:'Rolling Acres Drive',suburb:'Lansing',state:'MI'}),null);
 console.log('12 address regression checks passed');
+
+const tonyRequest={streetNumber:'34214',streetAddress:'Montrose Ave',suburb:'La Crescenta',state:'CA',postcode:'91214'};
+const wrongCity='34214 Montrose Avenue, Fremont, CA, USA, United States';
+const fremont={addressLine1:'34214',addressLine2:'Montrose Avenue',suburb:'Fremont',state:'CA',postcode:'94538',latitude:'37.5182195',longitude:'-121.9529114'};
+assert.equal(matchesStreetAndState(wrongCity,tonyRequest),false);
+assert.equal(validateSelectedLocation(fremont,wrongCity,tonyRequest).outcome,'address_location_mismatch');
+assert.equal(validateSelectedLocation({...base,postcode:'48353'},selected,{streetNumber:'123',suburb:'Hartland Township',state:'Michigan',postcode:'48353'}).success,true);
+assert.equal(validateSelectedLocation(base,selected,{streetNumber:'124',suburb:'Hartland',state:'MI',postcode:'48353'}).success,false);
+assert.equal(validateSelectedLocation(base,selected,{streetNumber:'123',suburb:'Hartland',state:'CA',postcode:'48353'}).success,false);
+assert.equal(validateSelectedLocation(base,selected,{streetNumber:'123',suburb:'Hartland',state:'MI',postcode:'91214'}).success,false);
+console.log('6 requested-location regression checks passed');

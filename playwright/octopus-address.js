@@ -24,11 +24,16 @@ function localitiesMatch(left, right) {
   return a === b || a.replace(/ township$/, '') === b.replace(/ township$/, '');
 }
 
+function normalizeState(value) {
+  const state = normalizeAddress(value);
+  return ({michigan:'mi',california:'ca',florida:'fl',ohio:'oh',indiana:'in',illinois:'il'})[state] || state;
+}
+
 export function matchesAddress(text, address) {
   const parts = String(text || '').split(',').map(normalizeAddress);
   const street = normalizeAddress(`${address.streetNumber} ${address.streetAddress}`);
   const locality = normalizeLocality;
-  const region = value => normalizeAddress(value).replace(/^michigan\b/, 'mi');
+  const region = value => normalizeState(value);
   const city = locality(address.suburb);
   const state = region(address.state);
   // Octopus sometimes inserts a county between locality and state. Preserve
@@ -42,14 +47,15 @@ export function matchesAddress(text, address) {
 export function matchesStreetAndState(text, address) {
   const parts = String(text || '').split(',').map(normalizeAddress);
   const street = normalizeAddress(`${address.streetNumber} ${address.streetAddress}`);
-  const state = normalizeAddress(address.state).replace(/^michigan\b/, 'mi');
+  const state = normalizeState(address.state);
   const regions = parts.slice(2).map(value =>
-    normalizeAddress(value).replace(/^michigan\b/, 'mi'));
+    normalizeState(value));
   const suppliedCity = normalizeLocality(address.suburb);
   const cityMatches = !suppliedCity || localitiesMatch(parts[1], suppliedCity);
-  const hasPostcode = Boolean(normalizeAddress(address.postcode));
+  const postcode = String(address.postcode || '').match(/\d{5}/)?.[0];
+  const candidateHasSamePostcode = Boolean(postcode && new RegExp(`\\b${postcode}\\b`).test(String(text)));
   return parts.length >= 3 && parts[0] === street &&
-    (cityMatches || hasPostcode) &&
+    (cityMatches || candidateHasSamePostcode) &&
     regions.some(part => part === state ||
       (part.startsWith(state + ' ') && /^\d{5}(?: \d{4})?$/.test(part.slice(state.length + 1))));
 }
@@ -115,7 +121,7 @@ export function chooseClosestAddress(texts, address) {
 }
 
 
-export function validateSelectedLocation(location, selectedText) {
+export function validateSelectedLocation(location, selectedText, requested = {}) {
   const selectedStreet = String(selectedText || '').split(',')[0].trim();
   const line1 = normalizeAddress(location.addressLine1);
   const combined = normalizeAddress(`${location.addressLine1 || ''} ${location.addressLine2 || ''}`);
@@ -127,6 +133,17 @@ export function validateSelectedLocation(location, selectedText) {
     String(location.longitude || '').trim() && Number.isFinite(latitude) &&
     Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180;
   if (!valid) return {success:false, outcome:'address_selection_failed', selectedText, ...location};
+  const wantedPostcode = String(requested.postcode || '').match(/\d{5}/)?.[0];
+  const actualPostcode = String(location.postcode || '').match(/\d{5}/)?.[0];
+  const postcodeMatches = Boolean(wantedPostcode && wantedPostcode === actualPostcode);
+  const wantedNumber = normalizeAddress(requested.streetNumber);
+  const actualNumber = normalizeAddress(selectedStreet).match(/^\d+[a-z]?/)?.[0];
+  const mismatch = (wantedPostcode && !postcodeMatches)
+    || (requested.state && normalizeState(requested.state) !== normalizeState(location.state))
+    || (requested.suburb && !localitiesMatch(requested.suburb, location.suburb) && !postcodeMatches)
+    || (wantedNumber && wantedNumber !== actualNumber);
+  if (mismatch) return {success:false, outcome:'address_location_mismatch', selectedText, ...location,
+    error:'The selected address does not match the requested house number, city, state or ZIP. Confirm the service address before booking.'};
   return {success:true, outcome:'address_selected', selectedText, ...location,
     // Lisa consumes a complete street line; keep the native split separately.
     nativeAddressLine1:location.addressLine1,
@@ -260,7 +277,7 @@ export async function selectOctopusAddress(page, address) {
       latitude:await read('Latitude'),
       longitude:await read('Longitude'),
     };
-    return validateSelectedLocation(location, chosenText);
+    return validateSelectedLocation(location, chosenText, address);
 
   }
   return {success:false, outcome:'address_no_match', query:fullQuery,
