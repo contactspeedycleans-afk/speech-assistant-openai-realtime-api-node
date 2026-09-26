@@ -4,6 +4,11 @@ import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source=readFileSync(new URL('../playwright/octopus-booking-actions.js',import.meta.url),'utf8');
 const code=source.slice(source.indexOf('async function rescheduleBooking(page)'),source.indexOf('function summarizeAssignmentWrite'));
+test('Octopus day-month dates compare equal to Intl month-day dates',()=>{
+  const start=source.indexOf('function normalizeDateText'),end=source.indexOf('\nasync function',start),ctx={};
+  vm.runInNewContext(source.slice(start,end)+'\nglobalThis.normalize=normalizeDateText;',ctx);
+  assert.equal(ctx.normalize('Sunday, 27 September 2026'),ctx.normalize('Sunday, September 27, 2026'));
+});
 async function run({oldStart='11:00 AM',oldEnd='2:00 PM',savedStart='9:00 AM',savedEnd='12:00 PM',expectedStart='11:00'}={}){
   const clicks=[],applied=[];let result;
   const appointment={fromDate:'2099-09-27',toDate:'2099-09-27',fromTime:oldStart,toTime:oldEnd};

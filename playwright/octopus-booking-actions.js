@@ -751,11 +751,14 @@ function formatLongDate(isoDate) {
 }
 
 function normalizeDateText(value) {
-  return String(value || "")
+  const text = String(value || "")
     .replace(/,/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+  // Octopus displays day-month while Intl's US formatter produces month-day.
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : text;
 }
 
 async function visibleInputAfterLabel(page, labelText, inputOffset = 0) {
@@ -2960,7 +2963,6 @@ async function main() {
 }
 
 main();
-
 
 
 
