@@ -1720,6 +1720,21 @@ if (livePayload?.dryRun === true) {
 console.log("Attempting to save booking with full validation capture...");
 lisaTiming("FINAL_SUBMIT_START");
 
+    const bookingMode = await page.evaluate(() => ({
+      pathname: location.pathname,
+      search: location.search,
+      toEstimate: document.querySelector('input[name="toEstimate"], #toEstimate')?.value || "",
+      toInvoice: document.querySelector('input[name="toInvoice"], #toInvoice')?.value || ""
+    }));
+    if (
+      !/\/booking\/add$/i.test(bookingMode.pathname) ||
+      /(?:toEstimate|toInvoice)=1/i.test(bookingMode.search) ||
+      bookingMode.toEstimate === "1" ||
+      bookingMode.toInvoice === "1"
+    ) {
+      throw new Error(`LISA_BOOKING_MODE_GUARD_FAILED: ${JSON.stringify(bookingMode)}`);
+    }
+
     const postTraffic = [];
 
     page.on("request", request => {
@@ -2039,10 +2054,20 @@ lisaTiming("FINAL_SUBMIT_START");
                r.height > 0;
       });
 
+      const pathIsBooking = /\/booking\/view\/\d+$/i.test(location.pathname);
+      const estimateMode = String(document.querySelector('input[name="toEstimate"], #toEstimate')?.value || "");
+      const invoiceMode = String(document.querySelector('input[name="toInvoice"], #toInvoice')?.value || "");
+      const pageLooksLikeBooking =
+        pathIsBooking &&
+        estimateMode !== "1" &&
+        invoiceMode !== "1" &&
+        /\bManage Booking\b/i.test(bodyText);
+
       return {
         url: location.href,
         booking_number: bokMatch ? bokMatch[0].toUpperCase() : null,
         booking_id: urlMatch ? urlMatch[1] : null,
+        page_looks_like_booking: pageLooksLikeBooking,
         notify_customer_visible: notifyCustomerVisible,
         visibleAlerts,
         alertContexts,
@@ -2062,9 +2087,9 @@ lisaTiming("FINAL_SUBMIT_START");
     console.log("");
 
     if (
-      saveDiagnostics.booking_number ||
-      saveDiagnostics.booking_id ||
-      saveDiagnostics.notify_customer_visible
+      saveDiagnostics.booking_number &&
+      saveDiagnostics.booking_id &&
+      saveDiagnostics.page_looks_like_booking === true
     ) {
       console.log("BOOKING CREATED SUCCESSFULLY.");
       console.log(
@@ -2078,6 +2103,8 @@ lisaTiming("FINAL_SUBMIT_START");
 
       FINAL_BOOKING_RESULT = {
         success: true,
+        verifiedCreatedInOctopus: true,
+        recordType: "booking",
         bookingNumber: saveDiagnostics.booking_number,
         bookingId: saveDiagnostics.booking_id,
         url: saveDiagnostics.url
@@ -2098,7 +2125,9 @@ lisaTiming("FINAL_SUBMIT_START");
       );
 
       try {
-        await sendCustomerConfirmation(FINAL_BOOKING_RESULT);
+        if (String(livePayload?.source || "").toUpperCase() !== "GENIE_CRM") {
+          await sendCustomerConfirmation(FINAL_BOOKING_RESULT);
+        }
       } catch (notificationError) {
         // A notification problem must never undo or falsely fail a booking.
         // Keep a loud Railway marker so the office can retry delivery while
@@ -2142,3 +2171,4 @@ main().catch(error => {
   }));
   process.exitCode = 1;
 });
+
