@@ -2,6 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateNoteJob,validateCustomerEvidence} from '../lib/booking-note-rules.js';
 import {syncGenieBookingNotes} from '../lib/genie-booking-notes.js';
+
+test('local-only completion takes precedence over stale remote targets and waiting flags',async()=>{
+  let edits=0;const operations=[];
+  const result=await syncGenieBookingNotes({genieJobId:'local-job',callSid:'local-call',bookingNumber:'BOK-1'}, {},
+    async()=>{edits++;throw Error('must not edit Octopus');},
+    async request=>{operations.push(request.operation);return{localOnly:true,waiting:true,bookingId:'99999',bookingNumber:'BOK-99999'};});
+  assert.equal(result.success,true);assert.equal(result.alreadyComplete,true);assert.equal(result.localOnly,true);assert.equal(result.waiting,false);
+  assert.equal(result.outcome,'notes_saved_in_genie');assert.equal(edits,0);assert.deepEqual(operations,['apply']);
+});
+
+test('native replay completes locally without an Octopus retry or completion acknowledgement',async()=>{
+  let edits=0,requests=0;
+  for(let replay=0;replay<2;replay++){
+    const result=await syncGenieBookingNotes({genieJobId:'local-job',callSid:'local-call',bookingNumber:'BOK-1'}, {},
+      async()=>{edits++;},async request=>{requests++;assert.equal(request.operation,'apply');return{alreadyComplete:true,localOnly:true};});
+    assert.equal(result.waiting,false);assert.equal(result.localOnly,true);
+  }
+  assert.equal(edits,0);assert.equal(requests,2);
+});
 const payload={bookingSystem:'genie_crm',genieJobId:'00000000-0000-4000-8000-000000000001',
   callSid:'CA'+'1'.repeat(32),bookingNumber:'BOK-123',transcript:'Customer: Side door.',baseline:{specialNotes:'',accessInstructions:''}};
 test('Genie UUID and empty saved baseline survive validation',()=>{

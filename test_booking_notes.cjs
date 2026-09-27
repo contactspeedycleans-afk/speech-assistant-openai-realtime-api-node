@@ -34,7 +34,7 @@ test('one bounded extraction returns the final corrected instructions',async()=>
     const body=JSON.parse(req.body);
     assert.equal(body.response_format.json_schema.strict,true);
     assert.match(body.messages[0].content,/Latest explicit correction wins/);
-    return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({specialNotes:null,accessInstructions:'Door code 2222.',needsReview:false,reviewReason:''})}}]})};
+    return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({specialNotes:null,accessInstructions:'Door code 2222.',needsReview:false,reviewReason:'',specialNotesEvidence:[],accessInstructionsEvidence:['Actually 2222.']})}}]})};
   });
   assert.equal(calls,1);assert.equal(result.accessInstructions,'Door code 2222.');
 });
