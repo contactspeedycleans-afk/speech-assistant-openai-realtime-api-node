@@ -193,6 +193,8 @@ const {
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
     createBookingAction: async payload => {
+        const finishCompletion = octopusWriteGate.begin('booking_completion');
+        try {
         if (payload.phase === 'draft') {
             return await beginFastBookingDraft(payload);
         }
@@ -224,6 +226,7 @@ const {
             };
         }
         return await enqueueFastBooking({ ...payload, action: 'create_fast' });
+        } finally {finishCompletion(true);}
     },
     db
 });
@@ -379,8 +382,9 @@ async function acquireWritableWarmBookingWorker() {
 }
 
 async function runWithWarmBookingWorker(body) {
-    return octopusWriteGate.run('create_fast', async () => {
+    return octopusWriteGate.runChild('create_fast', async bindChild => {
     const worker = await acquireWritableWarmBookingWorker();
+    bindChild(worker.child);
 
     return await new Promise((resolve, reject) => {
         const { child, getStdout, getStderr } = worker;
@@ -712,7 +716,8 @@ async function finalizeFastBooking(body) {
         };
     }
 
-    const executeFinalize = async () => {
+    const executeFinalize = async bindChild => {
+        bindChild(draft.worker.child);
         const resultPromise = waitForWorkerMarker(
             draft.worker,
             'LISA_BOOKING_RESULT=',
@@ -764,7 +769,7 @@ async function finalizeFastBooking(body) {
         return finalResult;
     };
 
-    const executionPromise = octopusWriteGate.run('finalize_fast',executeFinalize,result=>result?.success===true);
+    const executionPromise = octopusWriteGate.runChild('finalize_fast',executeFinalize,result=>result?.success===true);
     if (fingerprint) {
         activeFastBookingFinalizations.set(fingerprint, {
             draftId,
@@ -986,7 +991,9 @@ fastify.post(
             }
         );
 
+        let finishCompletion;
         try {
+            if (['create','create_fast','finalize_fast'].includes(action)) finishCompletion = octopusWriteGate.begin('booking_completion');
             // Check after authenticating, before any legacy lookup/browser work.
             // Genie note jobs still use their local-only completion protocol.
             if (!(action === 'reconcile_notes' && body.bookingSystem === 'genie_crm' && body.genieJobId)) {
@@ -1588,7 +1595,10 @@ fastify.post(
                         error.message ||
                         'Booking action failed.'
                 });
+        } finally {
+            finishCompletion?.(true);
         }
+
     }
 );
 

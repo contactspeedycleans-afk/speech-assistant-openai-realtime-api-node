@@ -1,3 +1,4 @@
+import {EventEmitter} from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -40,4 +41,26 @@ test('actual direct subprocess adapter blocks creates/assignments but permits re
  for(const args of [['playwright/octopus-create-booking.js'],['playwright/octopus-booking-actions.js','assign']]) await assert.rejects(adapter('node',args,{}),/PAUSED/);
  await adapter('node',['playwright/octopus-create-booking.js'],{env:{LISA_BOOKING_PAYLOAD:JSON.stringify({action:'lookup_address'})}});
  await adapter('node',['playwright/octopus-live-lookup.js'],{});assert.equal(calls,2);
+});
+
+test('verified BOK returns promptly but lease remains until post-result child work closes',async()=>{
+ const gate=createOctopusWriteGate({});const child=new EventEmitter();child.exitCode=null;child.signalCode=null;
+ const result=await gate.runChild('create_fast',async bind=>{bind(child);return{success:true};});
+ assert.equal(result.success,true);assert.equal(gate.drain().active,1);assert.equal(gate.status().safeToCutover,false);
+ child.emit('close',0,null);assert.equal(gate.status().active,0);assert.equal(gate.status().safeToCutover,true);
+});
+test('post-result child failure is unknown and never silently reopened',async()=>{
+ const gate=createOctopusWriteGate({});const child=new EventEmitter();child.exitCode=null;child.signalCode=null;
+ await gate.runChild('finalize_fast',async bind=>{bind(child);return{success:true};});child.emit('close',null,'SIGTERM');
+ assert.equal(gate.status().unknown,1);assert.equal(gate.status().safeToCutover,false);
+ await assert.rejects(gate.run('create',()=>assert.fail()),/PAUSED/);
+});
+test('actual voice creation retains drain accounting through cache and success webhook',async()=>{
+ const source=readFileSync(new URL('../index.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
+ const start=source.indexOf('    createBookingAction: async payload => {');const end=source.indexOf('\n    db\n});',start);
+ const gate=createOctopusWriteGate({});let finishCache,finishHook;const cache=new Promise(r=>finishCache=r),hook=new Promise(r=>finishHook=r);
+ const action=Function('octopusWriteGate','finalizeFastBooking','cacheLisaCreatedBooking','sendFastBookingSuccessWebhook','return ({'+source.slice(start,end)+'}).createBookingAction;')(
+ gate,async()=>({success:true,bookingId:'123456',bookingNumber:'BOK-1'}),async()=>cache,async()=>hook);
+ const pending=action({phase:'finalize'});await new Promise(r=>setImmediate(r));assert.equal(gate.drain().active,1);
+ finishCache();await new Promise(r=>setImmediate(r));assert.equal(gate.status().active,1);finishHook();assert.equal((await pending).success,true);assert.equal(gate.status().active,0);
 });
