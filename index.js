@@ -1,6 +1,7 @@
 import {octopusWriteGate, pausedWriteResult, verifiedProcessOutput, registerOctopusWriteRoutes} from './lib/octopus-write-gate.js';
 import Fastify from 'fastify';
 import {legacyActionGuard} from './lib/genie-source-authority.js';
+import {nativeAddressAction} from './lib/native-address.js';
 import WebSocket from 'ws';
 import dotenv from 'dotenv';
 import pg from 'pg';
@@ -998,6 +999,8 @@ fastify.post(
             // Genie note jobs still use their local-only completion protocol.
             if (!(action === 'reconcile_notes' && body.bookingSystem === 'genie_crm' && body.genieJobId)) {
                 const blocked = await legacyActionGuard();
+                const nativeAddress = await nativeAddressAction(action, body, blocked);
+                if (nativeAddress) return reply.send(nativeAddress);
                 if (blocked) return reply.code(409).send(blocked);
             }
             if (!['lookup','lookup_address','reconcile_notes'].includes(action) && octopusWriteGate.paused()) return reply.code(409).send(pausedWriteResult());
