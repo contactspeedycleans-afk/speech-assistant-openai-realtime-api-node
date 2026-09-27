@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {legacyActionGuard} from './lib/genie-source-authority.js';
 import WebSocket from 'ws';
 import dotenv from 'dotenv';
 import pg from 'pg';
@@ -419,7 +420,7 @@ async function runWithWarmBookingWorker(body) {
 }
 
 function enqueueFastBooking(body) {
-    const job = fastBookingQueue.then(() => runWithWarmBookingWorker(body));
+    const job = fastBookingQueue.then(async () => (await legacyActionGuard()) || runWithWarmBookingWorker(body));
     fastBookingQueue = job.catch(() => {});
     return job;
 }
@@ -492,7 +493,9 @@ function waitForWorkerMarker(worker, prefix, timeoutMs) {
     });
 }
 
-function beginFastBookingDraft(body) {
+async function beginFastBookingDraft(body) {
+    const blocked = await legacyActionGuard();
+    if (blocked) return blocked;
     return acquireWritableWarmBookingWorker().then(worker => {
         ensureWarmBookingWorker().catch(error => {
             console.error('Replacement draft worker failed:', error.message);
@@ -619,6 +622,8 @@ function getCompletedFastBooking(fingerprint) {
 }
 
 async function finalizeFastBooking(body) {
+    const blocked = await legacyActionGuard();
+    if (blocked) return blocked;
     const draftId = String(body.draftId || '').trim();
     const draft = activeFastBookingDrafts.get(draftId);
     if (!draft) {
@@ -969,6 +974,12 @@ fastify.post(
         );
 
         try {
+            // Check after authenticating, before any legacy lookup/browser work.
+            // Genie note jobs still use their local-only completion protocol.
+            if (!(action === 'reconcile_notes' && body.bookingSystem === 'genie_crm' && body.genieJobId)) {
+                const blocked = await legacyActionGuard();
+                if (blocked) return reply.code(409).send(blocked);
+            }
             if (action === 'reconcile_notes') {
                 return reply.send(await bookingNoteQueue.enqueue(body));
             }
