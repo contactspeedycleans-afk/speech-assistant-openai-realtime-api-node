@@ -32,6 +32,21 @@ Before native activation:
 5. Resume the updated notes worker for Genie-identified outbox items. Its `apply`
    response rechecks native mode under the server lock and finishes locally.
 
+The guarded worker must also persist `GENIE_CRM_SOURCE_MODE=native` and pin
+`GENIE_CRM_BUSINESS_ID` (or `TWILIO_SYNC_BUSINESS_ID`) to the same immutable tenant
+as Genie's `TWILIO_SYNC_BUSINESS_ID` before it resumes. Deploy the authenticated
+`/api/integrations/lisa/job-context` API before the client code. Default mirror
+mode preserves existing behavior while the new endpoint is unavailable; that
+rollout fallback must not remain enabled at native cutover. Wrong-tenant replies
+are refused in either mode. Native outages and conflicting mirror replies hand
+off to staff without opening Octopus.
+
+Legacy action endpoints, queued fast creation/finalization, direct cancel and
+reschedule tools, and the final notes editor now check that authority. A legacy
+notes item blocked by native authority becomes `needs_review` rather than
+retrying an external edit. Genie `localOnly`/`alreadyComplete` note jobs bypass the
+external editor entirely. These checks still do not replace the in-flight barrier.
+
 For unattended future mode flips, the architecture needs a server-managed
 delivery lease or server-held delivery boundary spanning the actual external
 write. This patch does not claim that client-side response handling provides it.
@@ -58,4 +73,4 @@ the notes guard.
 Genie's native worker responses and workflows can operate without Octopus, but
 existing cleaner logins, photos/time submission, masked contact, and staff
 notifications still need an end-to-end cutover verification. None of the above
-watcher, voice, intake, or scheduling behaviors were changed by this patch.
+watcher dispatch or cleaner eligibility behaviors were changed by this patch.
