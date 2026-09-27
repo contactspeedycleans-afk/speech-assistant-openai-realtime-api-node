@@ -1,3 +1,4 @@
+import {octopusWriteGate, pausedWriteResult, verifiedProcessOutput, registerOctopusWriteRoutes} from './lib/octopus-write-gate.js';
 import Fastify from 'fastify';
 import {legacyActionGuard} from './lib/genie-source-authority.js';
 import WebSocket from 'ws';
@@ -29,7 +30,14 @@ import {
     normalizeUsPhone
 } from './lib/lsaBookingLink.js';
 
-const execFileAsync = promisify(execFile);
+const rawExecFileAsync = promisify(execFile);
+const execFileAsync = (file, args, options) => {
+    const browserWrite = args?.[0] === 'playwright/octopus-booking-actions.js' && ['assign','update-notes'].includes(args[1]);
+    const create = args?.[0] === 'playwright/octopus-create-booking.js' && JSON.parse(options?.env?.LISA_BOOKING_PAYLOAD || '{}').action !== 'lookup_address';
+    return browserWrite || create
+        ? octopusWriteGate.run(browserWrite ? args[1] : 'create', () => rawExecFileAsync(file,args,options), verifiedProcessOutput)
+        : rawExecFileAsync(file,args,options);
+};
 
 if (process.env.LISA_BOOKING_PROFILE_TEST) {
     const profile = JSON.parse(process.env.LISA_BOOKING_PROFILE_TEST);
@@ -135,8 +143,8 @@ const bookingNoteQueue = createBookingNoteQueue(db, async job=>{
     const {sendNoteReviewAlert} = await import('./lib/lisa-readiness-audit.js');
     return sendNoteReviewAlert(twilioClient,job);
 });
-if (process.env.LISA_NOTES_RETRY_BOOKING === 'BOK-27944') {
-    setTimeout(()=>void db.query("UPDATE public.lisa_booking_note_jobs SET status='pending',attempts=0,available_at=NOW(),updated_at=NOW() WHERE payload->>'bookingNumber'=$1 AND status='needs_review' AND last_error LIKE '%NOTE_FIELD_AMBIGUOUS%' AND COALESCE((extracted->>'needsReview')::boolean,true)=false RETURNING job_key", ['BOK-27944'])
+if (process.env.LISA_NOTES_RETRY_BOOKING === 'BOK-27944' && !octopusWriteGate.paused()) {
+    setTimeout(()=>void db.query("UPDATE public.lisa_booking_note_jobs SET status='pending',attempts=0,available_at=NOW(),updated_at=NOW() WHERE payload->>'bookingNumber'=$1 AND status='needs_review' AND external_started_at IS NULL AND last_error LIKE '%NOTE_FIELD_AMBIGUOUS%' AND COALESCE((extracted->>'needsReview')::boolean,true)=false RETURNING job_key", ['BOK-27944'])
       .then(({rowCount})=>console.log('LISA_NOTES_TARGETED_RETRY',rowCount))
       .catch(error=>console.error('LISA_NOTES_TARGETED_RETRY_FAILED',error.message)),10000);
 }
@@ -185,6 +193,8 @@ const {
     searchCompanyKnowledge,
     recordTechnicianStatusUpdate,
     createBookingAction: async payload => {
+        const finishCompletion = octopusWriteGate.begin('booking_completion');
+        try {
         if (payload.phase === 'draft') {
             return await beginFastBookingDraft(payload);
         }
@@ -216,6 +226,7 @@ const {
             };
         }
         return await enqueueFastBooking({ ...payload, action: 'create_fast' });
+        } finally {finishCompletion(true);}
     },
     db
 });
@@ -239,6 +250,9 @@ db.query('SELECT NOW()')
     });
 
 const fastify = Fastify();
+registerOctopusWriteRoutes(fastify,octopusWriteGate,{status:async()=>({
+    ...await bookingNoteQueue.status(),bookingQueued:queuedFastBookings,stagedDrafts:activeFastBookingDrafts.size
+})});
 
 fastify.register(fastifyFormBody);
 
@@ -248,6 +262,7 @@ fastify.register(fastifyWs);
 // Octopus New Booking page, accepts one payload, then is replaced immediately.
 let warmBookingWorkerPromise = null;
 let fastBookingQueue = Promise.resolve();
+let queuedFastBookings = 0;
 const activeFastBookingDrafts = new Map();
 let warmBookingState = {
     status: 'starting',
@@ -367,7 +382,9 @@ async function acquireWritableWarmBookingWorker() {
 }
 
 async function runWithWarmBookingWorker(body) {
+    return octopusWriteGate.runChild('create_fast', async bindChild => {
     const worker = await acquireWritableWarmBookingWorker();
+    bindChild(worker.child);
 
     return await new Promise((resolve, reject) => {
         const { child, getStdout, getStderr } = worker;
@@ -417,10 +434,15 @@ async function runWithWarmBookingWorker(body) {
         child.stdin.write(JSON.stringify(body) + '\n');
         child.stdin.end();
     });
+    }, result => result?.success === true);
 }
 
 function enqueueFastBooking(body) {
-    const job = fastBookingQueue.then(async () => (await legacyActionGuard()) || runWithWarmBookingWorker(body));
+    queuedFastBookings++;
+    const job = fastBookingQueue.then(async () => {
+        queuedFastBookings--;
+        return (await legacyActionGuard()) || runWithWarmBookingWorker(body);
+    });
     fastBookingQueue = job.catch(() => {});
     return job;
 }
@@ -496,6 +518,7 @@ function waitForWorkerMarker(worker, prefix, timeoutMs) {
 async function beginFastBookingDraft(body) {
     const blocked = await legacyActionGuard();
     if (blocked) return blocked;
+    const finishWrite = octopusWriteGate.begin('draft_customer');
     return acquireWritableWarmBookingWorker().then(worker => {
         ensureWarmBookingWorker().catch(error => {
             console.error('Replacement draft worker failed:', error.message);
@@ -526,6 +549,7 @@ async function beginFastBookingDraft(body) {
             stagedPromise,
             expiryTimer
         });
+        stagedPromise.then(() => finishWrite(true), () => finishWrite(false));
         stagedPromise.catch(error => {
             console.error('[FAST_BOOKING_DRAFT] staging failed:', draftId, error.message);
         });
@@ -537,7 +561,7 @@ async function beginFastBookingDraft(body) {
             outcome: 'staging_started',
             message: 'Octopus booking form is loading in the background.'
         };
-    });
+    }).catch(error => {finishWrite(false);throw error;});
 }
 
 async function rearmFastBookingDraft(draftId, body) {
@@ -692,7 +716,8 @@ async function finalizeFastBooking(body) {
         };
     }
 
-    const executeFinalize = async () => {
+    const executeFinalize = async bindChild => {
+        bindChild(draft.worker.child);
         const resultPromise = waitForWorkerMarker(
             draft.worker,
             'LISA_BOOKING_RESULT=',
@@ -711,16 +736,9 @@ async function finalizeFastBooking(body) {
             activeFastBookingDrafts.delete(draftId);
             clearTimeout(draft.expiryTimer);
         } else {
+            // A failed verification may follow a successful remote write. Do not re-stage/retry.
             clearTimeout(draft.expiryTimer);
-            try {
-                await rearmFastBookingDraft(draftId, mergedBody);
-            } catch (rearmError) {
-                console.error(
-                    '[FAST_BOOKING_DRAFT] could not retain failed draft:',
-                    draftId,
-                    rearmError.message
-                );
-            }
+            activeFastBookingDrafts.delete(draftId);
         }
 
         const finalResult = {
@@ -751,7 +769,7 @@ async function finalizeFastBooking(body) {
         return finalResult;
     };
 
-    const executionPromise = executeFinalize();
+    const executionPromise = octopusWriteGate.runChild('finalize_fast',executeFinalize,result=>result?.success===true);
     if (fingerprint) {
         activeFastBookingFinalizations.set(fingerprint, {
             draftId,
@@ -973,13 +991,16 @@ fastify.post(
             }
         );
 
+        let finishCompletion;
         try {
+            if (['create','create_fast','finalize_fast'].includes(action)) finishCompletion = octopusWriteGate.begin('booking_completion');
             // Check after authenticating, before any legacy lookup/browser work.
             // Genie note jobs still use their local-only completion protocol.
             if (!(action === 'reconcile_notes' && body.bookingSystem === 'genie_crm' && body.genieJobId)) {
                 const blocked = await legacyActionGuard();
                 if (blocked) return reply.code(409).send(blocked);
             }
+            if (!['lookup','lookup_address','reconcile_notes'].includes(action) && octopusWriteGate.paused()) return reply.code(409).send(pausedWriteResult());
             if (action === 'reconcile_notes') {
                 return reply.send(await bookingNoteQueue.enqueue(body));
             }
@@ -1558,6 +1579,7 @@ fastify.post(
                 });
 
         } catch (error) {
+            if (error.code === 'OCTOPUS_WRITES_PAUSED') return reply.code(409).send(pausedWriteResult());
             console.error(
                 'Lisa booking-action endpoint failed:',
                 error
@@ -1573,7 +1595,10 @@ fastify.post(
                         error.message ||
                         'Booking action failed.'
                 });
+        } finally {
+            finishCompletion?.(true);
         }
+
     }
 );
 
