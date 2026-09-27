@@ -1,3 +1,4 @@
+import {getEmmaWriteGate, registerEmmaWriteControl, STAFF_HANDOFF} from './lib/emma-write-control.js';
 import Fastify from 'fastify';
 import WebSocket from 'ws';
 import dotenv from 'dotenv';
@@ -161,6 +162,8 @@ db.query('SELECT NOW()')
     });
 
 const fastify = Fastify();
+const octopusWrites = getEmmaWriteGate();
+registerEmmaWriteControl(fastify,octopusWrites);
 
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
@@ -405,6 +408,7 @@ fastify.post(
                     });
                 }
 
+                const creation = await octopusWrites.run('direct_create', async () => {
                 const { stdout, stderr } = await execFileAsync(
                     process.execPath,
                     ['playwright/octopus-create-booking.js'],
@@ -430,7 +434,7 @@ fastify.post(
                     .find((line) => line.startsWith('LISA_BOOKING_RESULT='));
 
                 if (!marker) {
-                    return reply.send({
+                    return ({
                         success: false,
                         outcome: 'playwright_booking_failed',
                         error:
@@ -449,7 +453,7 @@ fastify.post(
                     Boolean(bookingId && bookingNumber);
 
                 if (!verified) {
-                    return reply.send({
+                    return ({
                         ...result,
                         success: false,
                         verified_created_in_octopus: false,
@@ -538,7 +542,7 @@ fastify.post(
 
                 await cacheLisaCreatedBooking({ bookingId, bookingNumber, body });
 
-                return reply.send({
+                return ({
                     ...result,
                     success: true,
                     verified_created_in_octopus: true,
@@ -546,6 +550,8 @@ fastify.post(
                     bookingNumber,
                     outcome: 'created'
                 });
+                }, result => result?.success === true && result?.verified_created_in_octopus === true);
+                return reply.send(creation);
             }
 
             return reply
@@ -565,11 +571,13 @@ fastify.post(
             );
 
             return reply
-                .code(500)
+                .code(error.code === 'OCTOPUS_WRITES_PAUSED' ? 409 : 500)
                 .send({
                     success: false,
                     outcome:
-                        'automation_error',
+                        error.code === 'OCTOPUS_WRITES_PAUSED' ? 'staff_review_required' : 'automation_error',
+                    staffReviewRequired: error.code === 'OCTOPUS_WRITES_PAUSED',
+                    customer_message: error.code === 'OCTOPUS_WRITES_PAUSED' ? STAFF_HANDOFF : undefined,
                     error:
                         error.message ||
                         'Booking action failed.'
