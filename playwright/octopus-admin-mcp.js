@@ -1,4 +1,7 @@
 import http from "node:http";
+import { createBridgeWriteGate, createBridgeWriteControl } from "./octopus-write-control.js";
+const octopusWrites = createBridgeWriteGate();
+const handleWriteControl = createBridgeWriteControl(octopusWrites);
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHmac, createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -54,6 +57,10 @@ async function withPage(fn){const browser=await chromium.launch({headless:true})
 
 
 async function assignExistingBookingByName(bookingId,cleanerName){
+ return octopusWrites.run("assign_booking",()=>assignExistingBookingByNameUnlocked(bookingId,cleanerName),
+  result=>result?.success===true || result?.outcome==="booking_already_assigned");
+}
+async function assignExistingBookingByNameUnlocked(bookingId,cleanerName){
  return withPage(async page=>{
   const url="https://admin.octopuspro.com/booking/view/"+bookingId;
   await page.goto(url,{waitUntil:"domcontentloaded",timeout:60000});
@@ -141,6 +148,11 @@ async function assignExistingBookingByName(bookingId,cleanerName){
 }
 
 async function runTargetedCustomerNameFix(){
+ if(!String(process.env.OCTOPUS_TARGET_CUSTOMER_NAME_FIX||"").trim())return;
+ if(octopusWrites.status().paused){octopusWrites.hold("startup_customer_name_fix");console.log("OCTOPUS_NAME_FIX_HELD: updates paused");return;}
+ return octopusWrites.run("startup_customer_name_fix",runTargetedCustomerNameFixUnlocked);
+}
+async function runTargetedCustomerNameFixUnlocked(){
  const raw=String(process.env.OCTOPUS_TARGET_CUSTOMER_NAME_FIX||"").trim();
  if(!raw)return;
  let cfg;
@@ -266,6 +278,7 @@ async function runTargetedCustomerNameFix(){
   console.log("OCTOPUS_TARGET_CUSTOMER_NAME_FIX_SUCCESS="+JSON.stringify(result));
  }catch(e){
   console.error("OCTOPUS_TARGET_CUSTOMER_NAME_FIX_FAILED="+String(e?.stack||e));
+  throw e;
  }
 }
 
@@ -304,7 +317,16 @@ async function lookup(args,scope){
  const payload={customerName:args.customer_name,customerPhone:args.phone,customerEmail:args.email,serviceAddress:args.service_address,bookingNumber:args.booking_number,bookingId:args.booking_id,requestedDate:args.date,scope:scope||args.scope||"all",limit:args.limit||25};
  return searchWithLisaFastBooking(payload);
 }
+const mutatingToolNames = new Set(["create_booking","reschedule_booking","cancel_booking"]);
 async function callTool(name,args){
+ if(mutatingToolNames.has(name))return octopusWrites.run(name,()=>callToolUnlocked(name,args),result=>{
+  if(name==="create_booking")return result?.success===true || result?.outcome==="duplicate_booking_blocked";
+  if(name==="cancel_booking")return result?.ok===true && result?.verified_cancelled_in_octopus===true;
+  return result?.ok===true && result?.verified_rescheduled_in_octopus===true;
+ });
+ return callToolUnlocked(name,args);
+}
+async function callToolUnlocked(name,args){
  if(name==="octopus_login_health")return withPage(async page=>({authenticated:true,organization:ORGANIZATION,url:page.url()}));
  if(name==="search_clients_and_bookings")return lookup(args);
  if(name==="get_client_history")return lookup(args,"history");
@@ -324,7 +346,7 @@ async function callTool(name,args){
  }
  if(name==="reschedule_booking")return runAutomation("./octopus-booking-actions.js",["reschedule",String(args.booking_id),String(args.date),String(args.start_time)],{},bookingResult);
  if(name==="cancel_booking")return runAutomation("./octopus-booking-actions.js",["cancel",String(args.booking_id),String(args.reason)],{},bookingResult);
- if(name==="get_booking_page"){const url=String(args?.booking_url||"");if(!url.startsWith("https://admin.octopuspro.com/"))throw Error("Only OctopusPro admin URLs allowed");return withPage(async page=>{await page.goto(url,{waitUntil:"domcontentloaded",timeout:60000});await page.waitForTimeout(3500);const text=await page.locator("body").innerText().catch(()=>null);const inputs=await page.locator("input,textarea,select").evaluateAll(els=>els.slice(0,80).map(el=>({tag:el.tagName,name:el.getAttribute("name"),id:el.id,type:el.getAttribute("type"),value:el.value,placeholder:el.getAttribute("placeholder"),aria:el.getAttribute("aria-label")}))).catch(()=>[]);const buttons=await page.locator("button,input[type=submit],a.btn").evaluateAll(els=>els.slice(0,80).map(el=>({tag:el.tagName,text:(el.innerText||el.value||"").trim(),id:el.id,name:el.getAttribute("name"),href:el.getAttribute("href")}))).catch(()=>[]);const links=await page.locator("a").evaluateAll(els=>els.slice(0,120).map(el=>({text:(el.innerText||"").trim(),href:el.href})).filter(x=>x.text||x.href)).catch(()=>[]);const forms=await page.locator("form").evaluateAll(els=>els.slice(0,30).map(el=>({action:el.action,method:el.method,id:el.id,name:el.getAttribute("name")}))).catch(()=>[]);return{url:page.url(),title:await page.title(),text:text?text.slice(0,20000):null,inputs,buttons,links,forms}})}
+ if(name==="get_booking_page"){const url=String(args?.booking_url||"");if(!/^https:\/\/admin\.octopuspro\.com\/booking\/view\/\d+\/?$/.test(url))throw Error("Only an exact read-only Octopus booking view URL is allowed");return withPage(async page=>{await page.goto(url,{waitUntil:"domcontentloaded",timeout:60000});await page.waitForTimeout(3500);const text=await page.locator("body").innerText().catch(()=>null);const inputs=await page.locator("input,textarea,select").evaluateAll(els=>els.slice(0,80).map(el=>({tag:el.tagName,name:el.getAttribute("name"),id:el.id,type:el.getAttribute("type"),value:el.value,placeholder:el.getAttribute("placeholder"),aria:el.getAttribute("aria-label")}))).catch(()=>[]);const buttons=await page.locator("button,input[type=submit],a.btn").evaluateAll(els=>els.slice(0,80).map(el=>({tag:el.tagName,text:(el.innerText||el.value||"").trim(),id:el.id,name:el.getAttribute("name"),href:el.getAttribute("href")}))).catch(()=>[]);const links=await page.locator("a").evaluateAll(els=>els.slice(0,120).map(el=>({text:(el.innerText||"").trim(),href:el.href})).filter(x=>x.text||x.href)).catch(()=>[]);const forms=await page.locator("form").evaluateAll(els=>els.slice(0,30).map(el=>({action:el.action,method:el.method,id:el.id,name:el.getAttribute("name")}))).catch(()=>[]);return{url:page.url(),title:await page.title(),text:text?text.slice(0,20000):null,inputs,buttons,links,forms}})}
  throw Error("Unknown tool");
 }
 
@@ -332,6 +354,7 @@ const protectedMetadata={resource:BASE,authorization_servers:[BASE],scopes_suppo
 const authMetadata={issuer:BASE,authorization_response_iss_parameter_supported:true,authorization_endpoint:BASE+"/authorize",token_endpoint:BASE+"/token",registration_endpoint:BASE+"/register",token_endpoint_auth_methods_supported:["none"],code_challenge_methods_supported:["S256"],response_types_supported:["code"],grant_types_supported:["authorization_code","refresh_token"],scopes_supported:SCOPES};
 
 const server=http.createServer(async(req,res)=>{
+ if(await handleWriteControl(req,res))return;
  const u=new URL(req.url,BASE);
 
  if(u.pathname==="/internal/assign-booking"&&req.method==="POST"){
@@ -345,6 +368,7 @@ const server=http.createServer(async(req,res)=>{
    const result=await assignExistingBookingByName(bookingId,cleanerName);
    return json(res,result.success?200:409,result);
   }catch(e){
+   if(e.code==="OCTOPUS_WRITES_PAUSED")return json(res,409,{success:false,outcome:e.code.toLowerCase(),staffReviewRequired:true,error:e.message});
    console.error("OCTOPUS_INTERNAL_ASSIGN_FAILED",e?.stack||e);
    return json(res,500,{success:false,outcome:"assignment_automation_error",error:String(e?.message||e)});
   }
