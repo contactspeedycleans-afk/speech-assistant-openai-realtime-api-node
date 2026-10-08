@@ -1,3 +1,4 @@
+import { loginMigrationSession } from "./octopus-admin-login.mjs";
 import http from "node:http";
 import { createBridgeWriteGate, createBridgeWriteControl } from "./octopus-write-control.js";
 const octopusWrites = createBridgeWriteGate();
@@ -33,25 +34,7 @@ function json(res,status,value,headers={}){res.writeHead(status,{"content-type":
 function html(res,status,value){res.writeHead(status,{"content-type":"text/html; charset=utf-8","cache-control":"no-store"});res.end(value)}
 function escape(v){return String(v||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 
-async function selectOrganization(page){
-  await page.waitForTimeout(2000);
-  for(const select of await page.locator("select").all()){
-    const options=await select.locator("option").allTextContents();
-    const match=options.find(v=>v.toLowerCase().includes(ORGANIZATION.toLowerCase()));
-    if(match){await select.selectOption({label:match.trim()});const submit=page.locator('button[type="submit"],input[type="submit"]').first();if(await submit.isVisible().catch(()=>false))await submit.click();else await page.keyboard.press("Enter");await page.waitForTimeout(3000);return}
-  }
-  const choice=page.getByText(ORGANIZATION,{exact:false}).first();
-  if(!(await choice.isVisible().catch(()=>false)))throw Error("Organization selection failed");
-  await choice.click();await page.locator('button[type="submit"],input[type="submit"]').first().click().catch(()=>page.keyboard.press("Enter"));await page.waitForTimeout(3000);
-}
-async function login(page){
-  await page.goto("https://admin.octopuspro.com/login",{waitUntil:"domcontentloaded",timeout:60000});
-  await page.locator('input[type="email"],input[name="email"],input[name="username"],#email').first().fill(EMAIL);
-  await page.locator('input[type="password"],input[name="password"],#password').first().fill(PASSWORD);
-  await page.locator('button[type="submit"],input[type="submit"]').first().click();await page.waitForTimeout(4000);
-  if(page.url().toLowerCase().includes("checkuserinmulticompanies"))await selectOrganization(page);
-  if(page.url().toLowerCase().includes("/login"))throw Error("OctopusPro login failed");
-}
+async function login(page){return loginMigrationSession(page,{email:EMAIL,password:PASSWORD,organizationName:ORGANIZATION});}
 async function withPage(fn){const browser=await chromium.launch({headless:true});try{const page=await browser.newPage();await login(page);return await fn(page)}finally{await browser.close()}}
 
 
