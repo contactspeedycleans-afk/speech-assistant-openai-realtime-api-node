@@ -1,3 +1,4 @@
+import { loginMigrationSession } from "./octopus-admin-login.mjs";
 import { chromium } from "playwright";
 
 const OCTOPUS_EMAIL = process.env.OCTOPUS_EMAIL;
@@ -125,38 +126,7 @@ async function selectOrganization(page) {
   throw new Error(`Could not select organization ${ORGANIZATION_NAME}`);
 }
 
-async function loginToOctopus(page) {
-  console.log("Logging into OctopusPro...");
-  await page.goto("https://admin.octopuspro.com/login", {
-    waitUntil: "domcontentloaded",
-    timeout: 60000
-  });
-
-  const email = page
-    .locator(
-      'input[type="email"], input[name="email"], input[name="username"], #email'
-    )
-    .first();
-  const password = page
-    .locator('input[type="password"], input[name="password"], #password')
-    .first();
-
-  await email.waitFor({ state: "visible", timeout: 30000 });
-  await email.fill(OCTOPUS_EMAIL);
-  await password.fill(OCTOPUS_PASSWORD);
-  await page
-    .locator('button[type="submit"], input[type="submit"]')
-    .first()
-    .click();
-  await page.waitForTimeout(5000);
-
-  if (page.url().toLowerCase().includes("/checkuserinmulticompanies")) {
-    await selectOrganization(page);
-  }
-  if (page.url().toLowerCase().includes("/login")) {
-    throw new Error("OctopusPro login did not complete");
-  }
-}
+async function loginToOctopus(page) { return loginMigrationSession(page, { email: OCTOPUS_EMAIL, password: OCTOPUS_PASSWORD, organizationName: ORGANIZATION_NAME }); }
 
 async function openBooking(page) {
   const url = `https://admin.octopuspro.com/booking/view/${bookingId}`;
