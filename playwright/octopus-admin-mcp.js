@@ -1,4 +1,5 @@
 import { loginMigrationSession } from "./octopus-admin-login.mjs";
+import { exportOutstandingInvoices } from "./octopus-outstanding-invoices.mjs";
 import http from "node:http";
 import { createBridgeWriteGate, createBridgeWriteControl } from "./octopus-write-control.js";
 const octopusWrites = createBridgeWriteGate();
@@ -287,7 +288,7 @@ const tools=[
  {name:"search_clients_and_bookings",description:"Search live OctopusPro broadly by name, phone, email, service address, booking number, booking ID, date, or time scope. Returns up to 25 matching bookings.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},service_address:{type:"string"},booking_number:{type:"string"},booking_id:{type:"string"},date:{type:"string",description:"YYYY-MM-DD"},scope:{type:"string",enum:["all","today","tomorrow","future","upcoming","past","history"]},limit:{type:"integer",minimum:1,maximum:25}},additionalProperties:false},annotations:ro},
  {name:"get_client_history",description:"Read a client's live OctopusPro booking history. Supply at least one exact client identifier.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},service_address:{type:"string"},limit:{type:"integer",minimum:1,maximum:25}},additionalProperties:false},annotations:ro},
  {name:"get_booking",description:"Inspect one OctopusPro booking by numeric booking ID.",inputSchema:{type:"object",properties:{booking_id:{type:"string"}},required:["booking_id"],additionalProperties:false},annotations:ro},
- {name:"inspect_booking_billing",description:"Read billing, payment-method, customer, and invoice information for a booking. This does not charge or refund money.",inputSchema:{type:"object",properties:{booking_id:{type:"string"}},required:["booking_id"],additionalProperties:false},annotations:ro},
+ {name:"inspect_booking_billing",description:"Read billing for a numeric booking ID, or supply booking_id=outstanding to export the complete outstanding invoice ledger with reconciled source counts. This does not charge or refund money.",inputSchema:{type:"object",properties:{booking_id:{type:"string"}},required:["booking_id"],additionalProperties:false},annotations:ro},
  {name:"get_booking_page",description:"Read an OctopusPro booking using its exact admin URL.",inputSchema:{type:"object",properties:{booking_url:{type:"string"}},required:["booking_url"],additionalProperties:false},annotations:ro},
  {name:"lookup_address",description:"Use OctopusPro's native address autocomplete to resolve and verify a service address before booking. Returns the selected address, coordinates, and up to five Octopus suggestions when an exact safe match is not found.",inputSchema:{type:"object",properties:{full_address:{type:"string",description:"A normal spoken or written full address."},street_number:{type:"string"},street:{type:"string"},city:{type:"string"},state:{type:"string"},zip:{type:"string"}},anyOf:[{required:["full_address"]},{required:["street_number","street"]}],additionalProperties:false},annotations:ro},
  {name:"create_booking",description:"Create a new OctopusPro booking through Lisa's proven Fast Booking path after a duplicate check. The booking is created as Unassigned Tasks Manager; a requested fieldworker is reported as pending for a separate verified assignment.",inputSchema:{type:"object",properties:{customer_name:{type:"string"},phone:{type:"string"},email:{type:"string"},street_number:{type:"string"},street:{type:"string"},city:{type:"string"},state:{type:"string"},zip:{type:"string"},service_name:{type:"string"},date:{type:"string",description:"YYYY-MM-DD"},start_time:{type:"string",description:"HH:MM in local business time"},duration_hours:{type:"number",minimum:0.5},price:{type:"number",minimum:0},fieldworker_name:{type:"string",description:"Requested cleaner name. Creation remains unassigned until a separate assignment is verified."},special_notes:{type:"string"},access_instructions:{type:"string"}},required:["customer_name","phone","street_number","street","city","state","zip","date","start_time","duration_hours","price"],additionalProperties:false},annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}},
@@ -314,7 +315,10 @@ async function callToolUnlocked(name,args){
  if(name==="search_clients_and_bookings")return lookup(args);
  if(name==="get_client_history")return lookup(args,"history");
  if(name==="get_booking")return runAutomation("./octopus-booking-actions.js",[String(args.booking_id)],{},bookingResult);
- if(name==="inspect_booking_billing")return runAutomation("./octopus-booking-actions.js",["billing",String(args.booking_id)],{},bookingResult);
+ if(name==="inspect_booking_billing"){
+  if(args.booking_id==="outstanding")return withPage(exportOutstandingInvoices);
+  return runAutomation("./octopus-booking-actions.js",["billing",String(args.booking_id)],{},bookingResult);
+ }
  if(name==="lookup_address")return lookupAddressWithLisaFastBooking({fullAddress:args.full_address,streetNumber:args.street_number,street:args.street,city:args.city,state:args.state,zip:args.zip});
  if(name==="create_booking"){
   const preflight=await lookup({phone:args.phone,customer_name:args.customer_name,date:args.date,limit:10});
