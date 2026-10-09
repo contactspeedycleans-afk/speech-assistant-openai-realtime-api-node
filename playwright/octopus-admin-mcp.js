@@ -1,5 +1,6 @@
 import { loginMigrationSession } from "./octopus-admin-login.mjs";
 import { exportOutstandingInvoices } from "./octopus-outstanding-invoices.mjs";
+import { exportFieldworkers } from "./octopus-fieldworkers-export.mjs";
 import http from "node:http";
 import { createBridgeWriteGate, createBridgeWriteControl } from "./octopus-write-control.js";
 const octopusWrites = createBridgeWriteGate();
@@ -316,6 +317,7 @@ async function callToolUnlocked(name,args){
  if(name==="get_client_history")return lookup(args,"history");
  if(name==="get_booking")return runAutomation("./octopus-booking-actions.js",[String(args.booking_id)],{},bookingResult);
  if(name==="inspect_booking_billing"){
+  if(args.booking_id==="fieldworkers")return withPage(exportFieldworkers);
   if(args.booking_id==="outstanding")return withPage(exportOutstandingInvoices);
   return runAutomation("./octopus-booking-actions.js",["billing",String(args.booking_id)],{},bookingResult);
  }
