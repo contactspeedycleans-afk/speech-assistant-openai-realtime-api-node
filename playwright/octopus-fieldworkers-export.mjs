@@ -13,7 +13,7 @@ export function fieldworkerPage(body,page,seen){
 }
 export async function exportFieldworkers(page){
  const capturedAt=new Date().toISOString();
- const captured=page.waitForRequest(r=>r.method()==='GET'&&r.url().startsWith(API+PATH+'?'),{timeout:45000});captured.catch(()=>{});
+ const captured=page.waitForRequest(r=>r.method()==='GET'&&r.url().startsWith(API+PATH+'?')&&new URL(r.url()).searchParams.get('active')==='0',{timeout:45000});captured.catch(()=>{});
  await page.goto(ADMIN+'/fieldworkers?fltr[active]=0',{waitUntil:'domcontentloaded',timeout:60000});
  const req=await captured,authorization=(await req.allHeaders()).authorization;if(!authorization)throw Error('fieldworker_read_authorization_missing');
  const url=new URL(req.url());url.searchParams.set('active','0');url.searchParams.set('per_page','100');url.searchParams.delete('unique_id');
