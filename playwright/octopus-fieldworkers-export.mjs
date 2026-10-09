@@ -15,7 +15,7 @@ export async function exportFieldworkers(page){
  const capturedAt=new Date().toISOString();
  const captured=page.waitForRequest(r=>r.method()==='GET'&&r.url().startsWith(API+PATH+'?')&&new URL(r.url()).searchParams.get('active')==='0',{timeout:45000});captured.catch(()=>{});
  await page.goto(ADMIN+'/fieldworkers?fltr[active]=0',{waitUntil:'domcontentloaded',timeout:60000});
- const req=await captured,requestHeaders=await req.allHeaders();if(!requestHeaders.authorization)throw Error('fieldworker_read_authorization_missing');
+ const req=await captured,requestHeaders=Object.fromEntries(Object.entries(await req.allHeaders()).filter(([name])=>!name.startsWith(':')));if(!requestHeaders.authorization)throw Error('fieldworker_read_authorization_missing');
  delete requestHeaders.host;delete requestHeaders['content-length'];
  const url=new URL(req.url());url.searchParams.set('active','0');url.searchParams.set('per_page','100');
  const read=async number=>{url.searchParams.set('page',String(number));url.searchParams.set('unique_id',Date.now()+'-'+number);const response=await page.request.get(url.href,{headers:requestHeaders,timeout:45000,maxRedirects:0});if(!response.ok())throw Error('fieldworker_read_failed');return response.json();};
