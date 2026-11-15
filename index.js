@@ -587,7 +587,7 @@ fastify.post(
 );
 
 
-const VOICE = 'coral';
+const VOICE = 'marin';
 const TEMPERATURE = 0.55;
 const PORT = process.env.PORT || 8080;
 const AI_CALL_COMPLETED_WEBHOOK_URL =
